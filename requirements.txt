@@ -1,0 +1,27 @@
+numpy>=1.24
+pandas>=2.0
+scipy>=1.10
+h5py>=3.9
+opencv-python>=4.8
+mediapipe==0.10.14
+ffmpeg-python>=0.2
+boto3>=1.28
+tqdm>=4.65
+pytest>=7.4
+jinja2>=3.1
+
+# v2 addendum §4 — metric monocular depth estimation (scripts/04d_depth_estimate.py).
+# NEEDS REAL GPU VALIDATION: pin versions after confirming compatibility with
+# config.MONOCULAR_DEPTH_MODEL_ID on your actual training/inference hardware
+# (Kaggle/Lightning) — these floors are a reasonable starting point, not verified
+# against the specific checkpoint on real hardware in this environment.
+torch>=2.2
+transformers>=4.40
+pillow>=10.0
+
+# v2 addendum §10 — text/badge redaction (scripts/03b_privacy_redact.py).
+# Installed and verified in this environment (1.7.2) — ran end-to-end
+# against the real session_001 video (93 detections, correct tiering,
+# playable output). Face detection (mediapipe.solutions.face_detection)
+# needs no new dependency — already covered by the mediapipe pin above.
+easyocr>=1.7

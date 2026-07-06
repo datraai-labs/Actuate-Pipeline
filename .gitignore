@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+.venv/
+venv/
+
+# Local secrets / credentials
+.aws/
+.ssh/
+.mcp-auth/
+*.pem
+*.key
+*.p12
+*.pfx
+*.der
+*.crt
+*.cer
+*.jks
+*.keystore
+*.p8
+*.token
+*.secret
+credentials*.json
+*credentials*.json
+*secret*.json
+
+# Session data — large binary/generated artifacts, not source.
+# Keep session_001 as a checked-in example fixture (see README quickstart);
+# everything else under these roots is per-run output.
+raw/*
+!raw/session_001/
+raw/session_001/raw.mp4
+processed/*
+!processed/.gitkeep
+delivery/*
+!delivery/.gitkeep
+
+# Dense depth maps (v2 addendum §4) — large, opt-in via
+# config.ENABLE_DENSE_DEPTH_MAPS, never meant to be checked in.
+**/depth_maps/
+
+# Per-device camera calibration may be hardware-specific / site-specific —
+# track the example, not real rig files, unless your team decides otherwise.
+calibration/*
+!calibration/README.md
+!calibration/example_device_intrinsics.json
+
+# Logs
+*.log
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

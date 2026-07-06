@@ -1,0 +1,25 @@
+[project]
+name = "datraai-pipeline"
+version = "2.0.0-dev"
+description = "Egocentric video + IMU -> labeled, quality-scored robot-learning episodes."
+requires-python = ">=3.10"
+
+# Intentionally no [build-system] / packaging config: scripts/ uses numeric
+# filename prefixes (01_ingest.py, 04c_object_track.py, ...) by design, so
+# the DAG order is visible from the filesystem — this is not meant to be
+# `pip install`-able as a package. Run stages via run_pipeline.py, not
+# `import`.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+# Numbered script filenames (01_ingest.py, etc.) aren't valid Python module
+# names — that's intentional (see note above), not a lint violation to fix.
