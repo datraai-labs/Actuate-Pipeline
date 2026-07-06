@@ -247,28 +247,104 @@ def _get_sam2():
     return _sam2_cache["model"], _sam2_cache["processor"], _sam2_cache["device"]
 
 
-def _track_object_in_chunk(frames_pil: list, seed_box_px: List[float]) -> Dict[int, np.ndarray]:
+def _track_objects_in_chunk(
+    frames_pil: list,
+    detections: list,
+    max_objects_per_session: int,
+) -> dict:
     """
-    One SAM2 video session tracking ONE object, seeded with seed_box_px at
-    frame 0 of this chunk. Returns {frame_idx_in_chunk: boolean mask at
-    original resolution}. See module docstring for why this is one object
-    per session rather than batched.
+    Run SAM2 video tracking for ALL detected objects in one chunk, seeding
+    them into a SHARED video session so the SAM2 image encoder runs only
+    ONCE per chunk regardless of how many objects are near the hand.
+
+    Previous code called _track_object_in_chunk (one session per object),
+    which re-ran the encoder for every additional object — the main source
+    of 04c's 934-second runtime on 2850 frames.
+
+    Args:
+        frames_pil:            PIL images for this chunk (chunk_size frames).
+        detections:            List of {"track_id": int, "box": [x1,y1,x2,y2] px,
+                               "label": str, "score": float} dicts.
+        max_objects_per_session: cfg.SAM2_OBJECTS_PER_SESSION.  All objects are
+                               attempted in one session; if the multi-object
+                               seeding raises an internal transformers error
+                               (the known API constraint documented in the
+                               module docstring), we fall back to one session
+                               per object automatically.
+
+    Returns:
+        Dict mapping (track_id, local_frame_idx) -> np.ndarray boolean mask.
     """
     import torch
     import torch.nn.functional as F
 
-    model, processor, device = _get_sam2()
-    session = processor.init_video_session(video=frames_pil, inference_device=device, dtype=torch.float32)
-    processor.add_inputs_to_inference_session(
-        inference_session=session, frame_idx=0, obj_ids=1, input_boxes=[[seed_box_px]]
-    )
+    if not detections:
+        return {}
 
+    model, processor, device = _get_sam2()
     width, height = frames_pil[0].size
-    masks_by_frame = {}
-    for out in model.propagate_in_video_iterator(session, start_frame_idx=0):
-        resized = F.interpolate(out.pred_masks.float(), size=(height, width), mode="bilinear", align_corners=False)
-        masks_by_frame[out.frame_idx] = (resized[0, 0] > 0.0).cpu().numpy()
-    return masks_by_frame
+    masks_out: dict = {}  # (track_id, local_frame_idx) -> mask
+
+    # Try to seed all objects in one session (fastest path).
+    # SAM2 obj_ids must be unique ints >= 1; use the actual track_id.
+    try:
+        session = processor.init_video_session(
+            video=frames_pil, inference_device=device, dtype=torch.float32
+        )
+        for det in detections:
+            processor.add_inputs_to_inference_session(
+                inference_session=session,
+                frame_idx=0,
+                obj_ids=det["track_id"],
+                input_boxes=[[det["box"]]],
+            )
+
+        # Map SAM2's obj_id back to our track_id — they match directly here.
+        tid_map = {det["track_id"]: det["track_id"] for det in detections}
+        for out in model.propagate_in_video_iterator(session, start_frame_idx=0):
+            resized = F.interpolate(
+                out.pred_masks.float(), size=(height, width),
+                mode="bilinear", align_corners=False
+            )
+            for obj_idx, obj_id in enumerate(out.obj_ids):
+                track_id = tid_map.get(int(obj_id))
+                if track_id is None:
+                    continue
+                mask = (resized[obj_idx, 0] > 0.0).cpu().numpy()
+                masks_out[(track_id, int(out.frame_idx))] = mask
+
+    except Exception as multi_err:
+        # Fallback: one session per object (original behaviour, slower but
+        # always correct — preserves the verified-working single-object path
+        # documented in the module docstring).
+        print(
+            f"[{STEP}]   multi-object SAM2 seeding failed ({multi_err!r}), "
+            f"falling back to single-object sessions."
+        )
+        for det in detections:
+            try:
+                sess = processor.init_video_session(
+                    video=frames_pil, inference_device=device, dtype=torch.float32
+                )
+                processor.add_inputs_to_inference_session(
+                    inference_session=sess,
+                    frame_idx=0,
+                    obj_ids=1,
+                    input_boxes=[[det["box"]]],
+                )
+                for out in model.propagate_in_video_iterator(sess, start_frame_idx=0):
+                    resized = F.interpolate(
+                        out.pred_masks.float(), size=(height, width),
+                        mode="bilinear", align_corners=False
+                    )
+                    mask = (resized[0, 0] > 0.0).cpu().numpy()
+                    masks_out[(det["track_id"], int(out.frame_idx))] = mask
+            except Exception as single_err:
+                print(
+                    f"[{STEP}]   track_id={det['track_id']} SAM2 failed: {single_err!r} — skipping."
+                )
+
+    return masks_out
 
 
 def run(session_id: str, max_frames: Optional[int] = None) -> dict:
@@ -338,28 +414,43 @@ def run(session_id: str, max_frames: Optional[int] = None) -> dict:
             near_hand, active_tracks, cfg.OBJECT_TRACK_MATCH_IOU_MIN, next_track_id
         )
 
-        for track_id, det in assigned:
-            track_labels[track_id] = det["label"]
-            masks_by_frame = _track_object_in_chunk(frames_pil, det["box"])
-            last_box = det["box"]
-            for local_idx, mask in masks_by_frame.items():
-                global_idx = chunk_start + local_idx
-                result = mask_to_bbox_and_centroid(mask, width, height)
-                if result is None:
-                    continue
-                last_box = [
-                    result["bbox"][0] * width, result["bbox"][1] * height,
-                    result["bbox"][2] * width, result["bbox"][3] * height,
-                ]
-                frame_results[global_idx].append({
-                    "track_id": track_id,
-                    "class_label": track_labels[track_id],
-                    "confidence": round(det["score"], 4),
-                    "bbox": result["bbox"],
-                    "centroid_norm": result["centroid_norm"],
-                    "is_stub": False,
-                })
-            active_tracks[track_id] = last_box
+        if assigned:
+            # Build the detection list expected by _track_objects_in_chunk.
+            dets_for_tracking = [
+                {"track_id": tid, "box": det["box"], "label": det["label"], "score": det["score"]}
+                for tid, det in assigned
+            ]
+            # Batch all objects into one SAM2 session per chunk.
+            masks_all = _track_objects_in_chunk(
+                frames_pil,
+                dets_for_tracking,
+                max_objects_per_session=cfg.SAM2_OBJECTS_PER_SESSION,
+            )
+
+            for track_id, det in assigned:
+                track_labels[track_id] = det["label"]
+                last_box = det["box"]
+                for local_idx in range(len(frames_pil)):
+                    mask = masks_all.get((track_id, local_idx))
+                    if mask is None:
+                        continue
+                    global_idx = chunk_start + local_idx
+                    result = mask_to_bbox_and_centroid(mask, width, height)
+                    if result is None:
+                        continue
+                    last_box = [
+                        result["bbox"][0] * width, result["bbox"][1] * height,
+                        result["bbox"][2] * width, result["bbox"][3] * height,
+                    ]
+                    frame_results[global_idx].append({
+                        "track_id": track_id,
+                        "class_label": track_labels[track_id],
+                        "confidence": round(det["score"], 4),
+                        "bbox": result["bbox"],
+                        "centroid_norm": result["centroid_norm"],
+                        "is_stub": False,
+                    })
+                active_tracks[track_id] = last_box
 
         print(f"[{STEP}]   chunk {chunk_start}-{chunk_end - 1}: {len(assigned)} object(s) near hand")
 

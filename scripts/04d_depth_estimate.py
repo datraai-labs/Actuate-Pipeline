@@ -250,28 +250,48 @@ def _get_monocular_pipeline():
     return _MONOCULAR_PIPELINE
 
 
-def _estimate_monocular_depth_frame(pipe, frame_bgr: np.ndarray) -> np.ndarray:
+def _estimate_monocular_depth_batch(
+    pipe, frames_bgr: list, target_h: int, target_w: int
+) -> list:
     """
-    Run the monocular depth model on one BGR video frame. Returns a (H, W)
-    float32 depth map in meters, resized to the source frame's resolution
-    so pixel coordinates line up with normalized hand-pose/object-track
-    landmarks.
+    Run the monocular depth model on a *batch* of BGR video frames in a
+    single pipeline call, eliminating the per-frame GPU kernel launch
+    overhead that caused the "you seem to be using the pipelines
+    sequentially on GPU" warning in transformers.
+
+    Args:
+        pipe:       HuggingFace depth-estimation pipeline (from _get_monocular_pipeline).
+        frames_bgr: list of np.ndarray frames, BGR uint8.
+        target_h, target_w: resize output depth maps to match the source
+            video resolution so landmark pixel coordinates line up.
+
+    Returns:
+        List of (H, W) float32 depth maps in meters, one per input frame,
+        in the same order as frames_bgr.  Length equals len(frames_bgr).
 
     ⚠️ NEEDS REAL GPU VALIDATION — see module docstring.
     """
     from PIL import Image  # lazy — only needed on this path
 
-    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    image = Image.fromarray(rgb)
-    result = pipe(image)
-    depth = result["predicted_depth"]
-    depth_np = depth.squeeze().cpu().numpy() if hasattr(depth, "cpu") else np.asarray(depth)
+    pil_images = [
+        Image.fromarray(cv2.cvtColor(f, cv2.COLOR_BGR2RGB)) for f in frames_bgr
+    ]
+    # Transformers depth pipelines accept a list of PIL images and batch
+    # them internally — one GPU forward pass per list, not per image.
+    results = pipe(pil_images)
 
-    if depth_np.shape[:2] != frame_bgr.shape[:2]:
-        depth_np = cv2.resize(
-            depth_np, (frame_bgr.shape[1], frame_bgr.shape[0]), interpolation=cv2.INTER_LINEAR
+    depth_maps = []
+    for result in results:
+        depth = result["predicted_depth"]
+        depth_np = (
+            depth.squeeze().cpu().numpy() if hasattr(depth, "cpu") else np.asarray(depth)
         )
-    return depth_np.astype(np.float32)
+        if depth_np.shape[:2] != (target_h, target_w):
+            depth_np = cv2.resize(
+                depth_np, (target_w, target_h), interpolation=cv2.INTER_LINEAR
+            )
+        depth_maps.append(depth_np.astype(np.float32))
+    return depth_maps
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -343,7 +363,8 @@ def run(session_id: str) -> dict:
     depth_confidence = cfg.DEPTH_CONFIDENCE_MULTIPLIER.get(depth_mode_effective, 0.0)
 
     monocular_pipe = None
-    video_cap = None
+    # Pre-decoded BGR frames for monocular path — decoded once, batched below.
+    all_frames_bgr: list = []
     if depth_mode_effective == "monocular_estimated":
         print(
             f"[{STEP}] ⚠ NEEDS REAL GPU VALIDATION: loading monocular depth model "
@@ -355,6 +376,35 @@ def run(session_id: str) -> dict:
         video_cap = cv2.VideoCapture(str(video_path))
         if not video_cap.isOpened():
             raise RuntimeError(f"[{STEP}] Cannot open video: {video_path}")
+
+        # Decode all frames into memory once so the pipeline can be driven
+        # with proper batch calls instead of one call per frame.
+        print(f"[{STEP}] Decoding {n_frames} frames for batched depth inference "
+              f"(batch_size={cfg.DEPTH_ESTIMATION_BATCH_SIZE})...")
+        while len(all_frames_bgr) < n_frames:
+            ret, frame = video_cap.read()
+            if not ret:
+                break
+            all_frames_bgr.append(frame)
+        video_cap.release()
+        print(f"[{STEP}] Decoded {len(all_frames_bgr)} frames.")
+
+        # Run depth estimation in batches — one GPU forward pass per batch.
+        batch_size = max(1, cfg.DEPTH_ESTIMATION_BATCH_SIZE)
+        all_depth_maps: list = [None] * len(all_frames_bgr)
+        t_inf = time.time()
+        for batch_start in range(0, len(all_frames_bgr), batch_size):
+            batch_frames = all_frames_bgr[batch_start : batch_start + batch_size]
+            batch_depths = _estimate_monocular_depth_batch(
+                monocular_pipe, batch_frames, height, width
+            )
+            for j, dm in enumerate(batch_depths):
+                all_depth_maps[batch_start + j] = dm
+            if (batch_start // batch_size) % 10 == 0:  # progress every 10 batches
+                pct = min(100, int(100 * (batch_start + len(batch_frames)) / len(all_frames_bgr)))
+                print(f"[{STEP}]   depth inference {pct}% "
+                      f"({batch_start + len(batch_frames)}/{len(all_frames_bgr)} frames)")
+        print(f"[{STEP}] Batched depth inference done in {time.time() - t_inf:.1f}s.")
 
     write_dense = (
         depth_mode_effective != "none"
@@ -378,9 +428,10 @@ def run(session_id: str) -> dict:
         if depth_mode_effective == "stereo":
             depth_map = stereo_depth[i]
         elif depth_mode_effective == "monocular_estimated":
-            ret, frame_bgr = video_cap.read()
-            if ret:
-                depth_map = _estimate_monocular_depth_frame(monocular_pipe, frame_bgr)
+            # all_depth_maps already computed above in batches.
+            if i < len(all_depth_maps):
+                depth_map = all_depth_maps[i]
+            if depth_map is not None:
                 w_start, w_end = max(0, i - 2), min(n_frames, i + 3)
                 _ego_motion_scale_hint(gyro[w_start:w_end], accel[w_start:w_end])
 
@@ -430,9 +481,6 @@ def run(session_id: str) -> dict:
 
         if write_dense and depth_map is not None:
             np.savez_compressed(dense_dir / f"{i:06d}.npz", depth=depth_map)
-
-    if video_cap is not None:
-        video_cap.release()
 
     depth_data_path = proc_dir / "depth_data.json"
     with open(depth_data_path, "w") as f:

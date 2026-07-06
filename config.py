@@ -351,6 +351,13 @@ OBJECT_DETECT_SAMPLE_INTERVAL_FRAMES = 30  # re-run Grounding DINO this often to
 # detection's mask forward frame-by-frame until the next detection sample.
 SAM2_MODEL_ID = "facebook/sam2-hiera-tiny"
 
+# How many objects per SAM2 video session to seed in one propagation pass.
+# Seeding all hand-near objects into a SINGLE session removes the per-object
+# re-encode overhead. Keep at 1 to reproduce the old single-object-per-session
+# behaviour; raise to match however many objects are expected near the hand
+# (rarely more than 3-4 in factory footage). Kaggle T4 can safely use 4.
+SAM2_OBJECTS_PER_SESSION = 4
+
 # When a newly re-detected box (at the next sample interval) overlaps an
 # existing track above this IoU, it's treated as the same object
 # continuing (not a new track_id) — below it, a new track starts.
@@ -395,6 +402,16 @@ ENABLE_DENSE_DEPTH_MAPS = False
 # relying on it — model landscape moves fast; this was current as of this
 # implementation pass, not independently re-verified against latest SOTA.
 MONOCULAR_DEPTH_MODEL_ID = "depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf"
+
+# Number of frames fed to the monocular depth pipeline in a single batch
+# call. Transformers pipelines accept a list/generator of PIL images and
+# drive the GPU kernel once per batch rather than once per frame — this is
+# the fix for the "you seem to be using the pipelines sequentially on GPU"
+# warning produced by the previous one-frame-at-a-time loop.
+#   4 GB VRAM (RTX 2050 / local):  4–8  frames  per batch
+#   16 GB VRAM (Kaggle T4):        16–32 frames per batch
+# Set to 1 to reproduce the old single-frame behaviour for debugging.
+DEPTH_ESTIMATION_BATCH_SIZE = 8
 
 # Sessions with no depth data are excluded from "VLA_finetuning" in
 # recommended_use (quality_certificate.json) unless explicitly overridden —
