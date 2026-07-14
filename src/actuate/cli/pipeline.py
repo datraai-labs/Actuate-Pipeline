@@ -1,0 +1,102 @@
+"""`actuate canonical build` and `actuate package lerobot` — Master Spec §2.2.
+
+Thin wrappers over the library. Nothing here contains logic unreachable by importing
+`actuate`.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import typer
+
+from actuate.canonical import build_episode
+from actuate.config import Tier
+from actuate.package import ExportRefused, export_lerobot_v3
+
+canonical_app = typer.Typer(help="L3 — canonical build (Master Spec §L3).")
+package_app = typer.Typer(help="L7 — packaging & delivery (Master Spec §L7).")
+
+
+@canonical_app.command("build")
+def build(
+    processed: Path = typer.Argument(..., help="processed/<session> directory"),
+    capture_hash: str = typer.Option(..., help="SHA-256 of the raw capture (= capture_id)"),
+    task: str = typer.Option(
+        None,
+        help="Operator-verified task. NOT taken from v1's language grounding, which "
+        "wraps a failed classification in a fluent template.",
+    ),
+    out: Path = typer.Option(None, help="Write the canonical episode JSON here."),
+) -> None:
+    """Build a CanonicalEpisode from v1's processed outputs."""
+    ep = build_episode(processed, capture_hash, task=task)
+
+    typer.secho(f"episode {ep.episode_id}  schema v{ep.schema_version}", bold=True)
+    typer.echo(f"  rig        : {ep.rig.value}")
+    typer.echo(f"  frames     : {len(ep.frames)}")
+    typer.echo(f"  task       : {ep.task!r}")
+    typer.secho(
+        f"  deliverable: {'YES' if ep.is_deliverable else 'NO'}"
+        f"  ({ep.delivery_block_reason() or 'clear'})",
+        fg="green" if ep.is_deliverable else "yellow",
+    )
+
+    if ep.derivation_notes:
+        typer.secho("\n  KNOWN GAPS (these travel with the data):", fg="yellow", bold=True)
+        for k, v in ep.derivation_notes.items():
+            typer.secho(f"    [{k}] {v}", fg="yellow")
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(ep.model_dump_json(indent=2), encoding="utf-8")
+        typer.secho(f"\nwrote {out}", fg="green")
+
+
+@package_app.command("lerobot")
+def lerobot(
+    processed: Path = typer.Argument(..., help="processed/<session> directory"),
+    capture_hash: str = typer.Option(...),
+    video: Path = typer.Option(..., help="The REDACTED video. Never the original."),
+    out: Path = typer.Option(Path(".export/lerobot")),
+    task: str = typer.Option(None, help="Required. The exporter fail-closes without it."),
+    repo_id: str = typer.Option("actuate/dev"),
+    tier: Tier = typer.Option(Tier.STAGE1_VOLUME),
+    fps: int = typer.Option(30),
+    overwrite: bool = typer.Option(False),
+) -> None:
+    """Export to LeRobot v3, through LeRobot's own writer.
+
+    Not 'done' because it ran — done when LeRobot's own loader reads it and a real
+    training step runs. See tests/integration/test_lerobot_gate.py.
+    """
+    ep = build_episode(processed, capture_hash, task=task)
+    try:
+        res = export_lerobot_v3(
+            ep, out, repo_id=repo_id, fps=fps, tier=tier, overwrite=overwrite, video=video
+        )
+    except ExportRefused as exc:
+        typer.secho(f"EXPORT REFUSED\n\n{exc}", fg="red")
+        raise typer.Exit(1) from exc
+
+    typer.secho(f"exported -> {res.root}", fg="green", bold=True)
+    typer.echo(f"  frames kept    : {res.n_frames}")
+    typer.echo(f"  frames dropped : {res.n_dropped}  (no hand, or no successor)")
+    typer.echo(f"  tier           : {res.tier.value}")
+
+    if res.ego_contaminated:
+        typer.secho(
+            "\n  WARNING: the action in this dataset is EGO-CONTAMINATED.\n"
+            "  No camera_pose (L1 SLAM not built), so on this moving-camera rig the wrist\n"
+            "  delta is hand motion + head motion. It is NOT yet correct to train on.\n"
+            "  The warning ships with the dataset in meta/actuate_provenance.json.",
+            fg="yellow",
+            bold=True,
+        )
+    if not ep.is_deliverable:
+        typer.secho(
+            f"\n  This episode is NOT DELIVERABLE ({ep.delivery_block_reason()}).\n"
+            "  Export is legal — consent gates DELIVERY, not internal processing — but\n"
+            "  nothing here may be shipped to a customer.",
+            fg="yellow",
+        )

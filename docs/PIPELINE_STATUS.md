@@ -7,6 +7,51 @@ than it does.
 
 Status legend: ✅ Done · 🚧 Stub / partial · ⛔ Not started
 
+## ⚠️ CORPUS FINDING (2026-07-13): `processed/` holds ONE distinct recording, not seven
+
+Surfaced by the new canonical-schema adapter (`actuate canon report --all`, Phase 1) on
+its first contact with real data. The seven directories under `processed/` are:
+
+| Directory | Reality |
+|---|---|
+| `session_001`, `87f178b6…`, `adf1b750…`, `c51037c9…` | **The same 95s / 2850-frame recording**, four times. All four `session_meta.json` files carry `session_id: session_001`. |
+| `38681624…` | **CORRUPT.** Metadata describes a 1544-frame, 1.42 MB video; its `hand_pose_3d.json` holds **2850** frames — session_001's perception outputs. The per-frame artifacts do not belong to the recording the metadata describes. Now rejected by schema validation (`CanonicalSession._frame_count_matches_meta`). |
+| `5774e52a…`, `8a7dd485…` | Incomplete runs — no `hand_pose_3d.json`, so no metric 3D and no proprioceptive state. |
+
+**Implication.** Every "verified on real data" claim in this document rests on a single
+95-second recording — the one already flagged in the business blocker below as depicting
+paperwork sorting, not any task in `TASK_SIGNATURES`. Anything requiring cross-session
+evidence (dataset QC §11, dedup, stratified splits, task-distribution balance) is
+therefore still validated only against synthetic fixtures, regardless of how many
+directories are present. **The corpus is n=1.**
+
+## Phase 1 — Canonical schema (Architecture v2 §6) — ✅ built, verified on the real session
+
+`src/actuate/schema/` — Pydantic models, frozen + versioned JSON Schema (`v1.0.0`),
+enforced by `tests/test_schema_frozen.py`. `src/actuate/io/legacy.py` reads the v1
+`processed/` JSON into it. 28 new tests; full suite 419 passing.
+
+What the schema **refuses** to hold, and why each matters here:
+- A populated field with no `Provenance` entry — the entire trust model keys on it (v1 §A.3).
+- `finger_contact` on a rig with no finger sensor. `None` means *not measured*; zeros would
+  assert *measured, nothing touching* — a claim no bare-hand vision rig can make.
+- `depth` listed as hardware-measured when `depth_mode` is monocular.
+- A session whose frame count disagrees with its per-frame artifacts (caught `38681624…`).
+
+Honest state of the one real session (`actuate canon report`):
+- `ground_truth_channels: []` — **nothing in it was sensed; every value is inferred.**
+  65% `estimated_vision_primary`, 35% `estimated_vision_fallback`, **0% `measured_hardware`**.
+- `action` is present (94.6% of frames) as `ee_delta_se3` — the human end-effector target,
+  i.e. next-frame wrist SE(3) + a grasp scalar. **Not robot-executable**; L5 does not exist.
+- `task` is **`None`**. v1's language grounding emits *"Perform unknown task using right
+  hand with power grasp"* — a fluent sentence containing no task. The adapter maps a failed
+  classification to `None` rather than shipping that string as a VLA training label.
+  **This means the session is currently NOT VLA-exportable** — `task` is a required field
+  (v2 §2.2), and the Phase 2 exporter will fail closed on it. That is the correct outcome
+  and the blocker below is what must be resolved to clear it.
+- `retarget_eligibility: {}` — no embodiment assessed. v1's `retargeting_eligible: true`
+  was only ever `depth_mode != "none"`: a statement about depth, not about any robot.
+
 The v2 sections below correspond to the internal "v2 addendum" spec that
 extends the original 11-stage v1 pipeline. Section numbering matches that
 document.
