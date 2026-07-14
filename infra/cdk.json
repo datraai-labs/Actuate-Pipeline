@@ -1,0 +1,10 @@
+{
+  "app": "python app.py",
+  "context": {
+    "env": "dev",
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/aws-s3:serverAccessLogsUseBucketPolicy": true,
+    "@aws-cdk/core:enablePartitionLiterals": true
+  }
+}

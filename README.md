@@ -1,103 +1,157 @@
-# DatraAI Pipeline
+# Actuate
 
-Turns egocentric video + IMU recordings of manual manipulation work (bolt
-tightening, pick-and-place, packaging, etc.) into labeled, quality-scored
-episodes for robot-learning datasets: hand pose, motion primitives, phase
-segmentation, task classification, physical-plausibility validation,
-natural-language instruction grounding, metric 3D, and a composite quality
-certificate — ending in a packaged, deliverable dataset bundle.
+Multimodal robot capture → certified, retargeted, **VLA-training-ready** datasets
+(LeRobot v3 / RLDS) for frontier robotics labs.
 
-**Status:** actively evolving. See [`docs/PIPELINE_STATUS.md`](docs/PIPELINE_STATUS.md)
-before assuming any given stage is production-complete — it's the single
-source of truth for what's real, what's a stub, and what's not started.
+Six capture rigs in — egocentric head-mounted, UMI handheld gripper, stereo, instrumented
+glove, teleoperated robot, DexUMI exoskeleton. Training-ready data out, with a
+machine-checkable quality certificate and a **fail-closed consent gate** on every episode.
 
-## Quickstart
+> **Read [`STATUS.md`](STATUS.md) before trusting anything here.** It grades every component
+> as tested-against-real-data / unit-tested / written-only. Increment 1 built the
+> foundation; most layers are deliberately empty.
+
+## The documents that govern
+
+| Doc | Role |
+|---|---|
+| [`docs/architecture/MASTER_IMPLEMENTATION_SPEC.md`](docs/architecture/MASTER_IMPLEMENTATION_SPEC.md) | **The document we build from.** §3 canonical schema is the freeze point; §8 is the build order. |
+| [`docs/architecture/AWS_ARCHITECTURE.md`](docs/architecture/AWS_ARCHITECTURE.md) | Storage, the Postgres catalog, and the consent boundary **enforced in IAM, not just code**. |
+| [`docs/PIPELINE_STATUS.md`](docs/PIPELINE_STATUS.md) | The honest ledger of what is genuinely unvalidated in the v1 pipeline. |
+
+Earlier architecture docs (v1, v2) are kept as history in `docs/architecture/`; the Master
+Spec consolidates them. The v1 pipeline's own README is at
+[`docs/README_v1_pipeline.md`](docs/README_v1_pipeline.md).
+
+## Two non-negotiables
+
+1. **CLI/API-first.** Everything is a library function first; the Typer CLI and the FastAPI
+   service are thin consumers, never dependencies. If a capability only works through the
+   CLI or the service, it is wrong. **Enforced in CI** by an import-linter contract.
+2. **Verify against real data.** A component is "done" only when tested against real data,
+   and **every correctness test must be confirmed to fail against a broken version.**
+   "Looks right" is not a status.
+
+## Install
 
 ```bash
+pip install -e ".[aws,dev,service]"   # core is CPU-only and light; heavy deps are extras
+```
+
+Extras: `[perception]` (WiLoR, depth models — GPU), `[retarget]` (IK), `[sim]` (MuJoCo),
+`[aws]` (S3 + Postgres + pgvector), `[service]` (FastAPI). The core library, the schema,
+certification, and the exporters all run **without a GPU stack** — so value ships before
+any model does.
+
+## Run the tests
+
+```bash
+pytest tests/unit               # fast; no Docker, no AWS
+pytest tests/integration        # needs Docker (spins up a real Postgres + pgvector)
+pytest                          # everything, incl. the v1 pipeline suite
+lint-imports                    # the CLI/API-first dependency contract
+actuate schema freeze --check   # fails if the models drifted without a version bump
+```
+
+## The CLI
+
+```bash
+actuate schema freeze              # emit the versioned JSON Schema
+actuate storage whoami             # WHICH AWS ACCOUNT ARE WE POINTED AT?  (see below)
+actuate storage buckets            # the four bucket names for an env
+actuate storage verify-consent-boundary --env dev --profile datraai-admin
+actuate migrate plan               # what migration would do. Reads only, touches nothing.
+actuate migrate run --backend s3 --env dev --profile datraai-admin --yes
+```
+
+Layer commands (`ingest`, `perceive`, `fuse`, `canonical`, `certify`, `retarget`,
+`language`, `package`) parse and honestly print "not implemented" — Increment 1 built the
+foundation only.
+
+## AWS
+
+**Actuate's infrastructure lives in account `<ACTUATE_AWS_ACCOUNT>`, region `eu-north-1`, via the
+`datraai-admin` profile.**
+
+> ⚠️ A dev machine here may have credentials for a **partner account**
+> (`vendor-upload-only` @ `<PARTNER_ACCOUNT>`, holding `northstar-*` / `humanstryde-*` buckets)
+> configured as its default. **Never provision Actuate infrastructure there.** Run
+> `actuate storage whoami` if you are unsure. The CDK app hardcodes no account ID and
+> requires `ACTUATE_AWS_ACCOUNT` to be set explicitly — it deliberately ignores
+> `CDK_DEFAULT_ACCOUNT`, which the CDK CLI auto-populates from whatever credentials happen
+> to be ambient.
+
+### Bring up the consent boundary FIRST
+
+AWS Architecture §8: *"The consent boundary (IAM + bucket policy + fail-closed gate) should
+be stood up and tested first, before any real capture data lands."*
+
+```bash
+aws configure --profile datraai-admin                  # <ACTUATE_AWS_ACCOUNT>, eu-north-1
+aws sts get-caller-identity --profile datraai-admin    # must print <ACTUATE_AWS_ACCOUNT>
+
+cd infra
 pip install -r requirements.txt
+npm install -g aws-cdk
+
+cdk synth -c env=dev                                   # offline; needs no credentials
+
+export ACTUATE_AWS_ACCOUNT=<ACTUATE_AWS_ACCOUNT>
+export AWS_REGION=eu-north-1
+cdk bootstrap aws://$ACTUATE_AWS_ACCOUNT/$AWS_REGION --profile datraai-admin
+cdk deploy -c env=dev --profile datraai-admin --all
+
+# Then PROVE the boundary is intact, before any data lands:
+actuate storage verify-consent-boundary --env dev --profile datraai-admin
 ```
 
-Run the included example session end-to-end:
+Stacks: `StorageStack` (4 buckets + KMS CMK + the IAM consent boundary), `DataStack`
+(Aurora Serverless v2 Postgres + Secrets Manager). `ComputeStack` and `ServiceStack` are
+later increments.
 
-```bash
-python run_pipeline.py --session raw/session_001
+### The consent boundary, in three independent layers
+
+Un-consented data reaching a customer requires **all three** to fail:
+
+1. **Code** — `io.consent.DeliveryWriter` refuses any write whose episode is not
+   `consent=granted` **and** `pii_status=passed`. Fail-closed: a *missing* record blocks.
+   Proven load-bearing by a test that removes the guard and watches data leak.
+2. **Catalog** — `catalog.deliverable_episodes()` is an INNER JOIN through `consent` and
+   `certifications`. An un-consented episode cannot be *returned*, let alone written.
+3. **IAM** — the delivery bucket policy `Deny`s `PutObject` from every principal except the
+   packaging role. An explicit Deny cannot be overridden by any Allow, anywhere.
+
+Consent is keyed on **`capture_id`**, not episode — one physical recording yields many
+episodes, and a revocation must revoke all of them at once.
+
+## Storage layout
+
+```
+s3://actuate-raw-<env>/       <rig>/<capture_id>/...      versioned; -> Glacier Deep Archive
+s3://actuate-work-<env>/      canonical/<episode_id>/vN/  Intelligent-Tiering
+s3://actuate-delivery-<env>/  <customer>/<dataset>/<ver>/ CONSENT-PASSED ONLY
+s3://actuate-artifacts-<env>/ checkpoints, URDFs, sim assets
 ```
 
-Outputs land in `processed/session_001/`. Resume a partially-completed run
-(skips steps whose outputs already exist):
+Blobs in S3; everything queryable in Postgres with an S3 URI pointer. **Video is never
+duplicated or re-encoded** — the canonical representation references chunked MP4, it does
+not carry pixels.
 
-```bash
-python run_pipeline.py --session raw/session_001 --resume
-```
-
-Run every session in a folder as a batch, and package for delivery:
-
-```bash
-python run_pipeline.py --batch raw/ --batch-id my_batch_001 --upload
-```
-
-## Repository layout
+## Repo shape
 
 ```
-config.py               Central config — every threshold/constant, organized by section
-run_pipeline.py          Orchestrator: step sequence, --resume, --skip-qa, batch mode
-scripts/                 One file per pipeline stage, numbered by execution order
-                         (e.g. 04c_object_track.py runs after 04_hand_pose.py,
-                         before 04d_depth_estimate.py — the numbering IS the DAG)
-utils/                   Shared logic used by multiple stages
-                         (video I/O, HDF5 I/O, S3 upload, IMU strategy routing)
-tests/                   pytest suite, mirrors stage names (test_<stage>.py),
-                         synthetic data only — no GPU/real video required to run it
-calibration/             Per-device camera intrinsics (see calibration/README.md)
-docs/                    Architecture + pipeline status docs (read these first)
-raw/                     Input: {session_id}/raw.mp4 + imu.json|imu.csv
-processed/               Output: {session_id}/*.json + session.h5 + compressed.mp4
-delivery/                Final packaged batches (what actually ships to customers)
+src/actuate/        the library — the source of truth
+  config/           settings + rig registry (6 rigs) + embodiment registry
+  schema/           THE FROZEN CANONICAL CONTRACT (schema_version=1)
+  io/               storage backends, Parquet/Zarr store, the consent guard
+  catalog/          Postgres (SQLAlchemy + Alembic + pgvector)
+  ingest/ perception/ fusion/ canonical/ certify/ retarget/ language/ package/ feedback/
+  cli/              Typer (thin)
+  service/          FastAPI (thin consumer)
+infra/              AWS CDK: StorageStack + DataStack
+scripts/NN_*.py     the 17 v1 stages — still the execution path (run_pipeline.py)
 ```
 
-## Configuration
-
-Every tunable threshold and constant lives in `config.py`, grouped by
-section with inline comments explaining *why* each value is what it is —
-that file is the closest thing to a spec for tunable behavior. Two settings
-are worth knowing up front since they change which code path a session runs
-through: `IMU_SOURCE_MODE` (head-mounted / wrist-mounted / dual / none) and
-`DEPTH_MODE` (stereo / monocular / none). See
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for what each actually does.
-
-## Testing
-
-```bash
-python -m pytest tests/ -q
-```
-
-The full suite runs in a few seconds — no GPU, no real video files, no
-network calls. If you're adding a new pipeline stage, add
-`tests/test_<stage>.py` alongside it (synthetic-data fixtures, following the
-existing tests' pattern of loading numbered scripts via `importlib` since
-`01_ingest.py`-style filenames aren't valid Python module names).
-
-## Docs
-
-- [`docs/PIPELINE_STATUS.md`](docs/PIPELINE_STATUS.md) — stage-by-stage status: done / stub / not started, and every known limitation or "needs GPU validation before trusting this" caveat in one place.
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — data flow, storage formats, config-driven branch points.
-- [`calibration/README.md`](calibration/README.md) — camera intrinsics format and fallback behavior.
-
-## Contributing a new stage
-
-1. Add `scripts/NN_your_stage.py` (or `NNx_` for a sub-step between two
-   numbered stages, matching the `04c`/`04d` convention) with a module
-   docstring stating real inputs/outputs, and a `run(session_id) -> dict`
-   function following the existing stages' shape.
-2. Add any new thresholds/constants to `config.py` — no magic numbers in
-   the script itself.
-3. Register the step in `run_pipeline.py`'s `PIPELINE_STEPS` list, in
-   execution order.
-4. Add `tests/test_your_stage.py` with synthetic data.
-5. Update `docs/PIPELINE_STATUS.md`.
-
-## License / confidentiality
-
-No `LICENSE` file is included yet — add one reflecting your actual
-IP/confidentiality stance (proprietary, internal-only, etc.) before sharing
-this repo outside the team.
+Dependency direction is one-way and CI-enforced: `cli/` and `service/` import layers;
+layers import only `schema/`, `io/`, `config/`, `catalog/`, and each other in pipeline
+order. **Nothing in a layer imports `cli/` or `service/`.**

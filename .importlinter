@@ -1,0 +1,50 @@
+# CLI/API-first, enforced (Master Spec §2.1).
+#
+# "If a capability only works through the CLI or only through the service, it is wrong."
+# That rule is only real if something checks it, so this contract runs in CI.
+#
+#   lint-imports
+
+[importlinter]
+root_package = actuate
+include_external_packages = False
+
+[importlinter:contract:layered]
+name = Actuate layered architecture (higher may import lower; never the reverse)
+type = layers
+layers =
+    actuate.cli : actuate.service
+    actuate.feedback
+    actuate.package
+    actuate.language
+    actuate.retarget
+    actuate.certify
+    actuate.canonical
+    actuate.fusion
+    actuate.perception
+    actuate.ingest
+    actuate.catalog
+    actuate.io
+    actuate.schema
+    actuate.config
+
+[importlinter:contract:thin-consumers]
+name = No layer may import the CLI or the service
+type = forbidden
+source_modules =
+    actuate.config
+    actuate.schema
+    actuate.io
+    actuate.catalog
+    actuate.ingest
+    actuate.perception
+    actuate.fusion
+    actuate.canonical
+    actuate.certify
+    actuate.retarget
+    actuate.language
+    actuate.package
+    actuate.feedback
+forbidden_modules =
+    actuate.cli
+    actuate.service

@@ -1,18 +1,70 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
-name = "datraai-pipeline"
+name = "actuate"
 version = "2.0.0-dev"
-description = "Egocentric video + IMU -> labeled, quality-scored robot-learning episodes."
+description = "Multimodal capture -> certified, retargeted, VLA-training-ready robot data."
 requires-python = ">=3.10"
 
-# Intentionally no [build-system] / packaging config: scripts/ uses numeric
-# filename prefixes (01_ingest.py, 04c_object_track.py, ...) by design, so
-# the DAG order is visible from the filesystem — this is not meant to be
-# `pip install`-able as a package. Run stages via run_pipeline.py, not
-# `import`.
+# Core stays CPU-only and light. Per Master Spec §5 ("GPU boundary"), the schema,
+# fusion, canonical, certification and the exporters must install and run WITHOUT a
+# GPU stack, so value ships before any model does. Heavy deps live in extras.
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.2",
+    "typer>=0.12",
+    "numpy>=1.24",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Storage + catalog backbone (AWS Architecture doc). Not required for local dev/tests:
+# the LocalBackend has no AWS dependency at all, which is what lets the storage
+# abstraction be proven before any bucket exists.
+aws = [
+    "boto3>=1.34",
+    "s3fs>=2024.6",
+    "fsspec>=2024.6",
+    "pyarrow>=16.0",
+    "zarr>=2.18",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.1",
+    "pgvector>=0.2.5",
+]
+perception = ["torch>=2.2", "transformers>=4.40", "opencv-python>=4.8", "mediapipe==0.10.14"]
+retarget = ["torch>=2.2", "pin>=2.7"]
+sim = ["mujoco>=3.1"]
+service = ["fastapi>=0.111", "uvicorn>=0.30"]
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.5",
+    "import-linter>=2.0",
+    "testcontainers[postgres]>=4.5",
+]
+
+[project.scripts]
+actuate = "actuate.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/actuate"]
+
+# src/actuate is the library-shaped, pip-installable core (Master Spec §2.1). The
+# numbered v1 stage scripts in scripts/ remain the execution path and keep their
+# numeric prefixes on purpose — DAG order being visible from the filesystem is worth
+# more than importability for those files. They migrate into the package layer by layer.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+pythonpath = ["src", "."]
+markers = [
+    "real_data: exercises a real captured session on disk, not a synthetic fixture",
+    "needs_docker: requires Docker (testcontainers Postgres)",
+    "needs_aws: requires real AWS credentials for a DatraAI-owned account",
+]
 
 [tool.black]
 line-length = 100
@@ -21,5 +73,7 @@ target-version = ["py310"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-# Numbered script filenames (01_ingest.py, etc.) aren't valid Python module
-# names — that's intentional (see note above), not a lint violation to fix.
+src = ["src"]
+# Numbered script filenames (01_ingest.py, etc.) aren't valid Python module names —
+# that's intentional (see note above), not a lint violation to fix.
+exclude = ["scripts", "infra/cdk.out"]

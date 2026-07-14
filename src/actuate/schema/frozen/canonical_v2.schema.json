@@ -1,0 +1,1099 @@
+{
+  "$defs": {
+    "CanonicalFrame": {
+      "additionalProperties": false,
+      "properties": {
+        "camera_pose": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SE3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "confidence": {
+          "additionalProperties": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "type": "number"
+          },
+          "title": "Confidence",
+          "type": "object"
+        },
+        "contact": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "additionalProperties": {
+                  "$ref": "#/$defs/ContactReading"
+                },
+                "type": "object"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Contact"
+        },
+        "depth": {
+          "additionalProperties": {
+            "$ref": "#/$defs/DepthRef"
+          },
+          "title": "Depth",
+          "type": "object"
+        },
+        "episode_id": {
+          "title": "Episode Id",
+          "type": "string"
+        },
+        "finger_joints_human": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finger Joints Human"
+        },
+        "finger_joints_robotspace": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finger Joints Robotspace"
+        },
+        "frame_idx": {
+          "minimum": 0,
+          "title": "Frame Idx",
+          "type": "integer"
+        },
+        "hands": {
+          "additionalProperties": {
+            "$ref": "#/$defs/HandState"
+          },
+          "title": "Hands",
+          "type": "object"
+        },
+        "images": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ImageRef"
+          },
+          "title": "Images",
+          "type": "object"
+        },
+        "interaction_state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InteractionState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "objects": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ObjectState"
+          },
+          "title": "Objects",
+          "type": "object"
+        },
+        "provenance": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "title": "Provenance",
+          "type": "object"
+        },
+        "rig": {
+          "$ref": "#/$defs/RigType"
+        },
+        "t": {
+          "description": "seconds on the canonical clock",
+          "minimum": 0.0,
+          "title": "T",
+          "type": "number"
+        }
+      },
+      "required": [
+        "t",
+        "rig",
+        "episode_id",
+        "frame_idx"
+      ],
+      "title": "CanonicalFrame",
+      "type": "object"
+    },
+    "ConsentStatus": {
+      "description": "Fail-closed. Only GRANTED permits delivery packaging.\n\nThere is deliberately no default. A missing consent record is not PENDING and is\nnot GRANTED \u2014 it is an error, and the guard blocks. See actuate.io.consent.",
+      "enum": [
+        "granted",
+        "pending",
+        "denied",
+        "revoked"
+      ],
+      "title": "ConsentStatus",
+      "type": "string"
+    },
+    "ContactReading": {
+      "additionalProperties": false,
+      "description": "contact.<finger>: confidence in [0,1] PLUS the source it came from.\n\nThe source is not decoration. Master Spec \u00a7L2's arbiter ordering exists precisely\nbecause a 0.9 from a tactile sensor and a 0.9 from a vision heuristic are not the\nsame claim, and the dexterous branch must be able to tell them apart.",
+      "properties": {
+        "confidence": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "source": {
+          "$ref": "#/$defs/Provenance"
+        }
+      },
+      "required": [
+        "confidence",
+        "source"
+      ],
+      "title": "ContactReading",
+      "type": "object"
+    },
+    "ControlMode": {
+      "description": "Master Spec \u00a73: both modes are carried, tagged, never conflated.",
+      "enum": [
+        "joint",
+        "ee"
+      ],
+      "title": "ControlMode",
+      "type": "string"
+    },
+    "DepthRef": {
+      "additionalProperties": false,
+      "description": "Depth map + its uncertainty. UniDepthV2 emits per-pixel uncertainty and that\nfeeds the certificate directly, so a depth ref without one is a lost trust signal.",
+      "properties": {
+        "frame_index": {
+          "minimum": 0,
+          "title": "Frame Index",
+          "type": "integer"
+        },
+        "mean_uncertainty": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mean Uncertainty"
+        },
+        "uncertainty_uri": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Uncertainty Uri"
+        },
+        "uri": {
+          "title": "Uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "uri",
+        "frame_index"
+      ],
+      "title": "DepthRef",
+      "type": "object"
+    },
+    "Diversity": {
+      "additionalProperties": false,
+      "description": "Scene and demonstrator reported SEPARATELY (EgoVerse) \u2014 collapsing them into one\n'diversity' number hides which axis is actually thin.",
+      "properties": {
+        "demonstrator_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Demonstrator Id"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Id"
+        }
+      },
+      "title": "Diversity",
+      "type": "object"
+    },
+    "EpisodeMeta": {
+      "additionalProperties": false,
+      "description": "\u03c00.7 episode metadata (Master Spec \u00a73, \u00a7L4).\n\n`quality` is 1-5 from the existing EIS scorer. Low quality is NOT a reason to discard\n\u2014 \u00a7L8 routes honestly-graded failures to delivery as metadata-labeled robustness\ndata. Consent/PII failures are the only hard block.",
+      "properties": {
+        "mistakes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Mistakes",
+          "type": "array"
+        },
+        "quality": {
+          "anyOf": [
+            {
+              "maximum": 5,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quality"
+        },
+        "speed": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "length in steps, binned",
+          "title": "Speed"
+        }
+      },
+      "title": "EpisodeMeta",
+      "type": "object"
+    },
+    "FieldStats": {
+      "additionalProperties": false,
+      "description": "Per-dim 1/99 percentiles + mean/std (Master Spec \u00a7L7).\n\nBoth are shipped, not one: the 1/99 \u2192 [-1,1] default is \u03c00.5/EgoVerse, but customers\non 2/98-per-timestep (TRI LBM) or z-score (EgoMimic) must be able to re-derive without\nrecomputing over the whole dataset. TRI LBM's finding is that normalization dominates,\nso getting this wrong is not cosmetic.",
+      "properties": {
+        "mean": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Mean",
+          "type": "array"
+        },
+        "p01": {
+          "items": {
+            "type": "number"
+          },
+          "title": "P01",
+          "type": "array"
+        },
+        "p99": {
+          "items": {
+            "type": "number"
+          },
+          "title": "P99",
+          "type": "array"
+        },
+        "std": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Std",
+          "type": "array"
+        }
+      },
+      "required": [
+        "p01",
+        "p99",
+        "mean",
+        "std"
+      ],
+      "title": "FieldStats",
+      "type": "object"
+    },
+    "FingerActionRepr": {
+      "description": "Master Spec \u00a73: both representations available (DexUMI robustness finding).",
+      "enum": [
+        "absolute",
+        "relative"
+      ],
+      "title": "FingerActionRepr",
+      "type": "string"
+    },
+    "HandState": {
+      "additionalProperties": false,
+      "properties": {
+        "keypoints_3d": {
+          "anyOf": [
+            {
+              "items": {
+                "maxItems": 3,
+                "minItems": 3,
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Keypoints 3D"
+        },
+        "mano": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MANOParams"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "wrist_pose": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SE3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "HandState",
+      "type": "object"
+    },
+    "HumanAction": {
+      "additionalProperties": false,
+      "description": "`action.human` \u2014 the Stage-I pretrain target (Master Spec \u00a73).\n\nrelative-SE(3) wrist + retargeted joints on the canonical reference hand.\n`reference_hand` is None until L5 exists; the wrist trajectory alone is still a\nlegitimate Stage-I target for gripper/arm work (which is exactly why Phase 2 can ship\nbefore Phase 4).",
+      "properties": {
+        "reference_hand": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/ReferenceHandAction"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Hand"
+        },
+        "wrist_delta": {
+          "additionalProperties": {
+            "$ref": "#/$defs/SE3"
+          },
+          "title": "Wrist Delta",
+          "type": "object"
+        }
+      },
+      "required": [
+        "wrist_delta"
+      ],
+      "title": "HumanAction",
+      "type": "object"
+    },
+    "ImageRef": {
+      "additionalProperties": false,
+      "description": "-> observation.images.<cam>. A reference into a chunked MP4, not a frame.",
+      "properties": {
+        "frame_index": {
+          "minimum": 0,
+          "title": "Frame Index",
+          "type": "integer"
+        },
+        "uri": {
+          "title": "Uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "uri",
+        "frame_index"
+      ],
+      "title": "ImageRef",
+      "type": "object"
+    },
+    "InteractionState": {
+      "description": "Master Spec \u00a73 per-frame `interaction_state`.",
+      "enum": [
+        "STATIC",
+        "GRASPED_L",
+        "GRASPED_R",
+        "GRASPED_BOTH",
+        "MOVING"
+      ],
+      "title": "InteractionState",
+      "type": "string"
+    },
+    "MANOParams": {
+      "additionalProperties": false,
+      "description": "beta fixed (shape), theta 15-PCA (pose). From WiLoR (L1).\n\nMaster Spec is explicit that MANO is the *intermediate*: the delivered Stage-I\npretraining target is relative-SE(3) wrist + retargeted joints on a canonical\nreference hand. Carrying MANO here is what makes that retarget possible later; it is\nnot itself the action.",
+      "properties": {
+        "betas": {
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 10,
+          "minItems": 10,
+          "title": "Betas",
+          "type": "array"
+        },
+        "global_orient": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Global Orient",
+          "type": "array"
+        },
+        "theta_pca": {
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 15,
+          "minItems": 15,
+          "title": "Theta Pca",
+          "type": "array"
+        }
+      },
+      "required": [
+        "betas",
+        "theta_pca",
+        "global_orient"
+      ],
+      "title": "MANOParams",
+      "type": "object"
+    },
+    "MaskRef": {
+      "additionalProperties": false,
+      "description": "RLE or a pointer to one (SAM2).",
+      "properties": {
+        "rle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rle"
+        },
+        "uri": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Uri"
+        }
+      },
+      "title": "MaskRef",
+      "type": "object"
+    },
+    "NormStats": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldStats"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldStats"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "NormStats",
+      "type": "object"
+    },
+    "ObjectState": {
+      "additionalProperties": false,
+      "properties": {
+        "mask": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MaskRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "pose": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SE3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "ObjectState",
+      "type": "object"
+    },
+    "PiiStatus": {
+      "description": "Fail-closed. Only PASSED permits delivery packaging (Master Spec \u00a7L4).",
+      "enum": [
+        "passed",
+        "pending",
+        "failed"
+      ],
+      "title": "PiiStatus",
+      "type": "string"
+    },
+    "Provenance": {
+      "description": "How a value was obtained. The trust ordering of Master Spec \u00a7L2.\n\nThe L2 arbiter resolves competing signals strictly by this order \u2014 a measured\nchannel always overrides vision when present. Every downstream confidence\ncomputation and the L4 certificate key on this field.\n\nOrdering, most trusted first:\n    measured_robotspace  (DexUMI exoskeleton encoders \u2014 already in robot hand space)\n    measured_human       (instrumented glove flex/joint sensors)\n    gripper_aperture     (UMI aperture encoder)\n    vision_primary       (a metric vision model is the best source available)\n    vision_fallback      (heuristic; nothing better exists for this rig)\n    approximated         (no measurement at all \u2014 e.g. an assumed-FOV pinhole model)",
+      "enum": [
+        "measured_robotspace",
+        "measured_human",
+        "gripper_aperture",
+        "vision_primary",
+        "vision_fallback",
+        "approximated"
+      ],
+      "title": "Provenance",
+      "type": "string"
+    },
+    "ReferenceHandAction": {
+      "additionalProperties": false,
+      "description": "Retargeted joints on the canonical high-DoF reference hand.\n\nMaster Spec \u00a77 item 4 makes picking that hand a benchmark-before-lock decision, and\nit is NOT yet picked (see config.embodiments.CANONICAL_REFERENCE_HAND is None). So\n`hand_name` is required here: an exporter must never have to guess which hand's joint\nordering it is looking at, and a dataset delivered without that label is unusable.",
+      "properties": {
+        "finger_action_repr": {
+          "$ref": "#/$defs/FingerActionRepr"
+        },
+        "hand_name": {
+          "title": "Hand Name",
+          "type": "string"
+        },
+        "joints": {
+          "items": {
+            "type": "number"
+          },
+          "minItems": 1,
+          "title": "Joints",
+          "type": "array"
+        }
+      },
+      "required": [
+        "hand_name",
+        "joints",
+        "finger_action_repr"
+      ],
+      "title": "ReferenceHandAction",
+      "type": "object"
+    },
+    "RigType": {
+      "description": "The six capture configurations (Master Spec \u00a71, \u00a7L0).",
+      "enum": [
+        "head_mounted",
+        "umi_gripper",
+        "stereo",
+        "glove",
+        "teleop_robot",
+        "dexumi_exoskeleton"
+      ],
+      "title": "RigType",
+      "type": "string"
+    },
+    "RobotAction": {
+      "additionalProperties": false,
+      "description": "`action.robot.<embodiment>` \u2014 joint traj AND EE traj, per control mode.\n\nOnly L5 retargeting produces this. It does not exist yet, so this model is\nexercised by tests and by nothing else \u2014 stated plainly rather than implied.",
+      "properties": {
+        "control_mode": {
+          "$ref": "#/$defs/ControlMode"
+        },
+        "ee_traj": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/SE3"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ee Traj"
+        },
+        "embodiment": {
+          "title": "Embodiment",
+          "type": "string"
+        },
+        "finger_action_repr": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FingerActionRepr"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "joint_traj": {
+          "anyOf": [
+            {
+              "items": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Joint Traj"
+        }
+      },
+      "required": [
+        "embodiment",
+        "control_mode"
+      ],
+      "title": "RobotAction",
+      "type": "object"
+    },
+    "SE3": {
+      "additionalProperties": false,
+      "description": "Rigid pose. Right-handed, gravity-aligned. Position in METRES.\n\nThe schema has no place for pixel or normalized coordinates \u2014 anything entering it\nis already metric, which is the entire point of L1's metric reconstruction.",
+      "properties": {
+        "position_m": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Position M",
+          "type": "array"
+        },
+        "quaternion_wxyz": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Quaternion Wxyz",
+          "type": "array"
+        }
+      },
+      "required": [
+        "position_m",
+        "quaternion_wxyz"
+      ],
+      "title": "SE3",
+      "type": "object"
+    },
+    "StrategyAlignment": {
+      "additionalProperties": false,
+      "description": "EgoVerse Robot-B guard: flag when retargeting forces an undemonstrated strategy.",
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "title": "StrategyAlignment",
+      "type": "object"
+    },
+    "SubgoalFrame": {
+      "additionalProperties": false,
+      "description": "Frame ref at a phase boundary \u2192 \u03c00.7 subgoal image.",
+      "properties": {
+        "frame_idx": {
+          "minimum": 0,
+          "title": "Frame Idx",
+          "type": "integer"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        }
+      },
+      "required": [
+        "frame_idx"
+      ],
+      "title": "SubgoalFrame",
+      "type": "object"
+    },
+    "Subtask": {
+      "additionalProperties": false,
+      "description": "(span, instruction) \u2014 \u03c00.7 subtask / subgoal anchor.",
+      "properties": {
+        "confidence": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confidence"
+        },
+        "end_frame": {
+          "minimum": 0,
+          "title": "End Frame",
+          "type": "integer"
+        },
+        "instruction": {
+          "title": "Instruction",
+          "type": "string"
+        },
+        "start_frame": {
+          "minimum": 0,
+          "title": "Start Frame",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "instruction",
+        "start_frame",
+        "end_frame"
+      ],
+      "title": "Subtask",
+      "type": "object"
+    },
+    "Tier": {
+      "description": "Delivery tiering (Master Spec \u00a7L7).",
+      "enum": [
+        "stage1_volume",
+        "stage2_anchor"
+      ],
+      "title": "Tier",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "action_human": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HumanAction"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "action_robot": {
+      "additionalProperties": {
+        "$ref": "#/$defs/RobotAction"
+      },
+      "title": "Action Robot",
+      "type": "object"
+    },
+    "capture_id": {
+      "title": "Capture Id",
+      "type": "string"
+    },
+    "consent": {
+      "$ref": "#/$defs/ConsentStatus",
+      "default": "pending"
+    },
+    "control_mode": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ControlMode"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "derivation_notes": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Derivation Notes",
+      "type": "object"
+    },
+    "diversity": {
+      "$ref": "#/$defs/Diversity"
+    },
+    "effective_hours": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Effective Hours"
+    },
+    "episode_id": {
+      "title": "Episode Id",
+      "type": "string"
+    },
+    "episode_meta": {
+      "$ref": "#/$defs/EpisodeMeta"
+    },
+    "finger_action_repr": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FingerActionRepr"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "frames": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/CanonicalFrame"
+      },
+      "title": "Frames",
+      "type": "array"
+    },
+    "norm_stats": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NormStats"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "pii_status": {
+      "$ref": "#/$defs/PiiStatus",
+      "default": "pending"
+    },
+    "rig": {
+      "$ref": "#/$defs/RigType"
+    },
+    "schema_version": {
+      "default": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_content_hash": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "minLength": 64,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Content Hash"
+    },
+    "strategy_alignment": {
+      "additionalProperties": {
+        "$ref": "#/$defs/StrategyAlignment"
+      },
+      "title": "Strategy Alignment",
+      "type": "object"
+    },
+    "subgoal_frames": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SubgoalFrame"
+      },
+      "title": "Subgoal Frames",
+      "type": "array"
+    },
+    "subtasks": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Subtask"
+      },
+      "title": "Subtasks",
+      "type": "array"
+    },
+    "task": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Task"
+    },
+    "task_paraphrases": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Task Paraphrases",
+      "type": "array"
+    },
+    "tier": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Tier"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "episode_id",
+    "capture_id",
+    "rig"
+  ],
+  "title": "ActuateCanonicalEpisode",
+  "type": "object",
+  "x-actuate-schema-version": 2
+}

@@ -64,3 +64,28 @@ calibration/*
 Thumbs.db
 .vscode/
 .idea/
+.env.local
+
+# ---------------------------------------------------------------------------
+# CONSENT-GATED CAPTURE DATA — NEVER COMMIT
+# ---------------------------------------------------------------------------
+# raw/ and processed/ hold real human capture (video, IMU, hand poses). The one
+# capture we have carries consent=pending. The three-layer consent boundary
+# guards S3 and the delivery bucket; it does NOT guard git. Nothing here goes to
+# a remote. Raw provenance lives in s3://actuate-raw-<env>/, content-addressed.
+raw/
+processed/
+delivery/
+.export/
+.actuate-store/
+*.mp4
+*.h5
+*.npy
+*.npz
+
+# ---------------------------------------------------------------------------
+# Local config + build artifacts (contain the AWS account id / DB URL)
+# ---------------------------------------------------------------------------
+.env.local
+infra/cdk.out/
+infra/cdk.context.json

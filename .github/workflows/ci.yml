@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # The CLI/API-first rule is only real if something checks it.
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -e ".[aws,dev,service]"
+      - name: Lint
+        run: ruff check src tests
+      - name: Import-linter (CLI/API-first dependency direction)
+        run: lint-imports
+      - name: Schema is frozen (models must not drift without a version bump)
+        run: actuate schema freeze --check
+
+  tests:
+    runs-on: ubuntu-latest
+    services:
+      # A REAL Postgres with pgvector. Not a mock — the guarantees under test (enum types,
+      # the consent foreign key, vector similarity) are ones only a real database enforces.
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: actuate
+          POSTGRES_PASSWORD: actuate
+          POSTGRES_DB: actuate
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -e ".[aws,dev,service]"
+      - name: Unit tests
+        run: pytest tests/unit -v
+      - name: Integration tests (real Postgres)
+        env:
+          ACTUATE_DATABASE_URL: postgresql+psycopg://actuate:actuate@localhost:5432/actuate
+        run: pytest tests/integration -v
+      - name: v1 pipeline regression suite
+        run: pytest tests -q --ignore=tests/unit --ignore=tests/integration
+
+  # `cdk synth` must be a pure offline operation. It runs with NO AWS credentials here —
+  # which is deliberate: if synth ever starts needing them, it has started reaching for an
+  # account, and on a dev machine that account may be the wrong one.
+  infra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - run: npm install -g aws-cdk
+      - run: pip install -r infra/requirements.txt
+      - name: cdk synth (no credentials, offline)
+        working-directory: infra
+        run: cdk synth -c env=dev --quiet
