@@ -225,8 +225,14 @@ def smooth_root_depth(z: np.ndarray, window: int = 7) -> np.ndarray:
     if len(idx) < window:
         return z.copy()
     filled = np.interp(np.arange(len(z)), idx, z[idx])
-    ker = np.ones(window) / window
-    smoothed = np.convolve(filled, ker, mode="same")
+    # Normalised moving average: divide the box-filtered signal by the box-filtered ones, so
+    # the window SHRINKS at the array boundaries instead of averaging against zero-padding.
+    # A plain convolve(..., "same") zero-pads and makes the first/last ~window/2 frames read
+    # artificially shallow -- which are exactly the frames the wrist placement needs.
+    ker = np.ones(window)
+    num = np.convolve(filled, ker, mode="same")
+    den = np.convolve(np.ones_like(filled), ker, mode="same")
+    smoothed = num / den
     out = z.copy()
     out[idx] = smoothed[idx]
     return out
