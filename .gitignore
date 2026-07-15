@@ -89,3 +89,6 @@ delivery/
 .env.local
 infra/cdk.out/
 infra/cdk.context.json
+
+# Rerun recordings — large binary viz artifacts, never commit
+*.rrd

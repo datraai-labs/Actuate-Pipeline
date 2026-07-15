@@ -17,6 +17,7 @@ from actuate.cli.migrate import migrate_app
 from actuate.cli.pipeline import canonical_app, package_app
 from actuate.cli.schema_cmd import schema_app
 from actuate.cli.storage import storage_app
+from actuate.cli.viz import viz_app
 
 app = typer.Typer(
     help="Actuate — multimodal capture to VLA-training-ready robot data.",
@@ -28,6 +29,7 @@ app.add_typer(storage_app, name="storage")
 app.add_typer(migrate_app, name="migrate")
 app.add_typer(canonical_app, name="canonical")
 app.add_typer(package_app, name="package")
+app.add_typer(viz_app, name="viz")
 
 
 def _todo(group: str, spec: str) -> typer.Typer:
