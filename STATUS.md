@@ -165,6 +165,40 @@ would be another field addition) — a build integration, not done.
 
 ---
 
+## Phase 3 Part E — L2 FUSION: trust-weighted arbiter + Schmitt-gated states RUN ON REAL DATA
+
+`fusion.run(hands, rig=..., objects=...) -> FusionReport`. Pure pipeline logic (typed state
+machine + NumPy), no model. Module: `fusion/` (`arbiter.py`, `states.py`, `fusion.py`).
+
+**The arbiter** resolves same-channel conflicts by a fixed trust ordering (one place,
+`TRUST_RANK`): measured_robotspace > measured_human > gripper_aperture > vision_primary >
+vision_fallback > approximated. Confidence is a tie-breaker *within* a tier, never across —
+a vision reading at 1.0 never beats a glove at 0.3.
+
+**All four verification conditions met:**
+
+| Gate | Result |
+|---|---|
+| States temporally coherent (no single-frame flickers after Schmitt) | **0 interior flickers** on 60 real frames (Schmitt hysteresis + min-dwell) |
+| Provenance = vision_fallback for grasp on the head-mounted rig | grasp **vision_fallback**, contact **vision_fallback** — no hardware sensor exists, so this is correct |
+| Synthetic-glove test: hardware overrides vision, broken-priority MUST fail | glove (measured_human) beats vision; the **inverted-rank variant flips the outcome and fails the assertion** — demonstrated red |
+| Per-finger contact populated (non-zero, non-NaN) | 600 readings, all finite, 100% non-zero, range 0.001–0.212, **capped ≤ 0.40** (vision can't feel contact) |
+
+**Honest calibration finding:** on session_001 the arbiter emits only STATIC/MOVING — **no
+GRASPED state** — because the hand never power-grasps: the mean-finger-curl signal maxes at
+**0.15** (open/flat hand over paperwork). Thresholds (0.35/0.22) sit above that baseline, so
+firing a GRASPED state here would be fabricating a label. The state machine is *not* stuck — a
+unit test drives a synthetic closed fist and confirms the GRASPED branch fires. Two documented
+limits: the curl metric is a **power-grasp proxy** that under-detects pinch grasps, and vision
+contact is a weak proxy — both reasons grasp/contact are stamped vision_fallback here.
+
+**Verified:** 11 unit tests (trust ordering, tier-beats-confidence, Schmitt hysteresis,
+min-dwell, grasp geometry, the broken-priority demo, and `fusion.run` end-to-end on synthetic
+hands incl. a glove-override) + the 4-condition run on real data. **Not wired:** fusion →
+canonical `interaction_state`/`contact` fields on the frame (a build integration, not Part E).
+
+---
+
 ## Phase 3 Part C — DEPTH: intrinsics FIXED, wrist trajectory STILL NOT RECONSTRUCTABLE
 
 UniDepthV2 metric depth + estimated intrinsics + per-pixel confidence.
