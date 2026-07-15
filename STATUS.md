@@ -12,6 +12,35 @@ on whether it compiles.
 
 ---
 
+## Post-Phase-3 follow-ups (2026-07-16)
+
+**Temporal / video-depth stage — the A/B challenger to UniDepth's noise floor.**
+`perception.depth.run(model=...)` now switches: `auto`/`vitl`/`vits` → UniDepthV2 (default);
+`video_depth_anything` → Video-Depth-Anything (temporal; **Kaggle**); `flow_filter` → an
+optical-flow-warped temporal EMA over any base DepthResult (runs anywhere). All return the same
+`DepthResult`, so downstream is agnostic. The **decision function** is
+`perception.depth.consistency.compare` — the Part C physics test packaged: track static points,
+measure frame-to-frame depth wobble, lower wins. Validated locally: the metric reads **11.2 mm
+on synthetic 2% noise** (matches UniDepth's real ~13 mm), and the flow-filter cuts static-scene
+wobble **66%**. VDA itself is validated on Kaggle (needs the model + T4), same reserve-the-seam
+discipline as the FoundationPose stub. 5 unit tests.
+
+**Objects → canonical `ObjectState` (was unwired).** `build_from_perception(objects=...)` now
+carries the SAM2 **mask** per tracked object into `frame.objects[<track_id>]` with provenance
+`vision_primary`. Pose stays `None` — 6-DoF needs FoundationPose (mesh + bigger GPU), and a
+position-only SE3 would fabricate an orientation. Mask round-trips exactly. 1 unit test.
+
+**Kaggle scaffold (`kaggle/`).** `run_perception.py` runs the full pipeline (SLAM + WiLoR +
+UniDepth + GDINO/SAM2 + fusion) on a T4, writes `.actuate_cache/*.pkl` in the exact format
+`actuate viz --cache` reads (same key scheme), builds the v3 episode + `.rrd`, optionally runs
+the depth A/B, and zips it for download → view locally with **no GPU**. `README.md` has the
+consent warning (upload the capture as a *private* dataset), the model-install cells, and the
+download-then-`--cache` loop. Motivated by the 4 GB card's 86-min SAM2 thrash.
+
+108 unit tests green.
+
+---
+
 ## Phase 3 INTEGRATION GATE — full pipeline end-to-end on the real capture ✅
 
 `hands (WiLoR) → objects (GDINO+SAM2) → slam → depth (UniDepth) → fuse (L2) →
