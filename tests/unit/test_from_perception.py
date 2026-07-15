@@ -74,6 +74,36 @@ def test_build_from_perception_produces_v3_mano_and_53dim_state(tmp_path):
     assert valid.sum() >= n - 1
 
 
+def test_build_from_perception_carries_object_masks(tmp_path):
+    """Objects wire into the canonical frame as ObjectState (mask carried, pose None)."""
+    import numpy as np
+
+    from actuate.perception.objects.objects import ObjectFrame, ObjectResult
+    from actuate.perception.objects.rle import decode_rle, encode_rle
+
+    n = 4
+    mask = np.zeros((48, 64), dtype=bool)
+    mask[10:20, 10:20] = True
+    objects = ObjectResult()
+    for i in range(n):
+        objects.frames[i] = [
+            ObjectFrame(track_id=2, label="document", score=0.9, bbox=(10, 10, 20, 20),
+                        mask_rle=encode_rle(mask))
+        ]
+
+    ep = build_from_perception(
+        _session(tmp_path, n), "c" * 64, hands=_HR(n), objects=objects,
+        rig=RigType.HEAD_MOUNTED, task="t",
+    )
+    obj = ep.frames[0].objects["2"]
+    assert obj.pose is None                                  # 6-DoF not fabricated
+    assert obj.mask.rle is not None
+    assert np.array_equal(decode_rle(obj.mask.rle), mask)    # mask carried exactly
+    from actuate.config import Provenance
+
+    assert ep.frames[0].provenance["objects"] is Provenance.VISION_PRIMARY
+
+
 def test_build_from_perception_does_not_carry_contact_on_a_barehand_rig(tmp_path):
     """The schema forbids contact on a rig that measures none; the wiring must respect it."""
     n = 4

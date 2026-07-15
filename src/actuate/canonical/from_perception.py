@@ -43,6 +43,8 @@ from actuate.schema import (
     HandState,
     ImageRef,
     MANOParams,
+    MaskRef,
+    ObjectState,
     SE3,
 )
 
@@ -65,6 +67,7 @@ def build_from_perception(
     depth=None,                    # DepthResult (UniDepth) -- for metric wrist placement
     fusion=None,                   # FusionReport (L2) -- for interaction_state
     slam=None,                     # SlamResult -- for camera_pose
+    objects=None,                  # ObjectResult (GDINO+SAM2) -- masks per frame
     rig: RigType = RigType.HEAD_MOUNTED,
     task: str | None = None,
     episode_id: str | None = None,
@@ -155,6 +158,19 @@ def build_from_perception(
             istate = states[k]
             provenance["interaction_state"] = Provenance.VISION_FALLBACK
 
+        # Objects: carry the SAM2 MASK per tracked object. Pose stays None -- 6-DoF needs
+        # FoundationPose (a mesh + a bigger GPU), which is stubbed; a position-only pose would
+        # fabricate an orientation the schema's SE3 implies. The mask + object identity per
+        # frame is the honest, real signal (what is being manipulated).
+        obj_states: dict[str, ObjectState] = {}
+        if objects is not None:
+            for o in objects.frames.get(i, []):
+                obj_states[str(o.track_id)] = ObjectState(
+                    mask=MaskRef(rle=o.mask_rle), pose=None
+                )
+            if obj_states:
+                provenance["objects"] = Provenance.VISION_PRIMARY
+
         frames.append(
             CanonicalFrame(
                 t=float(i / fps),
@@ -164,6 +180,7 @@ def build_from_perception(
                 images={cam: ImageRef(uri=video, frame_index=i)},
                 camera_pose=cam_pose,
                 hands=hand_states,
+                objects=obj_states,
                 interaction_state=istate,
                 confidence=confidence,
                 provenance=provenance,
