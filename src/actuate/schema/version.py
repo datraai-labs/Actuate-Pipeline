@@ -23,9 +23,17 @@ from pathlib import Path
 #: v2 (2026-07-14) — content-addressed provenance.
 #:   + CanonicalEpisode.source_content_hash: SHA-256 of the raw capture bytes.
 #:   + capture_id is now defined AS that hash (actuate.ingest.content_address).
-#: Bumped now rather than later on purpose: no exporter has been built against v1 yet, so
-#: the change is free today and expensive the moment one is (Master Spec §3).
-SCHEMA_VERSION = 2
+#: v3 (2026-07-15) — MANO pose widened from 15-PCA to the full 45 axis-angle.
+#:   * MANOParams.theta_pca (15)  ->  MANOParams.theta (45).
+#:   Measured on the real capture with a correct least-squares projection, restricting to the
+#:   top-15 PCA subspace loses a median 10.3 deg / p99 22.5 deg per joint -- material for
+#:   retargeting (§L5), and carrying the full 45 is free and exactly lossless. The schema now
+#:   carries the full 45; a consumer wanting the compressed form projects it down itself. (An
+#:   earlier 31 deg figure came from a transpose-inverse bug on a non-orthonormal basis.)
+#:   RETYPED field, so
+#:   every exporter is re-verified against the load+train gate.
+#:   * observation.state / action gain 45 MANO columns (cols 8-52) -- see canonical.build.
+SCHEMA_VERSION = 3
 
 FROZEN_DIR = Path(__file__).parent / "frozen"
 

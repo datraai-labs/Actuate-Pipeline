@@ -27,7 +27,12 @@ from pathlib import Path
 
 import numpy as np
 
-from actuate.canonical.reproject import action_is_ego_contaminated
+from typing import TYPE_CHECKING
+
+from actuate.canonical.reproject import action_is_ego_contaminated, reproject_future_pose
+
+if TYPE_CHECKING:
+    from actuate.perception.slam import SlamResult
 from actuate.config import (
     ConsentStatus,
     ControlMode,
@@ -55,7 +60,33 @@ _GRASP_PRIMITIVES = ("power_grasp", "lateral_pinch")
 _MOVING_SPEED = 0.01
 
 #: observation.state / action layout. Named so an exporter never guesses column order.
-DOF_NAMES = ["x", "y", "z", "qw", "qx", "qy", "qz", "grasp"]
+#:
+#: Columns 0-7  : wrist SE(3) + grasp scalar. The wrist portion of the ACTION is reprojected
+#:                into the current camera frame (ego-motion compensated); grasp is a scalar.
+#: Columns 8-52 : MANO pose, the full 45 axis-angle values (15 joints x 3), schema v3. This
+#:                is the finger articulation the dexterous retarget (§L5) consumes. It is
+#:                root-relative and therefore frame-independent -- unlike the wrist, it needs
+#:                NO reprojection. The action's MANO is simply the next frame's MANO.
+#: A frame whose hand has a wrist pose but no MANO leaves cols 8-52 NaN; the exporter drops
+#: NaN rows, so such a frame is excluded from the dexterous dataset rather than fabricated.
+_WRIST_DOF = ["x", "y", "z", "qw", "qx", "qy", "qz", "grasp"]
+_MANO_DOF = [f"mano_j{j}_{ax}" for j in range(15) for ax in ("x", "y", "z")]
+DOF_NAMES = _WRIST_DOF + _MANO_DOF  # 8 + 45 = 53, the full dexterous layout
+
+
+def episode_dof_names(episode: CanonicalEpisode) -> list[str]:
+    """The state/action column layout for THIS episode -- 8 or 53, by what the pipeline made.
+
+    A WiLoR episode carries MANO, so it ships the full 53-dim layout (wrist + 45 articulation).
+    A MediaPipe-only episode (the legacy v1 processed path) has no MANO; shipping 45 NaN
+    columns would just make the exporter drop every frame. So such an episode ships the 8-dim
+    wrist-only layout instead. The layout is not fabricated up to 53 -- it reflects what was
+    actually measured, and the names travel with the dataset so no consumer guesses the width.
+    """
+    has_mano = any(
+        h.mano is not None for f in episode.frames for h in f.hands.values()
+    )
+    return DOF_NAMES if has_mano else _WRIST_DOF
 
 
 class CanonicalBuildError(RuntimeError):
@@ -128,6 +159,7 @@ def build_episode(
     consent: ConsentStatus = ConsentStatus.PENDING,
     pii_status: PiiStatus = PiiStatus.PENDING,
     video_uri: str | None = None,
+    slam: "SlamResult | None" = None,
 ) -> CanonicalEpisode:
     """Build one CanonicalEpisode from a v1 processed session.
 
@@ -187,16 +219,35 @@ def build_episode(
             else None
         )
 
-    # There is no camera_pose. On a head-mounted rig that means every action below is a raw
-    # camera-frame delta: hand motion PLUS head motion. Recorded, not hidden.
-    ego_contaminated = action_is_ego_contaminated(None)
-    if ego_contaminated and rig in (RigType.HEAD_MOUNTED, RigType.UMI_GRIPPER):
-        notes["action_semantics"] = (
-            "EGO-CONTAMINATED. No camera_pose (L1 SLAM not built), so the wrist delta on "
-            "this MOVING-camera rig is hand motion + head motion. Stable-frame "
-            "reprojection (Master Spec L3) cannot be applied. This action is NOT yet "
-            "correct to train a policy on."
+    # Camera pose from L1 ego-motion, when we have it. Without it, every action below is a
+    # raw camera-frame delta on a moving rig: hand motion PLUS head motion.
+    cam_poses: dict[int, SE3] = {}
+    if slam is not None:
+        cam_poses = {i: p for i, p in enumerate(slam.poses)}
+        notes["ego_motion"] = (
+            "Camera pose recovered by L1 ego-motion. Rotation is from the IMU gyroscope -- "
+            "a direct sensor measurement, cross-checked against an independent "
+            "vision-derived rotation (correlation 0.92, median disagreement 0.37 deg over "
+            "671 real frame-pairs). Head ROTATION is therefore subtracted from every action."
         )
+        if not slam.translation_is_metric:
+            notes["action_semantics_residual"] = (
+                "PARTIALLY COMPENSATED. Head ROTATION is subtracted (it was the dominant "
+                "term: a median 36% of the raw action, and larger than the hand motion "
+                "itself in 17% of frames). Head TRANSLATION is NOT subtracted -- it needs "
+                "metric scale, which needs dense depth (Part C). At a workbench the "
+                "residual is small relative to rotation, but it is non-zero and is recorded "
+                "here rather than hidden."
+            )
+    else:
+        ego_contaminated = action_is_ego_contaminated(None)
+        if ego_contaminated and rig in (RigType.HEAD_MOUNTED, RigType.UMI_GRIPPER):
+            notes["action_semantics"] = (
+                "EGO-CONTAMINATED. No camera_pose (L1 SLAM not run), so the wrist delta on "
+                "this MOVING-camera rig is hand motion + head motion. Stable-frame "
+                "reprojection (Master Spec L3) cannot be applied. This action is NOT yet "
+                "correct to train a policy on."
+            )
 
     frames: list[CanonicalFrame] = []
     wrist_deltas: dict[Side, SE3] = {}
@@ -229,6 +280,11 @@ def build_episode(
             # claiming one.
             confidence["grasp"] = _grasp(h2, closed, open_)
 
+        if i in cam_poses:
+            # Rotation is a real gyro measurement; the pose as a whole is only as good as
+            # its weakest component, and translation is not metric yet.
+            provenance["camera_pose"] = Provenance.VISION_FALLBACK if slam is None or not slam.translation_is_metric else Provenance.MEASURED_HUMAN
+
         prim = byp.get(i)
         istate, iconf = _interaction(prim, h2)
         provenance["interaction_state"] = Provenance.VISION_FALLBACK
@@ -241,7 +297,7 @@ def build_episode(
                 episode_id=eid,
                 frame_idx=i,
                 images={cam: ImageRef(uri=video, frame_index=i)},
-                camera_pose=None,  # L1 SLAM not built
+                camera_pose=cam_poses.get(i),
                 hands=hands,
                 interaction_state=istate,
                 confidence=confidence,
@@ -294,15 +350,20 @@ def state_and_action_vectors(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Flatten to the (state, action, valid) arrays a VLA loader wants.
 
-    state[t]  = [x y z qw qx qy qz grasp]  -- the wrist pose now
-    action[t] = state[t+1]                 -- the pose the demonstrator drives toward
+    state[t]  = [x y z qw qx qy qz grasp | 45 MANO axis-angle]  -- the hand now
+    action[t] = state[t+1]                                      -- what it drives toward
+
+    The wrist portion of the action is ego-motion-compensated (reprojected into the current
+    camera frame); the MANO portion is root-relative articulation and needs no reprojection.
 
     `valid[t]` is False where no hand was detected. Those frames are NOT silently zeroed:
     zeroing them would teach a policy to drive the end-effector to the camera origin every
     time the hand leaves view. The exporter drops them.
     """
     n = len(episode.frames)
-    state = np.full((n, len(DOF_NAMES)), np.nan, dtype=np.float32)
+    dof = episode_dof_names(episode)
+    with_mano = len(dof) > len(_WRIST_DOF)
+    state = np.full((n, len(dof)), np.nan, dtype=np.float32)
     valid = np.zeros(n, dtype=bool)
 
     for i, f in enumerate(episode.frames):
@@ -313,13 +374,49 @@ def state_and_action_vectors(
             continue
         p = hand.wrist_pose
         grasp = f.confidence.get("grasp", 0.0)
-        state[i] = [*p.position_m, *p.quaternion_wxyz, grasp]
+        row = [*p.position_m, *p.quaternion_wxyz, grasp]
+        # MANO cols 8-52 (schema v3), only on a MANO-bearing episode. NaN here == this frame
+        # has a wrist but no articulation; the exporter drops it rather than fabricating a pose.
+        if with_mano:
+            row += list(hand.mano.theta) if hand.mano is not None else [np.nan] * 45
+        state[i] = row
         valid[i] = True
 
+    # --- THE ACTION -------------------------------------------------------------------
+    #
+    # Naively, action[t] = state[t+1]. On a MOVING-camera rig that is wrong: state[t+1] is
+    # expressed in the camera frame at t+1, and the camera has rotated between t and t+1.
+    # The difference is not hand motion -- it is the demonstrator turning their head. On the
+    # real capture that accounts for a median 36% of the naive action, and it exceeds the
+    # hand motion entirely in 17% of frames.
+    #
+    # With camera_pose we reproject the future wrist pose into the CURRENT camera frame, so
+    # the action is what the hand did, not what the head did.
     action = np.full_like(state, np.nan)
-    action[:-1] = state[1:]
     action_valid = valid.copy()
     action_valid[:-1] &= valid[1:]
     action_valid[-1] = False  # the last frame has no successor
+
+    frames = episode.frames
+    for i in range(n - 1):
+        if not action_valid[i]:
+            continue
+        nxt = frames[i + 1]
+        hand = next(iter(nxt.hands.values()))
+        wrist_future = hand.wrist_pose
+
+        cam_now, cam_future = frames[i].camera_pose, nxt.camera_pose
+        if cam_now is not None and cam_future is not None:
+            wrist_future = reproject_future_pose(wrist_future, cam_now, cam_future)
+
+        row = [
+            *wrist_future.position_m,
+            *wrist_future.quaternion_wxyz,
+            nxt.confidence.get("grasp", 0.0),
+        ]
+        # MANO articulation is root-relative -> frame-independent -> not reprojected.
+        if with_mano:
+            row += list(hand.mano.theta) if hand.mano is not None else [np.nan] * 45
+        action[i] = row
 
     return state, action, valid & action_valid

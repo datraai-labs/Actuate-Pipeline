@@ -7,8 +7,253 @@ a status."*
 Graded **tested-against-real-data** / **unit-only** / **written-only**. Nothing is graded
 on whether it compiles.
 
-**Increment 2 complete (Parts A, B, C).** 2026-07-14 · `schema_version = 2` ·
-**493 passed, 0 skipped, 0 failed** · import-linter 2/2 · schema frozen · ruff clean
+**Phase 3 in progress (Parts A, B done — both stopped for review).** 2026-07-15
+**Increment 2 complete.** `schema_version = 2` · **493 passed** · import-linter 2/2 · ruff clean
+
+---
+
+## 🔴 LAUNCH BLOCKER — MANO / WiLoR are NON-COMMERCIAL
+
+**WiLoR is CC-BY-NC-4.0. MANO is a Max Planck model licensed for non-commercial use.**
+Actuate sells datasets. HaMeR — the spec's designated fallback — is also MANO-based, so it
+inherits the identical constraint and solves nothing.
+
+This does **not** stop at "which model we run internally". Master Spec §3 makes **MANO the
+intermediate**, and §L5's Stage-I *delivered* target is *"retargeted joints on a canonical
+reference hand"* — **derived from MANO**. So the licence follows the parameters into the
+**delivered dataset** and into all of Phase 4.
+
+Cleared for **INTERNAL RESEARCH ONLY**. **A commercial licence from MPI is required before
+any MANO-derived data reaches a customer.** Not a code problem; do not let it surface late.
+
+---
+
+## Phase 3 Part A — SLAM ego-motion: BUILT, real-data gate DEFERRED
+
+`perception.slam` — swappable backend, VIO built (gyro rotation + vision), `orb_slam3`
+registered and honestly unimplemented (no pip dist, no C++ toolchain; it also solves a
+harder problem than reprojection needs — relative pose over ≤0.5 s, never a global map).
+Wired into `canonical build` → reprojection. 2850 frames in ~40 s on CPU.
+
+**Its gate could not pass, and the reason is the finding of this phase:**
+
+```
+implied hand speed  : median 1.08 m/s   p99 32.4 m/s (= 115 km/h)
+velocity direction  : reverses 49% of frames, coherence cos +0.046
+corr(action, head rotation) : +0.022        <- essentially ZERO
+```
+
+**The v1 3D wrist trajectory is white noise.** Ego-motion is real but buried under a noise
+floor many times larger — you cannot measure a 13 mm correction inside a 274 mm error.
+
+Attribution is unambiguous:
+
+| Source | Evidence | Verdict |
+|---|---|---|
+| MediaPipe **2D** | cos **+0.905**, 19% reversals, 9.4 px | **Smooth. Not the problem.** |
+| **Depth lift** (Depth-Anything-V2, conf 0.6) | wrist depth jumps **28 mm median / 274 mm p99 per frame** | **This is the noise.** |
+
+**Two errors of mine, recorded so they aren't repeated:**
+1. I first reported "36% of the action is head motion". That was a *magnitude bound*, not a
+   demonstration. The correlation test says otherwise.
+2. My gyro-vs-vision cross-check (r=0.92) compared rotation **magnitudes** — and `|R|` is
+   frame-invariant, so it was **structurally blind** to the bug that was present: the IMU
+   and camera axes are misaligned (agreement 0.618; extrinsic −6°/−39°/−51°). **A gate that
+   cannot fail on the bug in front of it is not a gate.**
+
+**Ego-motion is not the blocker. Depth is.** Part A's real-data gate resumes after C.
+
+## Phase 3 Part B — WiLoR → MANO: RUNS ON REAL DATA (depth still broken)
+
+| Check | Result |
+|---|---|
+| **VRAM on RTX 2050 (4.29 GB)** | **fits**: 1.50 GB weights (fp16), **2.44 GB peak, 1.85 GB headroom**. fp32 would not fit. |
+| Throughput | 220 ms/frame → **full 2850-frame capture in ~10 min** |
+| MANO params on real frames | populated, **no NaN**, betas max 2.68 (non-exploding) |
+| Biomechanical plausibility | median 29°/joint, max 109°, **zero joints beyond 180°** |
+| 2D keypoint jitter | **2.8 px/frame** vs MediaPipe's 9.4 px — **3.4× better** |
+| Articulation (root-relative) | 3.7 mm/frame — plausible |
+| **Root DEPTH** | ❌ **still broken: 20.7 mm/frame** vs **0.1 mm laterally** |
+
+**Why depth is still broken, and why it is not a bug:** WiLoR solves a *weak-perspective*
+camera against the hand's bbox, so `depth ≈ focal/(scale·bbox)`. The detector re-runs every
+frame with no tracking, the box breathes ~6.8%, and depth breathes with it (corr −0.31). It
+**infers depth from apparent size; it does not measure it.** Its `scaled_focal_length` of
+37500 px is not a lens — it is HaMeR's *virtual* focal (5000 × img/256). Rescaling by a real
+focal recovers a plausible **1.03 m** hand depth, so **the placement of the hand depends
+entirely on a focal length we do not have.**
+
+**Same root cause as v1, different model.** Depth-Anything: 28 mm/frame. WiLoR
+weak-perspective: 20.7 mm/frame. **Parts B and C are not independent** — B gives an
+excellent 2D hand and articulation; **C must supply the metric depth and the true
+intrinsics** to place it.
+
+### ✅ Schema v2 → v3 DONE — MANO widened to the full 45 axis-angle
+
+v2 stored MANO pose as **15-PCA**. Projecting WiLoR's native **45** axis-angle onto the top-15
+PCA subspace (correct least-squares projection — the components are **not** orthonormal, so an
+earlier transpose-inverse over-reported the loss as 31°) costs **median 10.3° / p90 17.3° /
+p99 22.5°** per joint on **real** poses — material for retargeting where contact placement is
+the whole point (§L5), and carrying the full 45 is free and exactly lossless. So (approved,
+then implemented):
+
+- `MANOParams.theta_pca` (15) → **`MANOParams.theta` (45)**; `SCHEMA_VERSION` **2 → 3**; frozen
+  `canonical_v3.schema.json` regenerated; `test_schema_version_is_three` asserts it.
+- `io/store.py` dense MANO array widened 15 → 45.
+- **LeRobot exporter now emits the full 45 in `observation.state` and `action`** (cols 8–52),
+  via an **adaptive DOF layout**: a MANO-bearing episode ships **53-dim** (wrist + 45); a
+  MediaPipe-only episode ships **8-dim** (wrist only), because fabricating 45 NaN/neutral
+  columns would be a false claim and would make the exporter drop every frame. The layout
+  reflects what the pipeline measured; names travel with the dataset. `episode_dof_names()`.
+- MANO articulation is root-relative, so the action's MANO is the next frame's MANO **without**
+  ego-motion reprojection (only the wrist is reprojected).
+
+**Verified:** 69 unit tests + 9 LeRobot structural gate tests on the real capture pass;
+adaptive 8/53 layout confirmed synthetically. **Not yet verified:** the 53-dim path through
+LeRobot's own writer+loader on a *real WiLoR-built* episode — WiLoR→`build_episode` wiring does
+not exist yet (a Part B/C→canonical integration, still pending). **Migration:** no persisted v2
+canonical outputs exist (disk empty; S3 empty per Part B) — the migrate step is a genuine no-op,
+so no speculative migrator was written (nothing to verify it against).
+
+---
+
+## Phase 3 Part D — OBJECTS: detection + segmentation + tracking RUN ON REAL DATA; 6-DoF stubbed
+
+`perception.objects.run(store, prompts)` — Grounding DINO (open-vocab boxes) + SAM2 (temporal
+mask propagation) + IoU tracking + metric position via Part C depth. Module:
+`perception/objects/` (`objects.py`, `rle.py`, `foundationpose.py`). All three GPU models are
+TINY and run sequentially, never co-resident:
+
+| model | VRAM | role |
+|---|---|---|
+| grounding-dino-tiny | ~0.7 GB | text-prompted detection (once per chunk) |
+| sam2-hiera-tiny | ~0.2 GB | mask propagation across the chunk |
+| UniDepthV2 (Part C) | 3.64 GB | metric position back-projection (own pass) |
+
+**All three verification gates PASS on the real capture (45 frames):**
+
+| Gate | Result |
+|---|---|
+| ≥1 object detected & tracked across frames | **6 tracks** (documents + hands), each persisting all 45 frames |
+| SAM2 masks temporally consistent (adjacent IoU > 0.7) | longest track median **IoU 0.937**, 95% of pairs > 0.7 — locked on, not flickering |
+| Positions back-projected via Part C depth are plausible | 270 detections, median depth **0.73 m** (matches Part C's 0.76 m scene depth) |
+
+Fixed during the gate: two GDINO boxes over one object were both associated to the same
+track_id and both propagated (track 2 showed 90 masks over 45 frames). Association now lets each
+existing track be claimed by at most one detection per chunk (highest score first); re-verified
+every track is 1 mask/frame.
+
+**6-DoF pose (FoundationPose) is an INTERFACE STUB, for two honest reasons:**
+1. It needs a **CAD mesh** — the capture shows paperwork/stapler, for which we have none, so
+   there is no geometry to estimate orientation against. Only 3D *position* is recoverable
+   (mask centroid + metric depth), which is what the module emits.
+2. It needs **nvdiffrast + >8 GB VRAM** for its render-and-compare loop; the RTX 2050 (4.29 GB)
+   OOMs. Flagged for T4/A100. The interface (`FoundationPoseEstimator.estimate`) is reserved
+   and raises `FoundationPoseUnavailable` naming the gap; a synthetic smoke test exercises the
+   contract shape.
+
+Provenance stamps: `objects.bbox`/`objects.mask` = vision_primary; `objects.position` =
+vision_fallback (inherits depth's weakness); `objects.pose_6dof` = approximated/not-produced.
+
+**Verified:** 10 unit tests (RLE bit-exact incl. a broken-row-major-decoder demo, IoU,
+FoundationPose stub) + the 3-gate run on real data. **Caveat (same as v1):** detection
+*accuracy* is not validated against human-annotated ground truth — only that the models load,
+run, and produce plausible, temporally-consistent output. "document" and "hand" are what GDINO
+returned for the desk scene; whether every mask is semantically correct is unverified.
+**Not wired:** objects → canonical `ObjectState` (schema carries pose+mask only; bbox/confidence
+would be another field addition) — a build integration, not done.
+
+---
+
+## Phase 3 Part C — DEPTH: intrinsics FIXED, wrist trajectory STILL NOT RECONSTRUCTABLE
+
+UniDepthV2 metric depth + estimated intrinsics + per-pixel confidence.
+Module: `perception/depth/unidepth.py`. Ran on the real capture, 300 frames.
+
+| Check | Result |
+|---|---|
+| **VRAM on RTX 2050 (4.29 GB)** | ViT-L (vitl14) **fits**: 1.46 GB weights (fp16), **3.64 GB peak, 0.65 GB headroom**. fp32 does not fit. ViT-S is the fallback. |
+| Throughput | **0.62 s/frame** (EdgeGuidedLocalSSI runs un-CUDA-optimised on Windows; the compile step needs Linux) |
+| Metric depth plausibility | scene median **0.76 m**, full range 0.31–2.22 m — plausible for a head-cam over a bench |
+| Estimated intrinsics | **fx≈660** (per-frame median, std 19), cx/cy at image centre → **~111° HFOV** |
+| Confidence | present, non-uniform (**not** normalised to [0,1]; ranges ~0.5–98) |
+
+### ✅ The intrinsics were the hidden bug — and real intrinsics fix the SLAM rotation
+
+Our assumed 82° HFOV gave **fx=1104**; UniDepthV2 measures **fx≈660** — **~1.7× too large.**
+Re-running the essential-matrix rotation against the gyro at both focals:
+
+| | n valid frames | median inliers | median \|R_vis\|/\|R_gyro\| |
+|---|---|---|---|
+| GUESSED fx=1104 | 7 | 34 | **1.24** (24% too large) |
+| UNIDEPTH fx=660 | 15 | 53 | **1.00** (exact) |
+
+A wrong focal *scales* the recovered rotation; the real focal makes vision and gyro agree to
+1.00. This confirms the Part A hypothesis: the guessed `K` corrupted `recoverPose`.
+(Caveat: only 15/300 frames yield a valid essential matrix — a close-range bench scene with a
+moving hand has little parallax-rich static structure. Sparse, not wrong.)
+
+### ❌ The Part C premise FAILED: real depth does NOT fix the wrist z-jitter
+
+Placing the wrist by sampling UniDepth at the WiLoR wrist keypoint (confidence-weighted
+median over a 7×7 patch), back-projected with the real `K`:
+
+```
+                          x       y      z (mm/frame)
+WiLoR bbox pseudo-depth   0.1     0.1    10.7
+UniDepth measured depth   5.6     9.0    13.4     <- z got 25% WORSE
+```
+
+Real metric depth did not fix the trajectory — it is still white noise. Two hard measurements:
+
+- **Static-point test (physics, not another estimate):** 281 background points tracked across
+  all frames — their depth *cannot* change, yet UniDepth's reading of them wobbles **2.14%
+  frame-to-frame, 10% full swing (0.76→0.85 m)**. That is ~13 mm of pure model noise at the
+  hand's 0.58 m, and it sits **above** the real per-frame hand motion (1.7–10 mm).
+- **Horizon sweep (k = 1…64 frames):** coherence stays at chance at *every* horizon,
+  including the 16-frame / 0.53 s action chunk (raw cos −0.31, scale-normalised −0.01), and
+  per-second speed decays toward zero — the signature of a random walk with no net drift.
+  Aggregating over the action chunk does **not** recover coherent motion.
+
+Dividing out the global scale error (measured from the static points) barely helps
+(z 13.4→10.0 mm, coherence still chance): the residual is **local** depth error at a small,
+moving, articulated object, not a global scale term background-anchoring could cancel.
+
+### Chosen fix — fit the hand cloud + smooth (`solve_root_depth` / `smooth_root_depth`)
+
+Instead of one wrist pixel, solve **one root depth per frame from all 21 keypoints**: each
+keypoint i predicts the wrist depth as `D(kp_i) − dz_i` (WiLoR's trusted root-relative depth
+offset), robust-averaged confidence-weighted. Then temporally low-pass the root depth. Result
+on the real capture:
+
+```
+                                   z-jit    cos(k=1)  rev   |  cos(k=16, action chunk)
+wrist-pixel sampling (rejected)    13.4 mm   +0.03    49%   |     -0.31   (chance)
+21-keypoint fit, per-frame         16.1 mm   -0.17    53%   |       —
+21-keypoint fit + temporal smooth  11.3 mm   +0.75    20%   |     -0.16   (still chance)
+```
+
+The fit+smooth path is a **real, measured improvement** — the first version that is coherent
+at short scale (cos +0.75 at k=1) with a plausible 0.14 m/s speed, and lower z-jitter. **But
+it does not fully reconstruct the action-chunk trajectory:** coherence decays with horizon
+(0.75 → 0.50 → 0.20 → −0.16 at k=16), and the decaying shape is partly the smoothing kernel
+manufacturing short-range autocorrelation. At the 0.53 s action-chunk horizon the trajectory
+is still at chance.
+
+**Conclusion.** Real intrinsics + real metric depth were *necessary* (they fix the SLAM
+rotation and the hand's absolute placement) but are **not sufficient** to reconstruct the
+wrist *trajectory* on a monocular bare-hand rig. The binding floor is UniDepthV2's ~13 mm
+single-image depth noise at the hand (measured against static points), which exceeds the real
+per-frame hand motion; the hand-cloud fit + smoothing takes it as far as monocular allows and
+no further. WiLoR's hand remains excellent laterally and in articulation (0.1 mm x/y). The
+honest position for delivery: **metric wrist *translation* is not trustworthy from this rig**
+— stamp it VISION_FALLBACK and lean on the measured-robotspace rigs (DexUMI) for that channel;
+articulation and 2D are trustworthy. Solver is implemented and folded into the module; the
+open item is whether a stereo/temporal-consistent depth model (FoundationStereo, or a
+multi-frame monocular method) could push below the noise floor — deferred, not attempted.
+
+Also corrected here: an earlier note claimed fx=551 (a single-frame reading) and confidence in
+[0,1] — both wrong; the 90-frame median fx is 660 and confidence is unbounded. Module docstrings fixed.
 
 ---
 

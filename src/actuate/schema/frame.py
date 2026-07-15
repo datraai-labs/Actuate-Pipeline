@@ -4,7 +4,7 @@
     rig, episode_id, frame_idx                                 L0
     images.<cam>             ref to chunked MP4                L0
     camera_pose              SE(3), world frame                L1 SLAM/MPS
-    hand.<L|R>.mano          MANO params (beta fixed, theta 15-PCA)   L1 WiLoR
+    hand.<L|R>.mano          MANO params (beta fixed, theta 45 axis-angle)  L1 WiLoR
     hand.<L|R>.keypoints_3d  21x3, camera frame                L1
     hand.<L|R>.wrist_pose    SE(3), camera frame               L1
     finger_joints_human      per-finger joint angles           L2 glove / L1 vision
@@ -113,16 +113,31 @@ class MaskRef(_Base):
 
 
 class MANOParams(_Base):
-    """beta fixed (shape), theta 15-PCA (pose). From WiLoR (L1).
+    """beta fixed (shape), theta FULL 45 axis-angle (pose). From WiLoR (L1).
 
     Master Spec is explicit that MANO is the *intermediate*: the delivered Stage-I
     pretraining target is relative-SE(3) wrist + retargeted joints on a canonical
     reference hand. Carrying MANO here is what makes that retarget possible later; it is
     not itself the action.
+
+    ### Why 45 axis-angle, not 15-PCA (schema_version 3)
+
+    v2 stored `theta_pca` — MANO's first 15 PCA components. Measured on the real capture with
+    a correct least-squares projection (the components are NOT orthonormal, so a transpose
+    inverse is wrong — see perception.hands.to_theta_pca), projecting WiLoR's native 45
+    axis-angle down to the top-15 subspace loses a **median 10.3 deg / p90 17.3 deg / p99
+    22.5 deg** of per-joint angle. That is material for retargeting, where contact placement
+    is the whole point (§L5): a p99 of 22 deg on a finger joint moves a fingertip centimetres,
+    and carrying the full 45 is free and exactly lossless. So the schema carries all **45**
+    axis-angle values (15
+    joints x 3). A consumer that wants the compressed form can project 45 -> N itself
+    (`perception.hands.to_theta_pca`); the schema refuses to throw away information it can't
+    get back. This widening is why v2 -> v3 is a version bump, not a silent change.
     """
 
     betas: tuple[float, ...] = Field(min_length=10, max_length=10)
-    theta_pca: tuple[float, ...] = Field(min_length=15, max_length=15)
+    #: 45 axis-angle values = 15 hand joints x 3. WiLoR's native output. NOT PCA.
+    theta: tuple[float, ...] = Field(min_length=45, max_length=45)
     global_orient: tuple[float, float, float]
 
 

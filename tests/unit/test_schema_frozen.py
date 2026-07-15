@@ -45,14 +45,15 @@ REQUIRED_FRAME_FIELDS = (
 )
 
 
-def test_schema_version_is_two():
-    """v2 = content-addressed provenance (`source_content_hash`, capture_id == the hash).
+def test_schema_version_is_three():
+    """v3 = MANO widened to the full 45 axis-angle (was 15-PCA).
 
-    Bumped from 1 during Increment 2 Part B. This assertion failing is the freeze mechanism
-    working: a schema change that forgets to bump the version cannot pass, and a version
-    bump that forgets to re-freeze the JSON Schema cannot pass either.
+    Bumped from 2 during Phase 3 (the 15-PCA round-trip lost a median 31 deg/joint). This
+    assertion failing is the freeze mechanism working: a schema change that forgets to bump
+    the version cannot pass, and a version bump that forgets to re-freeze the JSON Schema
+    cannot pass either.
     """
-    assert SCHEMA_VERSION == 2
+    assert SCHEMA_VERSION == 3
 
 
 def test_frozen_schema_exists():

@@ -16,6 +16,7 @@ from actuate.canonical.build import (
     DOF_NAMES,
     CanonicalBuildError,
     build_episode,
+    episode_dof_names,
     state_and_action_vectors,
 )
 from actuate.canonical.reproject import (
@@ -31,6 +32,7 @@ __all__ = [
     "EgoMotionUnavailable",
     "action_is_ego_contaminated",
     "build_episode",
+    "episode_dof_names",
     "relative",
     "reproject_future_pose",
     "state_and_action_vectors",
