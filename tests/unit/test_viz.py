@@ -148,6 +148,43 @@ def test_log_episode_writes_every_modality_to_a_real_rrd(tmp_path):
     assert out.exists() and out.stat().st_size > 1000
 
 
+def test_stage_cache_runs_on_miss_loads_on_hit_reruns_on_change(tmp_path):
+    """The `actuate viz --cache` behaviour: never re-run a stage whose inputs are unchanged."""
+    from actuate.cli.viz import _stage_cached
+
+    calls = {"n": 0}
+
+    def run_fn():
+        calls["n"] += 1
+        return {"v": calls["n"]}
+
+    # no --cache -> always runs
+    _, src = _stage_cached(tmp_path, "depth", "n=20", use_cache=False, force=False, run_fn=run_fn)
+    assert src == "ran" and calls["n"] == 1
+
+    # first --cache -> miss -> runs + writes
+    _, src = _stage_cached(tmp_path, "depth", "n=20", use_cache=True, force=False, run_fn=run_fn)
+    assert src == "ran" and calls["n"] == 2
+
+    # same key -> hit -> loads, does NOT run; returns the cached value
+    r, src = _stage_cached(tmp_path, "depth", "n=20", use_cache=True, force=False, run_fn=run_fn)
+    assert src == "cache" and calls["n"] == 2 and r["v"] == 2
+
+    # changed input (different frame count) -> miss -> runs
+    _, src = _stage_cached(tmp_path, "depth", "n=40", use_cache=True, force=False, run_fn=run_fn)
+    assert src == "ran" and calls["n"] == 3
+
+    # --force -> re-runs even on a hit
+    _, src = _stage_cached(tmp_path, "depth", "n=20", use_cache=True, force=True, run_fn=run_fn)
+    assert src == "ran" and calls["n"] == 4
+
+    # a corrupt cache file falls through to a re-run rather than crashing
+    for bad in (tmp_path / ".actuate_cache").glob("depth_*.pkl"):
+        bad.write_bytes(b"not a pickle")
+    _, src = _stage_cached(tmp_path, "depth", "n=20", use_cache=True, force=False, run_fn=run_fn)
+    assert src == "ran"
+
+
 def test_log_episode_places_hand_at_metric_depth_not_at_origin(tmp_path):
     """The hand root must land near the depth plane (~0.6 m), not at the camera origin --
     this is the 'not floating' requirement, checked numerically on the placement math."""

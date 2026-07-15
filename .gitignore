@@ -92,3 +92,6 @@ infra/cdk.context.json
 
 # Rerun recordings — large binary viz artifacts, never commit
 *.rrd
+
+# Perception cache for `actuate viz --cache` (pickled stage outputs; large, per-session)
+.actuate_cache/
