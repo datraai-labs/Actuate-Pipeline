@@ -41,7 +41,7 @@ REAL = REPO / "processed" / "session_001"
 KP = tuple((i * 1e-3 + 1e-9, -i * 2e-3, 1.0 + i * 1e-7) for i in range(21))
 MANO = MANOParams(
     betas=tuple(0.1 * i for i in range(10)),
-    theta_pca=tuple(0.01 * i for i in range(15)),
+    theta=tuple(0.01 * i for i in range(45)),  # schema v3: full 45 axis-angle
     global_orient=(0.1, 0.2, 0.3),
 )
 

@@ -37,7 +37,7 @@ from pathlib import Path
 
 import numpy as np
 
-from actuate.canonical.build import DOF_NAMES, state_and_action_vectors
+from actuate.canonical.build import episode_dof_names, state_and_action_vectors
 from actuate.config import Tier
 from actuate.schema import CanonicalEpisode, FieldStats, NormStats
 
@@ -156,6 +156,7 @@ def export_lerobot_v3(
         )
 
     state, action, valid = state_and_action_vectors(episode)
+    dof_names = episode_dof_names(episode)  # 8 (wrist-only) or 53 (wrist + full MANO)
     n_total = len(state)
     keep = np.flatnonzero(valid)
     if keep.size == 0:
@@ -191,13 +192,13 @@ def export_lerobot_v3(
         },
         "observation.state": {
             "dtype": "float32",
-            "shape": (len(DOF_NAMES),),
-            "names": DOF_NAMES,
+            "shape": (len(dof_names),),
+            "names": dof_names,
         },
         "action": {
             "dtype": "float32",
-            "shape": (len(DOF_NAMES),),
-            "names": DOF_NAMES,
+            "shape": (len(dof_names),),
+            "names": dof_names,
         },
     }
 

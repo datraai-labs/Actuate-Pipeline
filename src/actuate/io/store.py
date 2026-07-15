@@ -182,7 +182,7 @@ def _dense_arrays(frames: tuple[CanonicalFrame, ...]) -> dict[str, np.ndarray]:
     n = len(frames)
     kp = np.full((n, 2, 21, 3), np.nan, dtype=np.float64)
     betas = np.full((n, 2, 10), np.nan, dtype=np.float64)
-    theta = np.full((n, 2, 15), np.nan, dtype=np.float64)
+    theta = np.full((n, 2, 45), np.nan, dtype=np.float64)  # schema v3: full 45 axis-angle
     orient = np.full((n, 2, 3), np.nan, dtype=np.float64)
 
     for i, f in enumerate(frames):
@@ -194,7 +194,7 @@ def _dense_arrays(frames: tuple[CanonicalFrame, ...]) -> dict[str, np.ndarray]:
                 kp[i, j] = np.asarray(hand.keypoints_3d, dtype=np.float64)
             if hand.mano is not None:
                 betas[i, j] = np.asarray(hand.mano.betas, dtype=np.float64)
-                theta[i, j] = np.asarray(hand.mano.theta_pca, dtype=np.float64)
+                theta[i, j] = np.asarray(hand.mano.theta, dtype=np.float64)
                 orient[i, j] = np.asarray(hand.mano.global_orient, dtype=np.float64)
 
     return {"keypoints_3d": kp, "mano_betas": betas, "mano_theta": theta, "mano_orient": orient}
@@ -247,7 +247,7 @@ def _hand_from(
     return HandState(
         mano=(
             MANOParams(
-                betas=tuple(betas), theta_pca=tuple(theta), global_orient=tuple(orient)
+                betas=tuple(betas), theta=tuple(theta), global_orient=tuple(orient)
             )
             if has_mano
             else None
