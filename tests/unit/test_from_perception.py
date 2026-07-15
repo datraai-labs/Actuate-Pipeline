@@ -1,0 +1,94 @@
+"""The L1/L2 -> L3 wiring (build_from_perception) and the root-depth smoothing boundary fix.
+
+build_from_perception is what makes the schema-v3 MANO reach the LeRobot exporter, so it gets a
+test that the episode is v3, carries the full 45-component MANO, produces the 53-dim state, and
+places the wrist at metric depth. The smoothing test pins the boundary-frame bug that would
+otherwise make the first/last frames' wrist depth read too shallow.
+"""
+
+from __future__ import annotations
+
+import json
+
+import numpy as np
+
+from actuate.canonical import (
+    build_from_perception,
+    episode_dof_names,
+    state_and_action_vectors,
+)
+from actuate.config import RigType, Side
+from actuate.perception.depth import smooth_root_depth
+from actuate.perception.depth.unidepth import DepthFrame, DepthResult
+
+
+class _HF:
+    def __init__(self, i: int):
+        self.side = Side.RIGHT
+        self.betas = np.zeros(10)
+        self.hand_pose = np.full(45, 0.1)          # 45 axis-angle
+        self.global_orient = np.array([0.1, 0.2, 0.3])
+        kp = np.zeros((21, 3))
+        kp[:, 0] = np.linspace(0, 0.1, 21)
+        kp[:, 1] = 0.01 * i
+        self.keypoints_3d = kp
+        self.keypoints_2d = np.tile([32.0, 24.0], (21, 1))
+
+
+class _HR:
+    def __init__(self, n):
+        self.frames = {i: [_HF(i)] for i in range(n)}
+
+
+def _session(tmp_path, n):
+    (tmp_path / "session_meta.json").write_text(
+        json.dumps({"session_id": "syn", "fps_nominal": 30, "frame_count": n})
+    )
+    return tmp_path
+
+
+def test_build_from_perception_produces_v3_mano_and_53dim_state(tmp_path):
+    n, H, W = 8, 48, 64
+    K = np.array([[50, 0, W / 2], [0, 50, H / 2], [0, 0, 1]], dtype=np.float64)
+    depth = DepthResult(intrinsics=K)
+    for i in range(n):
+        depth.frames[i] = DepthFrame(
+            depth_m=np.full((H, W), 0.6), confidence=np.ones((H, W)), intrinsics=K
+        )
+
+    ep = build_from_perception(
+        _session(tmp_path, n), "a" * 64, hands=_HR(n), depth=depth,
+        rig=RigType.HEAD_MOUNTED, task="synthetic",
+    )
+
+    assert ep.schema_version == 3
+    hand = next(iter(ep.frames[0].hands.values()))
+    assert len(hand.mano.theta) == 45                       # full axis-angle, not 15-PCA
+    # wrist placed at metric depth (~0.6 m), not floating at the origin
+    assert 0.4 < hand.wrist_pose.position_m[2] < 0.8
+
+    dof = episode_dof_names(ep)
+    state, _, valid = state_and_action_vectors(ep)
+    assert len(dof) == 53                                   # 8 wrist+grasp + 45 MANO
+    assert state.shape[1] == 53
+    assert valid.sum() >= n - 1
+
+
+def test_build_from_perception_does_not_carry_contact_on_a_barehand_rig(tmp_path):
+    """The schema forbids contact on a rig that measures none; the wiring must respect it."""
+    n = 4
+    ep = build_from_perception(
+        _session(tmp_path, n), "b" * 64, hands=_HR(n), rig=RigType.HEAD_MOUNTED, task="t",
+    )
+    for f in ep.frames:
+        assert f.contact is None                            # not fabricated from vision
+
+
+def test_smooth_root_depth_does_not_pull_boundary_frames_shallow():
+    """Boundary fix: a constant depth must stay constant everywhere, including the first/last
+    frames. A plain convolve(..., 'same') zero-pads and would read the edges ~4/7 too shallow."""
+    z = np.full(8, 0.6)
+    out = smooth_root_depth(z, window=7)
+    assert np.allclose(out, 0.6), f"boundary frames drifted: {out}"
+    # the broken (zero-padded) version would have made out[0] ~= 0.6*4/7 = 0.343
+    assert out[0] > 0.55 and out[-1] > 0.55
