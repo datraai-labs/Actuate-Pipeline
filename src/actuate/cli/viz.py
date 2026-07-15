@@ -4,19 +4,64 @@ Runs the perception stages on a session and logs every modality to Rerun on one 
 timeline. Default writes a self-contained `.rrd` (openable later, no GPU); `--live` streams to a
 running viewer as each stage finishes, which is what you want when debugging a stage.
 
+Perception is GPU-heavy and, on a 4 GB card, SAM2 propagation can thrash to system RAM (a 20-
+frame chunk took 86 minutes once). `--cache` pickles each stage's result under the session and
+reuses it on the next run -- so looking at the same episode again is a file load, not another
+model run. A stage is re-run only when its inputs change (frame count, and object prompts) or
+`--force` is passed.
+
 This is a thin wrapper: all the logging logic is in `actuate.viz.log_episode`, importable
 without a viewer.
 """
 
 from __future__ import annotations
 
+import hashlib
+import pickle
 from pathlib import Path
+from typing import Callable
 
 import typer
 
 viz_app = typer.Typer(help="F -- Rerun visualization: see the pipeline (Master Spec §F).")
 
 _STAGES = ("depth", "hands", "objects", "fusion", "slam")
+_CACHE_DIR = ".actuate_cache"
+
+
+def _stage_cached(
+    session: Path, stage: str, key: str, *, use_cache: bool, force: bool,
+    run_fn: Callable,
+):
+    """Run a perception stage, or load a matching cached result.
+
+    Returns (result, source) where source is 'cache' or 'ran'. The cache key hashes the inputs
+    that change the output (frame count, prompts), so a changed input misses the cache and the
+    stage re-runs -- no stale results. `--force` re-runs even on a hit; without `--cache` the
+    cache is neither read nor written (the old always-run behaviour).
+    """
+    if not use_cache:
+        return run_fn(), "ran"
+
+    cache_dir = session / _CACHE_DIR
+    cache_dir.mkdir(exist_ok=True)
+    keyhash = hashlib.sha256(f"{stage}|{key}".encode()).hexdigest()[:12]
+    path = cache_dir / f"{stage}_{keyhash}.pkl"
+
+    if path.exists() and not force:
+        try:
+            with path.open("rb") as fh:
+                return pickle.load(fh), "cache"
+        except Exception:
+            pass  # corrupt/old-format cache -> fall through and re-run
+
+    result = run_fn()
+    try:
+        with path.open("wb") as fh:
+            pickle.dump(result, fh, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception as exc:  # caching is best-effort; never fail the viz over it
+        typer.secho(f"  ({stage}: could not write cache: {exc})", fg="yellow")
+    return result, "ran"
 
 
 @viz_app.command("show")
@@ -31,6 +76,12 @@ def show(
     max_frames: int = typer.Option(60, help="Cap frames (perception is GPU-heavy)."),
     prompts: str = typer.Option("stapler,paper,document,box", help="Object detection prompts."),
     task: str = typer.Option(None, help="Operator-verified task (for the canonical episode)."),
+    cache: bool = typer.Option(
+        False, "--cache", help="Reuse cached perception outputs when inputs are unchanged."
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Re-run every stage even if a matching cache exists (with --cache)."
+    ),
 ) -> None:
     """Run perception on a session and visualize it in Rerun."""
     import rerun as rr
@@ -42,10 +93,18 @@ def show(
     bad = want - set(_STAGES)
     if bad:
         raise typer.BadParameter(f"unknown stage(s) {sorted(bad)}; choose from {_STAGES}")
+    if force and not cache:
+        typer.secho("--force has no effect without --cache (nothing is cached).", fg="yellow")
 
     session = session.resolve()
     if not session.exists():
         raise typer.BadParameter(f"session dir not found: {session}")
+
+    prompt_list = [p.strip() for p in prompts.split(",")]
+
+    def report(stage: str, source: str) -> None:
+        tag = "cached" if source == "cache" else "ran"
+        typer.secho(f"{stage} ({tag}) ...", fg="green" if source == "cache" else "cyan")
 
     rr.init("actuate", spawn=live)
 
@@ -53,38 +112,55 @@ def show(
     K = None
 
     if "slam" in want:
-        typer.secho("slam (visual-inertial ego-motion) ...", fg="cyan")
         from actuate.perception.slam import runner as slam_runner
 
-        try:
-            slam = slam_runner.run(session, max_frames=max_frames)
-        except Exception as exc:  # SLAM needs gyro; don't sink the whole viz if it's absent
-            typer.secho(f"  slam skipped: {exc}", fg="yellow")
-            slam = None
+        def _run_slam():
+            try:
+                return slam_runner.run(session, max_frames=max_frames)
+            except Exception as exc:  # SLAM needs gyro; don't sink the whole viz if it's absent
+                typer.secho(f"  slam skipped: {exc}", fg="yellow")
+                return None
+
+        slam, src = _stage_cached(session, "slam", f"n={max_frames}",
+                                  use_cache=cache, force=force, run_fn=_run_slam)
+        report("slam", src)
+
     if "depth" in want:
-        typer.secho("depth (UniDepthV2) ...", fg="cyan")
         from actuate.perception import depth as depthmod
 
-        depth = depthmod.run(session, max_frames=max_frames)
+        depth, src = _stage_cached(
+            session, "depth", f"n={max_frames}", use_cache=cache, force=force,
+            run_fn=lambda: depthmod.run(session, max_frames=max_frames),
+        )
+        report("depth", src)
         K = depth.intrinsics
+
     if "hands" in want:
-        typer.secho("hands (WiLoR) ...", fg="cyan")
         from actuate.perception import hands as handsmod
 
-        hands = handsmod.run(session, max_frames=max_frames, prefilter=False)
+        hands, src = _stage_cached(
+            session, "hands", f"n={max_frames}", use_cache=cache, force=force,
+            run_fn=lambda: handsmod.run(session, max_frames=max_frames, prefilter=False),
+        )
+        report("hands", src)
+
     if "objects" in want:
-        typer.secho("objects (Grounding DINO + SAM2) ...", fg="cyan")
         from actuate.perception import objects as objmod
 
-        objects = objmod.run(
-            session, prompts=[p.strip() for p in prompts.split(",")],
-            max_frames=max_frames, chunk=max_frames,
+        objects, src = _stage_cached(
+            session, "objects", f"n={max_frames}|{','.join(prompt_list)}",
+            use_cache=cache, force=force,
+            run_fn=lambda: objmod.run(session, prompts=prompt_list,
+                                      max_frames=max_frames, chunk=max_frames),
         )
+        report("objects", src)
+
     if "fusion" in want and hands is not None:
-        typer.secho("fusion (L2 arbiter) ...", fg="cyan")
+        # Fusion is instant and derives from hands+objects -- always recompute, never cache.
         from actuate import fusion as fusionmod
 
         fusion = fusionmod.run(hands, rig=RigType.HEAD_MOUNTED, objects=objects)
+        typer.secho("fusion (L2 arbiter) ...", fg="cyan")
 
     # read the video frames for the RGB/point-cloud overlay
     import cv2
