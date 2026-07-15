@@ -165,6 +165,52 @@ would be another field addition) — a build integration, not done.
 
 ---
 
+## Phase 3 Part F — RERUN VISUALIZATION: `actuate viz` produces a real recording on real data
+
+`viz.log_episode(...)` + `actuate viz <session>`. Logs every present modality to Rerun on ONE
+scrubable `frame` timeline. Module: `viz/` (`conventions.py` = viewer-free topology/colours,
+`rerun_log.py` = logging), CLI: `cli/viz.py`. rerun imported lazily so the library never
+requires a viewer to import.
+
+**Modalities logged** (verified on the real capture, 30 frames, via the CLI):
+
+```
+logged modalities: video 30 | depth 30 | camera 30 | hand 61 | objects 30
+                   state 30 | contact 60 | action 59
+```
+
+- **video** ego RGB (`rr.Image`); **depth** as `rr.DepthImage` + a back-projected 3D point
+  cloud; **camera** trajectory from SLAM (`rr.Transform3D` + `rr.Pinhole`, 30 finite poses);
+  **hand** 3D keypoints + skeleton (`rr.Points3D`/`rr.LineStrips3D`), L/R coloured, fingertips
+  tinted by contact confidence; **objects** `rr.Boxes2D` + `rr.SegmentationImage`; **state**
+  colour-coded (green/blue/red) + `rr.TextLog`; **contact** per-finger `rr.Scalars`; **action**
+  wrist deltas as `rr.Arrows3D`. FoundationPose 6-DoF would be `rr.Boxes3D` — absent (stubbed).
+
+**Verification gate met:**
+
+| Condition | Result |
+|---|---|
+| `actuate viz` produces the real capture with all modalities | valid 364 MB `.rrd` (RRF2), 8/8 modalities logged with correct per-frame counts |
+| Timeline is scrubable across synchronized modalities | everything logged on one `frame` timeline (`rr.set_time`) |
+| 3D view: camera trajectory + hand + depth cloud in one frame | SLAM path, hand, and depth cloud all in the `world` RDF frame |
+| Interaction states visible as colour-coded annotations | STATE_COLORS green=STATIC / blue=GRASPED / red=MOVING, per frame |
+
+**Hand is placed at metric depth, not floating:** the hand root is solved from the depth map at
+the hand keypoints (Part C's `solve_root_depth` + smoothing) and back-projected, so it sits in
+the depth cloud at ~0.6 m. Unit-tested numerically (`0.4 < root_z < 0.8`).
+
+CLI: `actuate viz show <session> [--live] [--stages depth,hands,objects,fusion,slam] [--out X.rrd]`.
+Default writes a self-contained `.rrd`; `--live` streams to a running viewer as stages finish.
+
+**Verified:** 8 unit tests (skeleton-tree topology, colour conventions, NaN-safe contact colour,
+`log_episode` against a real in-file recording, metric-depth placement) + the real-capture CLI
+run. Headless here, so the GUI "drag the scrubber" step is manual; the `.rrd` is valid and
+complete, which is the verifiable proxy. **Note:** the wrist-action arrow uses the frame-to-frame
+root displacement for viewing — it is NOT the ego-motion-compensated canonical action, and depth
+noise (Part C) makes it rough; it shows motion direction, not a trained target.
+
+---
+
 ## Phase 3 Part E — L2 FUSION: trust-weighted arbiter + Schmitt-gated states RUN ON REAL DATA
 
 `fusion.run(hands, rig=..., objects=...) -> FusionReport`. Pure pipeline logic (typed state
