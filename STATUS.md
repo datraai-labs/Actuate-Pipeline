@@ -44,8 +44,50 @@ is **deferred** until the Phase 3.5 depth gate passes — `run` works on any wri
 it's only as good as the depth that produced it. Nothing about this arm-retargeting work changes
 if depth pivots to stereo, so none of it is wasted.
 
-**Not built (later parts):** Part F reconcile + sim no-slip validation.
-Gravity in `run` is a camera-down placeholder (real IMU gravity not wired). 119 unit tests green.
+**Not built (later parts):** ~~Part F reconcile + sim validation~~ — built in Phase 5 Part B.0
+(below). Contact-stability / no-slip validation remains unbuilt (no contact model, no hardware).
+Gravity in `run` is a camera-down placeholder (real IMU gravity not wired).
+
+## Phase 5 Part B — THE QUALITY CERTIFICATE BECOMES REAL (schema v4, certify.score)
+
+**B.0 unblocked the certificate first.** Part B's gate 1 needs `retarget_eligibility` (from sim
+validation) and `strategy_alignment` (from L5 reconciliation) — neither existed (Phase 4a Part F
+was never built). Built minimal, honest versions:
+
+- `retarget/reconcile.py` — frame overlap, teleport detection (0.3 rad/frame — a discontinuity
+  detector, NOT an actuator model), optional grasp-agreement vs fused interaction states.
+  **FAILS on a shuffled trajectory** (the required broken variant).
+- `retarget/sim_validate.py` — MuJoCo replay: joint limits, self-collision (added
+  `RobotModel.self_collision_count`, same touching≠interpenetrating semantics as the hand),
+  IK-convergence floor 90%. **CATCHES a deliberate limit violation**, including on the real
+  Franka model. Kinematic only: "eligible" means executable, not "the grasp will hold".
+
+**Schema v4** (one bump covering Parts B and D, additive-optional — v3 payloads validate
+unchanged, verified): `EpisodeMeta.components: CertificateComponents` (5 measured inputs behind
+`quality`, each `None` = NOT MEASURED, never zero), `CanonicalEpisode.retarget_eligibility`
+(per-embodiment, absent ≠ False), `FieldStats.p02/p05/p25/p50/p75/p95/p98` (full percentile set
+for TRI-LBM/EgoMimic re-derivation). Freeze shown red (2 failed) → `actuate schema freeze` →
+green.
+
+**`certify.score` on the real capture** (`actuate certify run`):
+
+| Component | Value | Why |
+|---|---|---|
+| sync_integrity | 0.88 | 3.94 ms drift vs 33 ms frame period (L0 report) |
+| calibration_completeness | **0.15** | intrinsics GUESSED (the fx 1.7× bug) caps at 0.3; no SLAM on the v1-legacy build halves it |
+| perception_confidence | 0.62 | mean of per-frame L1/L2 confidence |
+| contact_consistency | None | bare-hand rig, no sensor — not measured, NOT zero |
+| ik_convergence_rate | None | L5 not run on this ego-contaminated legacy episode |
+| **quality** | **3/5** | in the predicted 2–3 band, not 5 |
+| speed | 3 (slow) | 95 s by TIMESTAMP span — the raw-frame-count shim it replaces would misgrade a subsample |
+| mistakes | 9 flags | 6 low-confidence segments (seekable: `low_confidence@42s-43s`) + v1's 3 flags |
+
+**Gate 4 proven:** an episode boosted to quality=5 with consent=pending still raises
+`ConsentViolation`. Quality never opens the consent gate.
+
+Composite renormalises over MEASURED components only (an unmeasured channel neither helps nor
+hurts — tested). `certify` sits below `retarget` in the import contract, so L5 results arrive
+duck-typed; the CLI wires the layers. 145 unit tests green, import-linter 2/2.
 
 ## Phase 4a Part E — GeoRT FINGER RETARGETING (Allegro): GATE 3 NOT TESTABLE ON THIS CAPTURE
 

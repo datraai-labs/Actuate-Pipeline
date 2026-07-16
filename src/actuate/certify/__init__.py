@@ -1,12 +1,42 @@
-"""L4 — Certification.
+"""L4 -- Certification: the quality certificate, computed from real sources.
 
-Spec: docs/architecture/MASTER_IMPLEMENTATION_SPEC.md §L4
+Spec: docs/architecture/MASTER_IMPLEMENTATION_SPEC.md §4 L4.
 
-EIS -> pi0.7 quality/speed/mistakes; LLM-as-judge; strategy-alignment.
-The fail-closed consent/PII gate is ALWAYS-ON and lives in actuate.io.consent.
-Gate: re-test against the auto-consent-workaround bug class at every phase.
+`certify.score(episode, embodiment=None, ...)` computes every certificate component
+(sync_integrity, calibration_completeness, perception_confidence, contact_consistency,
+ik_convergence_rate), the 1-5 quality composite, binned speed, per-segment mistake flags,
+and -- when L5 results are passed in -- strategy_alignment and retarget_eligibility.
 
-NOT IMPLEMENTED. Increment 1 builds the foundation only (schema, io, catalog, infra).
-This package is a placeholder so the import-linter contract has the full layer graph to
-check against, and so nothing is quietly built out of order.
+The fail-closed consent/PII gate is ALWAYS-ON and lives in actuate.io.consent. Quality never
+substitutes for consent.
+
+Not built: the LLM-as-judge caption gate (that is L6, actuate.language).
 """
+
+from __future__ import annotations
+
+from actuate.certify.score import (
+    QUALITY_WEIGHTS,
+    CertificationReport,
+    calibration_completeness,
+    composite_quality,
+    contact_consistency,
+    find_mistakes,
+    perception_confidence,
+    score,
+    speed_bin,
+    sync_integrity,
+)
+
+__all__ = [
+    "CertificationReport",
+    "score",
+    "sync_integrity",
+    "calibration_completeness",
+    "perception_confidence",
+    "contact_consistency",
+    "composite_quality",
+    "speed_bin",
+    "find_mistakes",
+    "QUALITY_WEIGHTS",
+]

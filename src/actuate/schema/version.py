@@ -33,7 +33,16 @@ from pathlib import Path
 #:   RETYPED field, so
 #:   every exporter is re-verified against the load+train gate.
 #:   * observation.state / action gain 45 MANO columns (cols 8-52) -- see canonical.build.
-SCHEMA_VERSION = 3
+#: v4 (2026-07-17) — the certificate becomes real (Phase 5 Parts B+D, one bump not two).
+#:   + EpisodeMeta.components: CertificateComponents (sync_integrity,
+#:     calibration_completeness, perception_confidence, contact_consistency,
+#:     ik_convergence_rate — each Unit|None, None = NOT MEASURED, never zero).
+#:   + CanonicalEpisode.retarget_eligibility: dict[embodiment, bool] from L5 sim validation.
+#:   + FieldStats.p02/p05/p25/p50/p75/p95/p98 (optional) — full raw-percentile set so
+#:     customers on 2/98-per-timestep (TRI LBM) or z-score (EgoMimic) re-derive without
+#:     recomputing over the raw dataset.
+#:   All additive-optional: v3 payloads validate unchanged.
+SCHEMA_VERSION = 4
 
 FROZEN_DIR = Path(__file__).parent / "frozen"
 
