@@ -9,7 +9,8 @@ own loader, run one real training step), never by asserting schema-correctness.
 Phase 5 Part D: tier filtering, dual-space (human + per-embodiment robot actions),
 export-time co-training transforms, full-percentile norm stats, dataset manifest.
 
-RLDS/TFDS export: not built (Part C).
+RLDS/Open-X secondary exporter (Part C): written through tfds's own ad-hoc
+builder, gated by tfds.load + iterate.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from actuate.package.lerobot_export import (
 from actuate.package.manifest import DatasetManifest
 from actuate.package.manifest import generate as generate_manifest
 from actuate.package.normalize import compute_field_stats, verify_round_trip
+from actuate.package.rlds_export import RldsExportResult, export_rlds
 
 __all__ = [
     "ExportRefused",
@@ -37,4 +39,6 @@ __all__ = [
     "generate_manifest",
     "compute_field_stats",
     "verify_round_trip",
+    "RldsExportResult",
+    "export_rlds",
 ]

@@ -110,3 +110,37 @@ def lerobot(
             "  nothing here may be shipped to a customer.",
             fg="yellow",
         )
+
+
+@package_app.command("rlds")
+def rlds(
+    in_path: Path = typer.Option(..., "--in", help="Canonical episode JSON."),
+    video: Path = typer.Option(..., help="The REDACTED video. Never the original."),
+    out: Path = typer.Option(Path(".export/rlds"), help="tfds data_dir for the export."),
+    name: str = typer.Option("actuate_dataset", help="tfds dataset name (identifier)."),
+    tier: str = typer.Option("all", help="Tier FILTER: stage1 | stage2 | all."),
+    embodiment: str = typer.Option(None, help="Dual-space: add action_robot_<embodiment>."),
+) -> None:
+    """Export to RLDS/Open-X, through tfds's own writer.
+
+    Gate: `tfds.load(name, data_dir=out)` reads it back and one episode iterates with
+    Open-X step keys. See tests/integration/test_rlds_gate.py.
+    """
+    from actuate.package.rlds_export import export_rlds
+    from actuate.schema import CanonicalEpisode
+
+    ep = CanonicalEpisode.model_validate_json(in_path.read_text(encoding="utf-8"))
+    try:
+        res = export_rlds(ep, out, name=name, tier=tier, embodiment=embodiment, video=video)
+    except ExportRefused as exc:
+        typer.secho(f"EXPORT REFUSED\n\n{exc}", fg="red")
+        raise typer.Exit(1) from exc
+
+    typer.secho(f"exported -> {res.root} (tfds name={res.name} v{res.version})",
+                fg="green", bold=True)
+    typer.echo(f"  episodes : {res.n_episodes}")
+    typer.echo(f"  steps    : {res.n_steps}  (dropped {res.n_dropped}: no hand/successor)")
+    typer.echo(f"  tiers    : {res.tier_counts}")
+    if res.embodiment:
+        typer.echo(f"  dual-space: action_robot_{res.embodiment} shipped")
+    typer.echo(f'  load with: tfds.load("{res.name}", data_dir=r"{res.root}", split="train")')
