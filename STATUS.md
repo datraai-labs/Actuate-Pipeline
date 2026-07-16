@@ -44,8 +44,59 @@ is **deferred** until the Phase 3.5 depth gate passes — `run` works on any wri
 it's only as good as the depth that produced it. Nothing about this arm-retargeting work changes
 if depth pivots to stereo, so none of it is wasted.
 
-**Not built (later parts):** Part E finger (GeoRT), Part F reconcile + sim no-slip validation.
+**Not built (later parts):** Part F reconcile + sim no-slip validation.
 Gravity in `run` is a camera-down placeholder (real IMU gravity not wired). 119 unit tests green.
+
+## Phase 4a Part E — GeoRT FINGER RETARGETING (Allegro): GATE 3 NOT TESTABLE ON THIS CAPTURE
+
+`retarget.finger.train/run` maps MANO fingertips → Allegro's 16 DoF. Contact-blind by
+construction; Allegro has no pinky, so the human pinky is dropped (real information loss).
+
+| Gate | Status | Evidence |
+|---|---|---|
+| 1 — trains without errors | **PASS** | fwd-model 4.3e-5 m², recon 1.4e-4 m², ~19 s CPU |
+| 2 — synthetic MANO plausible | **PASS** | open 0.112 > pinch 0.105 > fist 0.094 m; in-limits; no interpenetration. Discriminates: identity calibration **inverts** the ordering |
+| 3 — real capture | **NOT TESTABLE** | see below |
+
+**Gate 3's premise is false for this capture, and that is the finding.** It asks that a real flat
+hand retarget to an open robot hand. Measured against the demonstrator's *own* MANO canonical
+poses, the hand in this footage is **never open and never a fist** — median openness **0.50** of
+its own fist→open range, i.e. a half-curled writing posture, across 95 s. There is no flat hand to
+test, and no fist to calibrate on. The method's stated prerequisite (~5 min of per-human canonical
+finger motion) **was never captured**. Retargeting is therefore **validated on synthetic MANO +
+sim only — not on real manipulation footage.**
+
+**Two silent convention bugs were found and fixed on the way** (each ran fine and produced
+in-limit joints while being wrong):
+
+1. **The canonical fist wasn't a fist.** MANO's 45 = 15 joints × 3 axis-angle, and only axis 2 is
+   flexion. Filling all 45 uniformly twists and splays the hand: tips 0.146 → 0.113 m (barely
+   curled, thumb-only). Bending the flexion axis alone gives a real fist at 0.073 m. The
+   calibrated magnitude **0.8 is the end of the monotonic range** — past it the fingers
+   over-rotate and tips travel back *out* (1.6 → 0.092 m), so a bigger "more closed" number
+   silently means a *less* closed hand.
+2. **Wrist-relative was not enough.** WiLoR's `keypoints_3d` still carry the hand's
+   `global_orient`, while calibration poses are generated at orientation zero — comparing a
+   rotated hand to an unrotated reference. Per-finger alignment with the canonical open pose:
+   cosine **0.68 → 0.95** once de-rotated.
+
+Net effect on real frames: openness **0.086 → 0.093 m** and interpenetration **12/12 frames → 0**.
+The old value sat *below* the fist reference (0.094) — a real flat-ish hand retargeting to *more
+curled than a fist*, i.e. the map was inverted. It now lands between fist (0.088) and open (0.104),
+the correct region, though still more curled than the human's true 0.50.
+
+**Also verified: WiLoR emits MediaPipe keypoint order** (thumb 1-4, index 5-8, …), not MANO's
+(index 1-3, …). Confirmed empirically — its thumb chain matches MANO's to 1 mm across all four
+joints. `ALLEGRO_MANO_TIPS = (8, 12, 16, 4)` is correct.
+
+**A metric I rejected rather than banked.** Correlating human openness against retargeted openness
+over 40 real frames gives **+0.998** — but the *broken* identity-calibration variant scores
+**+0.938**. It does not discriminate (openness is a scalar dominated by tip magnitude, which
+survives a bad calibration), so it is not evidence of anything. Same failure class as the
+retracted coherence-cos depth metric. Gate 2's ordering test is the one that discriminates.
+
+**To actually close Gate 3:** capture ~5 min of the demonstrator opening, fisting, and freely
+moving their fingers. No amount of modelling substitutes for it.
 
 ---
 
