@@ -31,15 +31,27 @@ that normalization dominates downstream performance, so getting this wrong is no
 
 from __future__ import annotations
 
+import json
 import shutil
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
 from actuate.canonical.build import episode_dof_names, state_and_action_vectors
 from actuate.config import Tier
+from actuate.package import normalize as _norm
+from actuate.package import transforms as _tf
+from actuate.package.manifest import generate as _generate_manifest
 from actuate.schema import CanonicalEpisode, FieldStats, NormStats
+
+# The normalization helpers moved to actuate.package.normalize (Phase 5 Part D) and are
+# re-exported here because the load+train gate and downstream callers import them from
+# this module. compute_norm_stats now ships the FULL percentile set (schema v4).
+normalize_p01_p99 = _norm.normalize_p01_p99
+denormalize_p01_p99 = _norm.denormalize_p01_p99
+compute_norm_stats = _norm.compute
 
 
 class ExportRefused(RuntimeError):
@@ -52,36 +64,33 @@ class ExportResult:
     repo_id: str
     n_frames: int
     n_dropped: int
-    norm_stats: NormStats
-    tier: Tier
+    norm_stats: NormStats                       # human-space (observation.state / action)
+    tier_counts: dict[str, int]                 # tier value -> episodes exported
     ego_contaminated: bool
+    n_episodes: int = 1
+    embodiment: str | None = None               # dual-space partner, when exported
+    robot_norm_stats: dict[str, FieldStats] = field(default_factory=dict)
 
 
-def compute_norm_stats(state: np.ndarray, action: np.ndarray) -> NormStats:
-    """1/99 percentiles AND mean/std, both shipped (Master Spec §L7)."""
-
-    def stats(a: np.ndarray) -> FieldStats:
-        return FieldStats(
-            p01=tuple(float(v) for v in np.percentile(a, 1, axis=0)),
-            p99=tuple(float(v) for v in np.percentile(a, 99, axis=0)),
-            mean=tuple(float(v) for v in a.mean(axis=0)),
-            std=tuple(float(v) for v in a.std(axis=0)),
-        )
-
-    return NormStats(state=stats(state), action=stats(action))
-
-
-def normalize_p01_p99(a: np.ndarray, s: FieldStats) -> np.ndarray:
-    """-> [-1, 1]. The default the exported metadata declares."""
-    lo, hi = np.asarray(s.p01), np.asarray(s.p99)
-    span = np.where(np.abs(hi - lo) < 1e-8, 1.0, hi - lo)
-    return np.clip(2.0 * (a - lo) / span - 1.0, -1.0, 1.0)
+def _tier_filter(tier) -> set[Tier] | None:
+    """CLI/API tier filter -> the set of tiers kept (None = keep all)."""
+    if tier in (None, "all", "ALL"):
+        return None
+    if isinstance(tier, Tier):
+        return {tier}
+    aliases = {
+        "stage1": Tier.STAGE1_VOLUME, "stage1_volume": Tier.STAGE1_VOLUME,
+        "stage2": Tier.STAGE2_ANCHOR, "stage2_anchor": Tier.STAGE2_ANCHOR,
+    }
+    if str(tier) in aliases:
+        return {aliases[str(tier)]}
+    raise ExportRefused(f"unknown tier filter {tier!r}; use stage1, stage2, or all")
 
 
-def denormalize_p01_p99(a: np.ndarray, s: FieldStats) -> np.ndarray:
-    lo, hi = np.asarray(s.p01), np.asarray(s.p99)
-    span = np.where(np.abs(hi - lo) < 1e-8, 1.0, hi - lo)
-    return (a + 1.0) / 2.0 * span + lo
+def _episode_tier(ep: CanonicalEpisode) -> Tier:
+    """An episode with no assigned tier is volume data by definition -- stage2 is a claim
+    (matched viewpoint, verified alignment) that must be made explicitly, never defaulted."""
+    return ep.tier or Tier.STAGE1_VOLUME
 
 
 #: Training resolution. VLA backbones (SigLIP/PaliGemma-class) consume ~224px; shipping
@@ -115,60 +124,188 @@ def _decode_frames(video: Path, indices: np.ndarray) -> dict[int, np.ndarray]:
     return out
 
 
+def _robot_action_rows(episode: CanonicalEpisode, embodiment: str,
+                       keep: np.ndarray, n_total: int) -> np.ndarray:
+    """Frame-align action_robot[embodiment].joint_traj with the exporter's kept frames.
+
+    RobotAction carries no frame ids (schema limitation, recorded), so alignment is by
+    LENGTH and refused when ambiguous: a trajectory the length of the FULL episode is
+    indexed by `keep`; one already the length of the kept set is used as-is; anything else
+    means the retarget and the export disagree about frame accounting, and shipping a
+    misaligned robot action is worse than shipping none.
+    """
+    ra = episode.action_robot.get(embodiment)
+    if ra is None:
+        raise ExportRefused(
+            f"episode {episode.episode_id} has no action_robot[{embodiment!r}]. Dual-space "
+            "export needs the L5 retarget to have run and been attached "
+            "(retarget.arm.attach_to_episode)."
+        )
+    if ra.joint_traj is None:
+        raise ExportRefused(
+            f"episode {episode.episode_id}: action_robot[{embodiment!r}] has no joint_traj "
+            "(EE-only). The dual-space contract ships joint trajectories."
+        )
+    traj = np.asarray(ra.joint_traj, dtype=np.float64)
+    if len(traj) == n_total:
+        return traj[keep]
+    if len(traj) == keep.size:
+        return traj
+    raise ExportRefused(
+        f"episode {episode.episode_id}: action_robot[{embodiment!r}].joint_traj has "
+        f"{len(traj)} steps but the episode has {n_total} frames ({keep.size} kept). "
+        "The retarget and the export disagree about frame accounting -- refusing to guess."
+    )
+
+
+def _hand_points_3d(frame) -> np.ndarray | None:
+    """All hand keypoints in the camera frame, both sides pooled (for the mask bbox)."""
+    pts = [np.asarray(h.keypoints_3d) for h in frame.hands.values()
+           if h.keypoints_3d is not None]
+    return np.concatenate(pts) if pts else None
+
+
+def _apply_transforms(img, transforms, frame, next_frame, intrinsics, src_hw):
+    if "masked_hand" in transforms:
+        pts = _hand_points_3d(frame)
+        px = None if pts is None else _tf.project_points(pts, intrinsics, src_hw, _IMAGE_HW)
+        img = _tf.masked_hand(img, px)
+    if "eef_overlay" in transforms:
+        def wrist_px(f):
+            if f is None:
+                return None
+            pts = _hand_points_3d(f)
+            if pts is None:
+                return None
+            px = _tf.project_points(pts[:1], intrinsics, src_hw, _IMAGE_HW)
+            return None if px is None else px[0]
+        img = _tf.eef_overlay(img, wrist_px(frame), wrist_px(next_frame))
+    return img
+
+
+def _source_hw(video: Path) -> tuple[int, int]:
+    import cv2
+
+    cap = cv2.VideoCapture(str(video))
+    hw = (int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)), int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)))
+    cap.release()
+    return hw
+
+
 def export_lerobot_v3(
-    episode: CanonicalEpisode,
+    episodes: CanonicalEpisode | list[CanonicalEpisode],
     out: Path,
     *,
     repo_id: str = "actuate/dev",
     fps: int = 30,
-    tier: Tier = Tier.STAGE1_VOLUME,
+    tier: Tier | str | None = "all",
     overwrite: bool = False,
-    video: Path | None = None,
+    video: Path | dict[str, Path] | None = None,
+    embodiment: str | None = None,
+    transforms: tuple[str, ...] = (),
+    intrinsics: tuple[float, float, float, float] | None = None,
 ) -> ExportResult:
-    """Write `episode` as a LeRobot v3 dataset. Raises ExportRefused if it cannot be honest.
+    """Write episodes as ONE LeRobot v3 dataset. Raises ExportRefused if it cannot be honest.
 
-    `video` must be the REDACTED source. A VLA dataset without `observation.images.*` is
-    not a VLA dataset — the models are vision-language-action, and LeRobot's own policies
-    refuse a state-only dataset outright ("You must provide at least one image or the
-    environment state among the inputs"). So images are required, not optional.
+    Phase 5 Part D additions on top of the v3 exporter:
+
+    - **tier filter** (`tier="stage1" | "stage2" | "all"`): episodes are kept by their OWN
+      `episode.tier` (unassigned = stage1_volume -- stage2 is a claim, never a default).
+    - **dual-space** (`embodiment=`): ships `action.robot.<embodiment>` (retargeted joints)
+      ALONGSIDE the human-space `action`, tagged by name so a training script selects a
+      space instead of getting one imposed. Norm stats are computed PER SPACE (EgoMimic:
+      38% drop without per-embodiment normalization).
+    - **transforms** (`("masked_hand", "eef_overlay")`): EgoMimic co-training variants,
+      applied at export time, never stored. Both need `intrinsics` (fx, fy, cx, cy at the
+      source resolution) -- no intrinsics, no transform, because a mask drawn with guessed
+      intrinsics hides the wrong pixels silently.
+
+    `video` must be the REDACTED source (a dict keyed by episode_id for multi-episode
+    exports). A VLA dataset without observation.images.* is not a VLA dataset.
     """
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-    if video is None or not Path(video).exists():
-        raise ExportRefused(
-            f"episode {episode.episode_id}: no video supplied ({video}).\n\n"
-            "A VLA dataset needs observation.images.* — LeRobot's own policies reject a "
-            "state-only dataset. Pass the REDACTED video; the un-redacted original must "
-            "never reach a delivery artifact."
-        )
+    eps = [episodes] if isinstance(episodes, CanonicalEpisode) else list(episodes)
+    if not eps:
+        raise ExportRefused("no episodes given; nothing to export")
 
-    # ---- fail-closed on the required task field ----
-    if not episode.task:
-        raise ExportRefused(
-            f"episode {episode.episode_id} has no `task`. LeRobot requires it on every "
-            "frame and most VLAs condition on it.\n\n"
-            "v1's classifier returned 'unknown' and its language grounding emitted "
-            "'Perform unknown task using right hand with power grasp.' -- a fluent sentence "
-            "containing no task. Exporting that would launder a failed classification into "
-            "a training label.\n\n"
-            "Supply an operator-verified task explicitly, or fix classification. This "
-            "exporter will not invent one."
-        )
+    keep_tiers = _tier_filter(tier)
+    if keep_tiers is not None:
+        eps = [e for e in eps if _episode_tier(e) in keep_tiers]
+        if not eps:
+            raise ExportRefused(
+                f"tier filter {tier!r} excluded every episode -- nothing to export. "
+                "That is the filter working, not an error to route around."
+            )
 
-    state, action, valid = state_and_action_vectors(episode)
-    dof_names = episode_dof_names(episode)  # 8 (wrist-only) or 53 (wrist + full MANO)
-    n_total = len(state)
-    keep = np.flatnonzero(valid)
-    if keep.size == 0:
-        raise ExportRefused(
-            f"episode {episode.episode_id}: no frame has both a wrist pose and a successor. "
-            "There is nothing to train on."
-        )
+    if transforms:
+        unknown = set(transforms) - set(_tf.TRANSFORM_NAMES)
+        if unknown:
+            raise ExportRefused(f"unknown transform(s) {sorted(unknown)}; "
+                                f"available: {_tf.TRANSFORM_NAMES}")
+        if intrinsics is None:
+            raise ExportRefused(
+                "transforms need intrinsics (fx, fy, cx, cy at source resolution). A hand "
+                "mask projected with guessed intrinsics blacks out the wrong region and "
+                "silently trains the policy on exactly the pixels it was meant to hide."
+            )
+
+    def _video_for(ep: CanonicalEpisode) -> Path:
+        v = video.get(ep.episode_id) if isinstance(video, dict) else video
+        if v is None or not Path(v).exists():
+            raise ExportRefused(
+                f"episode {ep.episode_id}: no video supplied ({v}).\n\n"
+                "A VLA dataset needs observation.images.* — LeRobot's own policies reject "
+                "a state-only dataset. Pass the REDACTED video; the un-redacted original "
+                "must never reach a delivery artifact."
+            )
+        return Path(v)
+
+    # ---- per-episode fail-closed checks + vector extraction, BEFORE any writing ----
+    dof_names = episode_dof_names(eps[0])
+    prepared = []
+    for ep in eps:
+        if not ep.task:
+            raise ExportRefused(
+                f"episode {ep.episode_id} has no `task`. LeRobot requires it on every "
+                "frame and most VLAs condition on it.\n\n"
+                "v1's classifier returned 'unknown' and its language grounding emitted "
+                "'Perform unknown task using right hand with power grasp.' -- a fluent "
+                "sentence containing no task. Exporting that would launder a failed "
+                "classification into a training label.\n\n"
+                "Supply an operator-verified task explicitly, or fix classification. This "
+                "exporter will not invent one."
+            )
+        if episode_dof_names(ep) != dof_names:
+            raise ExportRefused(
+                f"episode {ep.episode_id} has a different state layout "
+                f"({len(episode_dof_names(ep))} dof vs {len(dof_names)}). One dataset, one "
+                "feature schema — export mixed layouts separately."
+            )
+        state, action, valid = state_and_action_vectors(ep)
+        keep = np.flatnonzero(valid)
+        if keep.size == 0:
+            raise ExportRefused(
+                f"episode {ep.episode_id}: no frame has both a wrist pose and a successor. "
+                "There is nothing to train on."
+            )
+        robot = (_robot_action_rows(ep, embodiment, keep, len(state))
+                 if embodiment is not None else None)
+        prepared.append((ep, _video_for(ep), state, action, keep, robot))
 
     # Frames with no detected hand are DROPPED, not zero-filled. Zeroing would teach a
     # policy to drive the end-effector to the camera origin every time the hand left view.
-    s, a = state[keep], action[keep]
-    norm = compute_norm_stats(s, a)
+    s_all = np.concatenate([st[k] for _, _, st, _, k, _ in prepared])
+    a_all = np.concatenate([ac[k] for _, _, _, ac, k, _ in prepared])
+    norm = compute_norm_stats(s_all, a_all)
+    _norm.verify_round_trip(s_all, norm.state)
+    _norm.verify_round_trip(a_all, norm.action)
+
+    robot_norm: dict[str, FieldStats] = {}
+    if embodiment is not None:
+        r_all = np.concatenate([r for *_, r in prepared])
+        robot_norm[embodiment] = _norm.compute_field_stats(r_all)
+        _norm.verify_round_trip(r_all, robot_norm[embodiment])
 
     root = Path(out)
     if root.exists():
@@ -179,10 +316,8 @@ def export_lerobot_v3(
     # Camera name comes from the rig registry and is enforced consistent from ingestion —
     # a camera called "head" in one session and "head_cam" in the next silently splits a
     # training dataset in two (Master Spec §3).
-    cam = next(iter(episode.frames[0].images), "head")
+    cam = next(iter(eps[0].frames[0].images), "head")
     image_key = f"observation.images.{cam}"
-
-    frames_by_idx = _decode_frames(Path(video), np.array([episode.frames[i].frame_idx for i in keep]))
 
     features = {
         image_key: {
@@ -201,52 +336,86 @@ def export_lerobot_v3(
             "names": dof_names,
         },
     }
+    if embodiment is not None:
+        n_joints = len(prepared[0][5][0])
+        features[f"action.robot.{embodiment}"] = {
+            "dtype": "float32",
+            "shape": (n_joints,),
+            "names": [f"{embodiment}_j{i}" for i in range(n_joints)],
+        }
 
     ds = LeRobotDataset.create(
         repo_id=repo_id,
         fps=fps,
         features=features,
         root=root,
-        robot_type=episode.rig.value,
+        robot_type=eps[0].rig.value,
         use_videos=True,  # per-camera chunked MP4, LeRobot v3's own writer
     )
 
-    for n, i in enumerate(keep):
-        frame_idx = episode.frames[i].frame_idx
-        img = frames_by_idx.get(frame_idx)
-        if img is None:
-            raise ExportRefused(
-                f"video has no frame {frame_idx}; the video and the per-frame records do "
-                "not describe the same recording."
-            )
-        ds.add_frame(
-            {
+    n_frames = n_dropped = 0
+    for ep, vid, state, action, keep, robot in prepared:
+        s, a = state[keep], action[keep]
+        src_hw = _source_hw(vid) if transforms else None
+        frames_by_idx = _decode_frames(vid, np.array([ep.frames[i].frame_idx for i in keep]))
+        for n, i in enumerate(keep):
+            frame_idx = ep.frames[i].frame_idx
+            img = frames_by_idx.get(frame_idx)
+            if img is None:
+                raise ExportRefused(
+                    f"video has no frame {frame_idx}; the video and the per-frame records "
+                    "do not describe the same recording."
+                )
+            if transforms:
+                nxt = ep.frames[keep[n + 1]] if n + 1 < keep.size else None
+                img = _apply_transforms(img, transforms, ep.frames[i], nxt,
+                                        intrinsics, src_hw)
+            row = {
                 image_key: img,
                 "observation.state": s[n].astype(np.float32),
                 "action": a[n].astype(np.float32),
-                "task": episode.task,
+                "task": ep.task,
             }
-        )
-    ds.save_episode()
+            if robot is not None:
+                row[f"action.robot.{embodiment}"] = robot[n].astype(np.float32)
+            ds.add_frame(row)
+        ds.save_episode()
+        n_frames += int(keep.size)
+        n_dropped += int(len(state) - keep.size)
 
     # Ship the percentiles AND mean/std so a customer on a different normalization scheme
-    # can re-derive without a full pass over the data.
+    # can re-derive without a full pass over the data. Human space keeps its historical
+    # filename (the load+train gate reads it); robot spaces are per-embodiment files.
     (root / "meta" / "actuate_norm_stats.json").write_text(
         norm.model_dump_json(indent=2), encoding="utf-8"
     )
+    for emb, stats in robot_norm.items():
+        (root / "meta" / f"actuate_norm_stats.{emb}.json").write_text(
+            NormStats(action=stats).model_dump_json(indent=2), encoding="utf-8"
+        )
+    (root / "meta" / "actuate_manifest.json").write_text(
+        _generate_manifest(eps).to_json(), encoding="utf-8"
+    )
+
+    tier_counts = Counter(_episode_tier(e).value for e in eps)
+    ego = any("action_semantics" in e.derivation_notes for e in eps)
     (root / "meta" / "actuate_provenance.json").write_text(
-        __import__("json").dumps(
+        json.dumps(
             {
-                "schema_version": episode.schema_version,
-                "capture_id": episode.capture_id,
-                "source_content_hash": episode.source_content_hash,
-                "tier": tier.value,
-                "control_mode": episode.control_mode.value if episode.control_mode else None,
-                "consent": episode.consent.value,
-                "pii_status": episode.pii_status.value,
-                "normalization": "p01_p99_to_pm1 (default); raw percentiles + mean/std shipped",
-                "derivation_notes": episode.derivation_notes,
-                "frames_dropped_no_hand": int(n_total - keep.size),
+                "schema_version": eps[0].schema_version,
+                "capture_ids": [e.capture_id for e in eps],
+                "source_content_hashes": [e.source_content_hash for e in eps],
+                "tier_filter": str(tier),
+                "tier_counts": dict(tier_counts),
+                "embodiment": embodiment,
+                "transforms": list(transforms),
+                "control_mode": eps[0].control_mode.value if eps[0].control_mode else None,
+                "consent": [e.consent.value for e in eps],
+                "pii_status": [e.pii_status.value for e in eps],
+                "normalization": "p01_p99_to_pm1 (default); full percentiles + mean/std "
+                                 "shipped, per space",
+                "derivation_notes": {e.episode_id: e.derivation_notes for e in eps},
+                "frames_dropped_no_hand": n_dropped,
             },
             indent=2,
         ),
@@ -256,9 +425,12 @@ def export_lerobot_v3(
     return ExportResult(
         root=root,
         repo_id=repo_id,
-        n_frames=int(keep.size),
-        n_dropped=int(n_total - keep.size),
+        n_frames=n_frames,
+        n_dropped=n_dropped,
         norm_stats=norm,
-        tier=tier,
-        ego_contaminated="action_semantics" in episode.derivation_notes,
+        tier_counts=dict(tier_counts),
+        ego_contaminated=ego,
+        n_episodes=len(eps),
+        embodiment=embodiment,
+        robot_norm_stats=robot_norm,
     )

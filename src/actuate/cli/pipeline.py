@@ -11,7 +11,6 @@ from pathlib import Path
 import typer
 
 from actuate.canonical import build_episode
-from actuate.config import Tier
 from actuate.package import ExportRefused, export_lerobot_v3
 
 canonical_app = typer.Typer(help="L3 — canonical build (Master Spec §L3).")
@@ -61,7 +60,14 @@ def lerobot(
     out: Path = typer.Option(Path(".export/lerobot")),
     task: str = typer.Option(None, help="Required. The exporter fail-closes without it."),
     repo_id: str = typer.Option("actuate/dev"),
-    tier: Tier = typer.Option(Tier.STAGE1_VOLUME),
+    tier: str = typer.Option("all", help="Tier FILTER: stage1 | stage2 | all. Episodes are "
+                             "kept by their own episode.tier (unassigned = stage1)."),
+    embodiment: str = typer.Option(None, help="Dual-space: also ship "
+                                   "action.robot.<embodiment> (needs L5 attached)."),
+    transform: list[str] = typer.Option([], help="Export-time co-training transforms: "
+                                        "masked_hand, eef_overlay. Need --fx/--fy/--cx/--cy."),
+    fx: float = typer.Option(None), fy: float = typer.Option(None),
+    cx: float = typer.Option(None), cy: float = typer.Option(None),
     fps: int = typer.Option(30),
     overwrite: bool = typer.Option(False),
 ) -> None:
@@ -71,9 +77,11 @@ def lerobot(
     training step runs. See tests/integration/test_lerobot_gate.py.
     """
     ep = build_episode(processed, capture_hash, task=task)
+    intrinsics = (fx, fy, cx, cy) if None not in (fx, fy, cx, cy) else None
     try:
         res = export_lerobot_v3(
-            ep, out, repo_id=repo_id, fps=fps, tier=tier, overwrite=overwrite, video=video
+            ep, out, repo_id=repo_id, fps=fps, tier=tier, overwrite=overwrite, video=video,
+            embodiment=embodiment, transforms=tuple(transform), intrinsics=intrinsics,
         )
     except ExportRefused as exc:
         typer.secho(f"EXPORT REFUSED\n\n{exc}", fg="red")
@@ -82,7 +90,9 @@ def lerobot(
     typer.secho(f"exported -> {res.root}", fg="green", bold=True)
     typer.echo(f"  frames kept    : {res.n_frames}")
     typer.echo(f"  frames dropped : {res.n_dropped}  (no hand, or no successor)")
-    typer.echo(f"  tier           : {res.tier.value}")
+    typer.echo(f"  tiers          : {res.tier_counts}")
+    if res.embodiment:
+        typer.echo(f"  dual-space     : action.robot.{res.embodiment} shipped")
 
     if res.ego_contaminated:
         typer.secho(

@@ -89,6 +89,39 @@ Composite renormalises over MEASURED components only (an unmeasured channel neit
 hurts — tested). `certify` sits below `retarget` in the import contract, so L5 results arrive
 duck-typed; the CLI wires the layers. 145 unit tests green, import-linter 2/2.
 
+## Phase 5 Part D — DUAL-SPACE DELIVERY + TIERING (the product differentiator)
+
+**All five gates pass, verified through LeRobot's OWN loader on the real capture:**
+
+1. **Dual-space** — `export_lerobot_v3(..., embodiment="franka_panda")` ships the human-space
+   `action` (8-dof wrist) AND `action.robot.franka_panda` (7 joints) in ONE dataset, selectable
+   by feature tag. Loaded back via `LeRobotDataset`; both spaces present, no NaNs. (The robot
+   trajectory in the gate is SYNTHETIC and labelled so — it proves the plumbing on real video;
+   the retargeted values are validated by the L5 gates, not here.)
+2. **Tier filter** — episodes kept by their OWN `episode.tier`; unassigned = stage1_volume
+   (stage2 is a claim, never a default). `--tier stage1` on a stage2-only set refuses with
+   "excluded every episode — that is the filter working". Both directions tested; the
+   two-tier case is **synthetic fixtures (n=1 real corpus), unit-only and says so**.
+3. **Norm round-trip red→green** — `verify_round_trip` judges "in range" by the DATA's own
+   recomputed percentiles, never the stat under test: a check that trusts the shipped stat
+   lets a corrupted p99 shrink the clip region and hide its own damage (could never fail —
+   caught in design, rejected like the coherence-cos metric). Tampered p99 and degenerate
+   p01==p99 both FAIL loudly; swapped bounds documented as NOT catchable (sign-flipped but
+   perfectly invertible). Runs inside every export.
+4. **Manifest** — scene and demonstrator diversity SEPARATE (EgoVerse), task/tier
+   distributions, per-component certificate means (None stays None), modality inventory.
+   Honest on n=1: `episodes_with_unknown_demonstrator: 1` ships in the artifact.
+5. **Load+train gate still green** — full integration suite passes on the extended exporter
+   (provenance file became dataset-level: hashes/consent as lists, notes keyed by episode).
+
+Also: full percentile set (1,2,5,25,50,75,95,98,99) per space — human stats in the historical
+`actuate_norm_stats.json`, robot per-embodiment in `actuate_norm_stats.<emb>.json`; the two are
+verified to be genuinely different stats. Export-time co-training transforms (`masked_hand`,
+`eef_overlay` — EgoMimic) refuse to run without intrinsics: a mask projected with guessed
+intrinsics hides the wrong pixels silently. Robot-action alignment is by length and REFUSES
+ambiguity (RobotAction carries no frame ids — schema limitation, recorded). 159 unit tests
+green, import-linter 2/2.
+
 ## Phase 4a Part E — GeoRT FINGER RETARGETING (Allegro): GATE 3 NOT TESTABLE ON THIS CAPTURE
 
 `retarget.finger.train/run` maps MANO fingertips → Allegro's 16 DoF. Contact-blind by

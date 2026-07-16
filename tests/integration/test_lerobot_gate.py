@@ -236,11 +236,13 @@ def test_provenance_travels_with_the_dataset(exported):
     import json
 
     prov = json.loads((exported.root / "meta" / "actuate_provenance.json").read_text())
-    assert prov["source_content_hash"] == CAPTURE_HASH
-    assert prov["consent"] == "pending"
-    assert prov["pii_status"] == "pending"
+    # Part D made provenance dataset-level (multi-episode): hashes/consent are lists,
+    # derivation notes are keyed by episode. Same claims, plural shape.
+    assert prov["source_content_hashes"] == [CAPTURE_HASH]
+    assert prov["consent"] == ["pending"]
+    assert prov["pii_status"] == ["pending"]
 
-    notes = prov["derivation_notes"]
+    notes = next(iter(prov["derivation_notes"].values()))
     assert "EGO-CONTAMINATED" in notes["action_semantics"], (
         "the exported dataset does not carry the warning that its action conflates hand "
         "motion with head motion"
