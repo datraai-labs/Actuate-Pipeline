@@ -12,6 +12,35 @@ on whether it compiles.
 
 ---
 
+## Phase 3.5 Part A — depth benchmark harness + scale-anchoring + MoGe-2 (pre-Kaggle)
+
+The temporal-depth decision is benchmark-first; the gate is **wrist z-jitter < 4 mm/frame**
+smoothed — a 3× reduction from the *fair* 11.3 mm hand-cloud-fit baseline (NOT the 20.7 mm bbox
+strawman). Built and unit-tested locally; the models run on Kaggle T4.
+
+- **`depth.benchmark.run_benchmark`** — the gate harness. Scores any `{name: DepthResult}` on the
+  same HandResult by placing the wrist (`solve_root_depth` + fit + smooth) and measuring the
+  placed-z jitter (mm/frame), plus static-point consistency and metric scale. Prints a table +
+  per-model gate verdict, and explicitly reports the "wins static consistency but NOT the wrist,
+  monocular floor stands" case as a *finding*, not a pass.
+- **`temporal.anchor_scale`** — keyframe scale-anchoring. Fits ONE global affine
+  `d = a·d_video + b` from a temporal model (VDA) to a metric anchor (UniDepth/MoGe-2) over
+  keyframes. Monotonic → preserves the video model's temporal consistency exactly, only fixes
+  absolute scale + intrinsics. Unit-tested: takes the anchor's scale, keeps the video model's
+  low jitter.
+- **`depth.run(model="moge2")`** — MoGe-2 backend (per-frame metric depth + estimated focal).
+  Not temporal; benchmarks whether a better metric/focal anchor alone lowers wrist jitter (our
+  `fx≈660` is currently a guess), and serves as the anchor for VDA. Kaggle-validated (wrapper
+  follows microsoft/MoGe's `MoGeModel.infer`).
+- Kaggle scaffold's `--depth-ab` now runs the **full four-model table** (UniDepth / MoGe-2 /
+  VDA-anchored / flow-filter) and writes `depth_ab.txt`.
+
+**Status: awaiting the Kaggle run.** VDA + MoGe-2 need the T4; the harness, anchoring, and
+flow-filter are validated on synthetic data (the metric reads 11.2 mm on synthetic 2% noise,
+matching UniDepth's real ~13 mm). Decision gate on the real numbers is pending. 111 unit tests.
+
+---
+
 ## Post-Phase-3 follow-ups (2026-07-16)
 
 **Temporal / video-depth stage — the A/B challenger to UniDepth's noise floor.**

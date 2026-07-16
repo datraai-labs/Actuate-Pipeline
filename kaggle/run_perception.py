@@ -118,7 +118,7 @@ def main() -> None:
     # optional depth A/B
     ab_path = args.out / "depth_ab.txt"
     if args.depth_ab:
-        _depth_ab(session, depth, frames, nf, ab_path)
+        _depth_ab(session, depth, hands, frames, nf, ab_path)
 
     # bundle for download
     zpath = args.out / "actuate_outputs.zip"
@@ -134,49 +134,49 @@ def main() -> None:
           f"session dir, then: actuate viz show <session> --cache")
 
 
-def _depth_ab(session, unidepth_result, frames, nf, out_path):
-    """UniDepth vs Video-Depth-Anything vs flow-filter, scored by static-point wobble."""
+def _depth_ab(session, unidepth_result, hands, frames, nf, out_path):
+    """Full depth benchmark: WRIST z-jitter (the gate) + static consistency, all models.
+
+    Gate (fair baseline, Part C): < 4 mm/frame smoothed -- 3x below the 11.3 mm hand-cloud-fit
+    baseline, NOT the 20.7 mm bbox strawman. Models: UniDepth (baseline), MoGe-2 (metric/focal
+    anchor), Video-Depth-Anything anchored to UniDepth (temporal + metric scale), flow-filter.
+    """
     from actuate.perception import depth as depthmod
-    from actuate.perception.depth import consistency_score, sample_tracked_depths
+    from actuate.perception.depth import run_benchmark
+    from actuate.perception.depth.temporal import anchor_scale
 
-    lines = ["Depth temporal-consistency A/B (lower static-point wobble = more consistent)\n"]
+    models = {"UniDepthV2": unidepth_result}
 
-    def score(name, dr):
-        try:
-            td = sample_tracked_depths(dr, frames, max_frames=nf)
-            r = consistency_score(td)
-            lines.append(f"{name:26s} {r.summary()}")
-            return r
-        except Exception as exc:
-            lines.append(f"{name:26s} FAILED: {exc}")
-            return None
-
-    ru = score("UniDepthV2 (single-image)", unidepth_result)
-
-    # flow-filtered UniDepth (runs anywhere)
+    # MoGe-2: does a better metric/focal anchor alone help? (per-frame; needs the model)
     try:
-        ff = depthmod.run(session, model="flow_filter", base=unidepth_result, max_frames=nf)
-        score("UniDepth + flow_filter", ff)
+        moge = depthmod.run(session, model="moge2", max_frames=nf)
+        models["MoGe-2"] = moge
+        print(f"  MoGe-2 focal fx={moge.intrinsics[0, 0]:.0f} (UniDepth guessed "
+              f"{unidepth_result.intrinsics[0, 0]:.0f})")
     except Exception as exc:
-        lines.append(f"UniDepth + flow_filter    FAILED: {exc}")
+        print(f"  MoGe-2 skipped: {exc}")
+        moge = None
 
-    # Video-Depth-Anything (needs the package + VDA_CKPT env var)
+    # flow-filtered UniDepth (cheap temporal post-process; runs anywhere)
+    try:
+        models["UniDepth+flow_filter"] = depthmod.run(
+            session, model="flow_filter", base=unidepth_result, max_frames=nf)
+    except Exception as exc:
+        print(f"  flow_filter skipped: {exc}")
+
+    # Video-Depth-Anything, scale-anchored to the best metric anchor (MoGe-2 if present, else
+    # UniDepth). Temporal consistency from VDA, metric scale from the anchor.
     try:
         vda = depthmod.run(session, model="video_depth_anything",
                            intrinsics=unidepth_result.intrinsics, max_frames=nf)
-        rv = score("Video-Depth-Anything", vda)
-        if ru and rv:
-            better = rv.median_wobble_pct < ru.median_wobble_pct
-            lines.append(
-                f"\nVERDICT: VDA {'BEATS' if better else 'does NOT beat'} UniDepth "
-                f"({rv.median_wobble_pct:.2f}% vs {ru.median_wobble_pct:.2f}% wobble)."
-            )
+        anchor = moge if moge is not None else unidepth_result
+        models["VDA (anchored)"] = anchor_scale(vda, anchor, keyframe_stride=8)
     except Exception as exc:
-        lines.append(f"Video-Depth-Anything      SKIPPED: {exc}")
+        print(f"  Video-Depth-Anything skipped: {exc}")
 
-    text = "\n".join(lines)
-    print("\n" + text)
-    out_path.write_text(text)
+    report = run_benchmark(models, hands, frames, baseline="UniDepthV2", max_frames=nf)
+    print("\n" + report)
+    out_path.write_text(report)
 
 
 if __name__ == "__main__":

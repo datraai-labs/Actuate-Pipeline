@@ -47,6 +47,8 @@ os.system(f"git clone https://{tok}@github.com/datraai-labs/Actuate.git /kaggle/
 %pip install -q --no-deps git+https://github.com/lpiccinelli-eth/UniDepth
 # Video-Depth-Anything (the temporal A/B challenger) — optional
 %pip install -q git+https://github.com/DepthAnything/Video-Depth-Anything
+# MoGe-2 (metric depth + focal anchor) — optional, for the benchmark's anchor row
+%pip install -q git+https://github.com/microsoft/MoGe.git
 ```
 
 Weights that auto-download from Hugging Face on first use: WiLoR, UniDepthV2, Grounding DINO
@@ -98,12 +100,24 @@ matches**. Change the frame count and that stage re-runs (correctly — differen
 
 ---
 
-## The depth A/B (`--depth-ab`)
+## The depth benchmark (`--depth-ab`)
 
-Scores UniDepthV2 vs Video-Depth-Anything vs flow-filtered-UniDepth by the **Part C physics
-test**: track background points that *cannot move*, measure how much their depth wobbles
-frame-to-frame. Lower wobble = more temporally consistent. UniDepth's floor was ~2.1% (~13 mm),
-larger than real hand motion. The verdict line says whether VDA actually beats it — if it
-doesn't, the video model isn't worth its cost, and that's the decision, not a vibe. Result is
-saved to `depth_ab.txt` in the zip.
+Scores four depth models on the **same hand keypoints**, with the number that actually matters:
+**wrist z-jitter (mm/frame)** — place the wrist at each model's depth (`solve_root_depth` +
+hand-cloud fit + temporal smooth) and measure how much the placed wrist z moves frame-to-frame.
+That is what becomes the training action, so that is the gate.
+
+- **UniDepthV2** — baseline (single-image).
+- **MoGe-2** — a per-frame *metric + focal* anchor. Isolates whether a better anchor alone helps
+  (right now our `fx≈660` is a guess; MoGe-2 gives an independent focal).
+- **VDA (anchored)** — Video-Depth-Anything (temporal consistency) scale-anchored to the metric
+  anchor by a single global affine, so it keeps VDA's low jitter *and* gets metric scale.
+- **UniDepth + flow_filter** — cheap optical-flow temporal EMA (shows if filtering alone helps).
+
+**The gate: < 4 mm/frame smoothed** — a 3× reduction from the *fair* 11.3 mm hand-cloud-fit
+baseline (NOT the 20.7 mm bbox-pseudo-depth strawman). A model can win the static-consistency
+column yet lose the wrist column — the wrist *moves*, and a moving articulated hand is the hard
+case. If that happens, the report says so: **"wins static consistency but NOT the wrist;
+monocular floor stands"** — which is a real finding ("monocular video-depth can't place a moving
+hand to <4 mm, stereo is the real fix"), not a bug. Saved to `depth_ab.txt` in the zip.
 ```

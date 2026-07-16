@@ -85,6 +85,89 @@ class VideoDepthEstimator:
         return np.asarray(depths, dtype=np.float32)
 
 
+def anchor_scale(
+    video: DepthResult,
+    anchor: DepthResult,
+    keyframe_stride: int = 8,
+    per_frame: bool = False,
+) -> DepthResult:
+    """Give a temporally-consistent (but wrongly-scaled) depth its METRIC scale from an anchor.
+
+    Video-Depth-Anything is temporally consistent but its metric variant is trained on driving /
+    indoor-stereo data -- egocentric hands are out-of-distribution, so its absolute scale drifts.
+    A per-frame single-image metric model (UniDepth, MoGe-2) has the RIGHT scale but jitters.
+    This takes the best of both: fit ONE affine map `d_metric = a * d_video + b` from the video
+    depth to the anchor over keyframe pixels, and apply it to every frame.
+
+    A single global affine is deliberate: it is monotonic, so it preserves the video model's
+    temporal structure EXACTLY (the whole point), and only corrects absolute scale+offset. That
+    means the anchored result keeps the video model's low jitter -- it does not reintroduce the
+    anchor's per-frame noise. `per_frame=True` fits a smooth per-keyframe scale instead (use
+    only if the scene depth range changes a lot within the clip; it trades some consistency).
+
+    Keyframes are sampled every `keyframe_stride` frames, so the anchor model runs on a fraction
+    of frames -- cheap. Returns a new DepthResult; intrinsics come from the anchor (it estimates
+    them; the video model does not).
+    """
+    common = sorted(set(video.frames) & set(anchor.frames))
+    keyframes = common[::keyframe_stride] or common
+    if not keyframes:
+        raise ValueError("anchor_scale: video and anchor share no frames")
+
+    def _affine_over(frame_ids) -> tuple[float, float]:
+        vs, as_ = [], []
+        for i in frame_ids:
+            vd = video.frames[i].depth_m.ravel()
+            ad = anchor.frames[i].depth_m.ravel()
+            m = np.isfinite(vd) & np.isfinite(ad) & (vd > 0) & (ad > 0)
+            if m.any():
+                vs.append(vd[m])
+                as_.append(ad[m])
+        if not vs:
+            return 1.0, 0.0
+        v = np.concatenate(vs)
+        a = np.concatenate(as_)
+        # robust-ish least squares: fit a*v + b = anchor. (Median-based would be heavier; LS on
+        # the shared valid pixels is fine and the affine is only correcting scale+offset.)
+        A = np.vstack([v, np.ones_like(v)]).T
+        (scale, shift), *_ = np.linalg.lstsq(A, a, rcond=None)
+        return float(scale), float(shift)
+
+    out = DepthResult(intrinsics=anchor.intrinsics, model=f"{video.model}+anchor({anchor.model})")
+    if per_frame:
+        # fit at each keyframe, interpolate scale/shift smoothly across all frames
+        ks = np.array(keyframes)
+        pairs = np.array([_affine_over([i]) for i in keyframes])  # (K, 2)
+        allf = np.array(sorted(video.frames))
+        scale = np.interp(allf, ks, pairs[:, 0])
+        shift = np.interp(allf, ks, pairs[:, 1])
+        smap = dict(zip(allf.tolist(), scale))
+        bmap = dict(zip(allf.tolist(), shift))
+    else:
+        gs, gb = _affine_over(keyframes)
+        smap = None
+
+    for i in sorted(video.frames):
+        vf = video.frames[i]
+        if per_frame:
+            a, b = smap[i], bmap[i]
+        else:
+            a, b = gs, gb
+        d = (a * vf.depth_m + b).astype(np.float32)
+        out.frames[i] = DepthFrame(depth_m=d, confidence=vf.confidence,
+                                   intrinsics=anchor.intrinsics)
+    out.provenance = dict(anchor.provenance)
+    out.notes = {
+        "anchor": (
+            f"Temporal depth from {video.model}, scale-anchored to {anchor.model} by a "
+            f"{'per-keyframe' if per_frame else 'single global'} affine over "
+            f"{len(keyframes)} keyframes. Temporal consistency from the video model; metric "
+            "scale + intrinsics from the anchor."
+        )
+    }
+    return out
+
+
 def _flow_filter(base: DepthResult, video_frames: list, alpha: float = 0.5) -> DepthResult:
     """Optical-flow-warped temporal EMA of a base DepthResult. Reduces per-frame noise while
     following real motion (the flow accounts for what moved). Locally consistent, not just a

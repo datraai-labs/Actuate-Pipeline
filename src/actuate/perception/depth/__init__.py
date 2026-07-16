@@ -10,6 +10,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from actuate.perception.depth.benchmark import (
+    GATE_WRIST_JITTER_MM,
+    DepthBenchmarkRow,
+    benchmark_row,
+    run_benchmark,
+    wrist_jitter,
+)
 from actuate.perception.depth.consistency import (
     ConsistencyReport,
     compare,
@@ -34,11 +41,17 @@ def run(session_dir: Path, model: str = "auto", **kw):
     """Depth as a `DepthResult`. One entry, a `model=` switch:
 
     - "auto"/"unidepth_v2"/"vitl"/"vits"  -> UniDepthV2 (single-image; estimates intrinsics)
+    - "moge2"                             -> MoGe-2 (single-image; metric + focal; Kaggle)
     - "video_depth_anything"/"vda"        -> Video-Depth-Anything (temporal; Kaggle)
     - "flow_filter"/"temporal"            -> flow-warped temporal EMA over a `base=` DepthResult
 
     All return the same `DepthResult`, so any consumer is agnostic to which model produced it.
+    Temporal video depth is best paired with a metric anchor -- see `temporal.anchor_scale`.
     """
+    if model in ("moge2", "moge-2", "moge"):
+        from actuate.perception.depth import moge
+
+        return moge.run(session_dir, max_frames=kw.get("max_frames"))
     if model in _TEMPORAL_MODELS:
         from actuate.perception.depth import temporal
 
@@ -65,4 +78,9 @@ __all__ = [
     "compare",
     "consistency_score",
     "sample_tracked_depths",
+    "GATE_WRIST_JITTER_MM",
+    "DepthBenchmarkRow",
+    "benchmark_row",
+    "run_benchmark",
+    "wrist_jitter",
 ]
