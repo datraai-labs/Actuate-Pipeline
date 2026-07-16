@@ -147,6 +147,36 @@ Install note: `pip` on PATH belonged to Python 3.11 while `python` is 3.10 — i
 silently going to the wrong interpreter; `python -m pip` fixed it. tensorflow bumped protobuf
 to 6.x (mediapipe pins <5 but still imports; v1-legacy only, `src/` never imports it).
 
+## Phase 5 Part A — LANGUAGE RICH-CONTEXT (all four gates PASS on the real capture, real API)
+
+Ported v1's `utils/vlm_language.py` (the injected-client seam kept — every code path
+unit-tests against a fake client, 10 tests, no network) and upgraded to π0.7-grade:
+
+| Gate | Result |
+|---|---|
+| 1 — paraphrases diverse | **PASS** — 5 paraphrases, different structures not word-swaps ("Head to the workbench, sort through the papers, and staple them" vs "Organize and bind the paperwork with staples once you're at the workbench") |
+| 2 — subtasks align with phase boundaries | **PASS** — 9 subtasks exactly on the (flicker-healed) v1 phase segments; subgoal_frames at each boundary |
+| 3 — judge catches hallucination, red→green | **PASS, real API on real frames** — planted "a red stapler and a coffee mug": object_consistency **0.10**, verdict inconsistent, all four fabrications named in unsupported_claims. The faithful caption passed at min 0.70, NOT flagged (a judge that flags everything is as useless as one that flags nothing — tested both directions) |
+| 4 — schema fields populated | **PASS** — task_paraphrases(5) / subtasks(9, all with judge-derived confidence) / subgoal_frames(9) in schema-valid v4 canonical output |
+
+**The judge design:** independent second call (never the generator scoring itself), four
+dimensions (hand/object/action/global), grounded in perception facts (tracked objects,
+interaction states) so it is more than a vibe check. Below-threshold captions are **flagged
+for review and shipped with low confidence — never silently accepted, never silently
+dropped** (a dropped segment hides the disagreement a reviewer needs). The real run flagged
+1/9 (a 10-frame flicker segment, conf 0.60) — the QA protocol doing its job.
+
+**Cost honesty:** estimate shown before every billed call (`--yes` to skip the prompt).
+Real run: estimated $0.84, actual **$0.8756** — above the ~$0.25 quoted at planning, because
+the capture has 9 real segments, not the 3-4 assumed. Merging v1's flickery same-phase
+segments (15 → 9) was done for subtask quality and cut the cost 40% as a side effect.
+
+**API-drift facts encoded** (per the claude-api reference, not memory): `temperature` is
+REMOVED on the current model family (the "temperature=0 for judge determinism" plan would
+have 400'd); structured-output schemas carry no numeric bounds (scores clamped client-side).
+Key from env/.env.local (git-ignored), never hardcoded/logged; no key → SKIP with a warning,
+the pipeline never fails on missing language. 169 unit tests green, import-linter 2/2.
+
 ## Phase 4a Part E — GeoRT FINGER RETARGETING (Allegro): GATE 3 NOT TESTABLE ON THIS CAPTURE
 
 `retarget.finger.train/run` maps MANO fingertips → Allegro's 16 DoF. Contact-blind by

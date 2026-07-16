@@ -14,6 +14,7 @@ from __future__ import annotations
 import typer
 
 from actuate.cli.certify_cmd import certify_app
+from actuate.cli.language_cmd import language_app
 from actuate.cli.migrate import migrate_app
 from actuate.cli.pipeline import canonical_app, package_app
 from actuate.cli.retarget import retarget_app
@@ -60,7 +61,7 @@ app.add_typer(_todo("perceive", "L1 — Master Spec §L1; GPU"), name="perceive"
 app.add_typer(_todo("fuse", "L2 — Master Spec §L2; net-new"), name="fuse")
 app.add_typer(certify_app, name="certify")
 app.add_typer(retarget_app, name="retarget")
-app.add_typer(_todo("language", "L6 — Master Spec §L6"), name="language")
+app.add_typer(language_app, name="language")
 
 
 if __name__ == "__main__":
