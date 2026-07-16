@@ -232,9 +232,13 @@ def test_canonical_reference_hand_is_deliberately_unpicked():
     assert CANONICAL_REFERENCE_HAND is None
 
 
-def test_no_embodiment_is_retarget_ready():
-    """L5 does not exist. No robot has a URDF registered, so nothing is retarget-eligible
-    — and the registry says so rather than implying otherwise."""
+def test_retarget_ready_is_not_sim_validated():
+    """Phase 4a registered franka_panda with a kinematic model, so it is retarget-READY (IK +
+    sim run). But retarget-ready is NOT the same as sim-VALIDATED on real data: no embodiment may
+    claim `sim_validated` until an episode passes the §L5 replay gate (deferred until depth is
+    trustworthy). The registry must keep those two states distinct."""
     from actuate.config import retarget_ready_embodiments
+    from actuate.config.embodiments import EMBODIMENT_REGISTRY
 
-    assert retarget_ready_embodiments() == []
+    assert "franka_panda" in retarget_ready_embodiments()      # has a model -> can retarget
+    assert all(not e.sim_validated for e in EMBODIMENT_REGISTRY.values())  # none validated yet
