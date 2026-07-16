@@ -12,6 +12,43 @@ on whether it compiles.
 
 ---
 
+## Phase 4a Part D — ARM RETARGETING: sim machinery built, sim gates pass; real-capture DEFERRED
+
+`actuate.retarget.arm` — wrist trajectory → robot joint trajectory. Built the depth-INDEPENDENT
+sim machinery (the estimator is robot-side, sim-trained; the wrist trajectory is only an input at
+inference), holding the real-capture gate until the depth benchmark passes. Module:
+`retarget/arm/` (`robot.py`, `simdata.py`, `estimator.py`, `candidates.py`, `__init__.py`),
+CLI `actuate retarget {train-arm, arm}`.
+
+**Deviation, forced + honest: MuJoCo, not Pinocchio.** `pip install pin` has no Windows wheels
+and fails to build; MuJoCo 3.10 installs on Windows AND Linux/Kaggle and gives FK, Jacobian IK,
+and physics replay in one working dep. The `fk`/`jacobian`/`ik` interface is solver-agnostic so
+Pinocchio can slot in later on Linux. Franka Panda registered in the embodiment registry
+(`urdf_path="robot_descriptions:panda_mj_description"`), retarget-**ready** but not
+sim-**validated** (those states kept distinct).
+
+| Component | Status |
+|---|---|
+| MuJoCo kinematics + damped-least-squares IK (restarts) | **97% cold IK convergence**, 0.9 mm residual, 80 ms/solve |
+| Vector-Neuron layers (SO(3)-equivariant) | **verified exactly equivariant** — max‖v(Rx,Rc)−R·v(x,c)‖ = 0.000000 |
+| Flow-matching root-frame estimator (not regression → many candidates) | trains, loss decreases; samples distinct candidates |
+| Sim data gen (OU joint paths → FK → valid pairs) | **GATE 1 PASS**: 100% joints in-limits, reachable, unit gravity |
+| Candidate selection (IK-score: convergence/residual/manip/margin/smoothness) + cluster | end-to-end run: 100% IK on a smooth traj, joint_traj (T,7) |
+
+**Sim gates:** GATE 1 (data validity) ✅. GATE 4 (candidate spread 0.24–0.31 m, no mode
+collapse) ✅. Equivariance ✅ (the whole "SE(3)-equivariant" claim, to numerical zero).
+**GATE 2 (>90% IK convergence on held-out sim)** is at **84% on an 18-second CPU smoke run** —
+the mechanics are validated but >90% needs the full ~1.5–2 hr training the spec calls for,
+which is a **Kaggle T4 job** (`actuate retarget train-arm`). **GATE 3 (real-capture validity)**
+is **deferred** until the Phase 3.5 depth gate passes — `run` works on any wrist trajectory, but
+it's only as good as the depth that produced it. Nothing about this arm-retargeting work changes
+if depth pivots to stereo, so none of it is wasted.
+
+**Not built (later parts):** Part E finger (GeoRT), Part F reconcile + sim no-slip validation.
+Gravity in `run` is a camera-down placeholder (real IMU gravity not wired). 119 unit tests green.
+
+---
+
 ## Phase 3.5 Part A — depth benchmark harness + scale-anchoring + MoGe-2 (pre-Kaggle)
 
 The temporal-depth decision is benchmark-first; the gate is **wrist z-jitter < 4 mm/frame**

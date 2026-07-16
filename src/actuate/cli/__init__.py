@@ -15,6 +15,7 @@ import typer
 
 from actuate.cli.migrate import migrate_app
 from actuate.cli.pipeline import canonical_app, package_app
+from actuate.cli.retarget import retarget_app
 from actuate.cli.schema_cmd import schema_app
 from actuate.cli.storage import storage_app
 from actuate.cli.viz import viz_app
@@ -57,7 +58,7 @@ app.add_typer(_todo("ingest", "L0 — Master Spec §L0"), name="ingest")
 app.add_typer(_todo("perceive", "L1 — Master Spec §L1; GPU"), name="perceive")
 app.add_typer(_todo("fuse", "L2 — Master Spec §L2; net-new"), name="fuse")
 app.add_typer(_todo("certify", "L4 — Master Spec §L4"), name="certify")
-app.add_typer(_todo("retarget", "L5 — Master Spec §L5; net-new, GPU"), name="retarget")
+app.add_typer(retarget_app, name="retarget")
 app.add_typer(_todo("language", "L6 — Master Spec §L6"), name="language")
 
 

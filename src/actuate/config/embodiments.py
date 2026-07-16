@@ -69,6 +69,18 @@ CANONICAL_REFERENCE_HAND: HandSpec | None = None
 
 
 EMBODIMENT_REGISTRY: dict[str, EmbodimentSpec] = {
+    "franka_panda": EmbodimentSpec(
+        name="franka_panda",
+        description="Franka Emika Panda, 7-DoF arm + parallel gripper. L5 arm-retarget target.",
+        arm_dof=7,
+        hand=HandSpec(name="panda_gripper", dof=1, n_fingers=2),
+        cameras=("wrist",),
+        # Resolvable model id, not a machine-specific cache path: retarget.arm.robot.load_robot
+        # maps "robot_descriptions:<module>" to the downloaded MuJoCo MJCF. Having a kinematic
+        # model is what makes this retarget-READY; sim_validated stays False until a real episode
+        # passes the §L5 replay gate (gate 3), which is deferred until depth is trustworthy.
+        urdf_path="robot_descriptions:panda_mj_description",
+    ),
     "franka_dual": EmbodimentSpec(
         name="franka_dual",
         description="Dual Franka Panda, parallel grippers. Non-dexterous.",
@@ -95,5 +107,10 @@ def get_embodiment(name: str) -> EmbodimentSpec:
 
 
 def retarget_ready_embodiments() -> list[str]:
-    """Embodiments L5 could actually retarget to. Currently empty, and that is correct."""
+    """Embodiments L5 can retarget to (have a kinematic model). `franka_panda` since Phase 4a.
+
+    Retarget-READY (has a URDF/MJCF, so IK + sim run) is not the same as retarget-VALIDATED on
+    real data: `sim_validated` stays False until an episode passes the §L5 replay gate, which is
+    deferred until depth is trustworthy (Phase 3.5 gate).
+    """
     return sorted(n for n, e in EMBODIMENT_REGISTRY.items() if e.is_retarget_ready)
