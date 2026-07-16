@@ -122,6 +122,31 @@ intrinsics hides the wrong pixels silently. Robot-action alignment is by length 
 ambiguity (RobotAction carries no frame ids — schema limitation, recorded). 159 unit tests
 green, import-linter 2/2.
 
+## Phase 5 Part C — RLDS/Open-X SECONDARY EXPORTER (gated by tfds.load on the real capture)
+
+Written THROUGH tfds's own ad-hoc builder (`store_as_tfds_dataset`), same doctrine as the
+LeRobot exporter: the on-disk layout is inherited, never re-implemented from memory. Per v3's
+"training knowledge only" flag on the RLDS layout, every structural fact was verified against
+the installed tfds 4.9.10 by **writing and re-loading a probe dataset first** — which caught
+two facts memory would have gotten wrong (iterable splits must yield `(key, example)` PAIRS;
+nested steps are `tfds.features.Dataset`, not a list feature).
+
+**Gate (real capture, 60 frames):** `tfds.load("actuate_gate", data_dir=...)` — the
+INDEPENDENT reader, not our own assertion — iterates one episode: step keys exactly
+`{observation{image(224,224,3) u8, state(8) f32}, action(8) f32, language_instruction,
+reward, discount, is_first, is_last, is_terminal, action_robot_franka_panda(7)}`, boundary
+flags correct, image a real video frame. `reward=0, discount=1` throughout — human demos
+carry no reward signal (Open-X convention), stated in shipped provenance rather than faked.
+
+Dual-space parity with Part D (`action_robot_<emb>` — underscores; tfds feature names are
+identifiers). Same fail-closed refusals: no task, no video, mixed layouts, tier filter
+excluding everything. Manifest + provenance ship next to the tfds data_dir. CLI:
+`actuate package rlds --in <canonical> --video <redacted> --out <dir>`.
+
+Install note: `pip` on PATH belonged to Python 3.11 while `python` is 3.10 — installs were
+silently going to the wrong interpreter; `python -m pip` fixed it. tensorflow bumped protobuf
+to 6.x (mediapipe pins <5 but still imports; v1-legacy only, `src/` never imports it).
+
 ## Phase 4a Part E — GeoRT FINGER RETARGETING (Allegro): GATE 3 NOT TESTABLE ON THIS CAPTURE
 
 `retarget.finger.train/run` maps MANO fingertips → Allegro's 16 DoF. Contact-blind by
