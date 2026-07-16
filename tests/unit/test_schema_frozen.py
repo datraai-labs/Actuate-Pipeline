@@ -45,15 +45,16 @@ REQUIRED_FRAME_FIELDS = (
 )
 
 
-def test_schema_version_is_three():
-    """v3 = MANO widened to the full 45 axis-angle (was 15-PCA).
+def test_schema_version_is_four():
+    """v4 = the certificate becomes real (Phase 5): CertificateComponents on EpisodeMeta,
+    retarget_eligibility on the episode, full percentile set on FieldStats. All additive-
+    optional — v3 payloads validate unchanged.
 
-    Bumped from 2 during Phase 3 (the 15-PCA round-trip lost a median 31 deg/joint). This
-    assertion failing is the freeze mechanism working: a schema change that forgets to bump
-    the version cannot pass, and a version bump that forgets to re-freeze the JSON Schema
-    cannot pass either.
+    This assertion failing is the freeze mechanism working: a schema change that forgets to
+    bump the version cannot pass, and a version bump that forgets to re-freeze the JSON
+    Schema cannot pass either.
     """
-    assert SCHEMA_VERSION == 3
+    assert SCHEMA_VERSION == 4
 
 
 def test_frozen_schema_exists():

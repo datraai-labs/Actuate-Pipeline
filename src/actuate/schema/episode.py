@@ -119,17 +119,42 @@ class RobotAction(_Base):
 # --------------------------------------------------------------------------------------
 
 
+class CertificateComponents(_Base):
+    """The measured inputs behind `quality` (Master Spec §4 L4). NEW in v4.
+
+    Each is a [0,1] score, and `None` means NOT MEASURED — never zero. The distinction is
+    the same one the contact fields carry: a bare-hand rig has no hardware grasp to
+    cross-check, so its `contact_consistency` is None (nothing measured), not 0.0 (measured,
+    catastrophic). Publishing the components, not just the composite, is what lets a customer
+    dispute a score.
+    """
+
+    #: 1 - normalised cross-stream timestamp drift (L0 sync report).
+    sync_integrity: Unit | None = None
+    #: Real vs approximated intrinsics + SLAM confidence (L0+L1). Approximated intrinsics
+    #: were a REAL bug (guessed fx=1104 vs measured ~660), so this scoring low is honest.
+    calibration_completeness: Unit | None = None
+    #: Weighted aggregate of per-field confidence from L1/L2.
+    perception_confidence: Unit | None = None
+    #: Hardware grasp vs vision contact cross-check (L2). None on rigs with no grasp sensor.
+    contact_consistency: Unit | None = None
+    #: Fraction of frames where IK converged during retargeting (L5).
+    ik_convergence_rate: Unit | None = None
+
+
 class EpisodeMeta(_Base):
     """π0.7 episode metadata (Master Spec §3, §L4).
 
-    `quality` is 1-5 from the existing EIS scorer. Low quality is NOT a reason to discard
-    — §L8 routes honestly-graded failures to delivery as metadata-labeled robustness
-    data. Consent/PII failures are the only hard block.
+    `quality` is 1-5, a weighted composite of `components` mapped to π0.7's scale. Low
+    quality is NOT a reason to discard — §L8 routes honestly-graded failures to delivery as
+    metadata-labeled robustness data. Consent/PII failures are the only hard block.
     """
 
     quality: int | None = Field(default=None, ge=1, le=5)
     speed: int | None = Field(default=None, ge=0, description="length in steps, binned")
     mistakes: tuple[str, ...] = ()
+    #: v4: the measured components behind `quality` (all-None until certify.score runs).
+    components: CertificateComponents = Field(default_factory=CertificateComponents)
 
 
 class StrategyAlignment(_Base):
@@ -161,6 +186,17 @@ class FieldStats(_Base):
     p99: tuple[float, ...]
     mean: tuple[float, ...]
     std: tuple[float, ...]
+    # v4: the full raw-percentile set (1,2,5,25,50,75,95,98,99) so customers on ANY
+    # normalization convention re-derive without touching the raw dataset. Optional —
+    # v3 data carries only p01/p99, and explicit typed fields (not a loose dict) so a
+    # missing percentile is visible in the type, not discovered at training time.
+    p02: tuple[float, ...] | None = None
+    p05: tuple[float, ...] | None = None
+    p25: tuple[float, ...] | None = None
+    p50: tuple[float, ...] | None = None
+    p75: tuple[float, ...] | None = None
+    p95: tuple[float, ...] | None = None
+    p98: tuple[float, ...] | None = None
 
 
 class NormStats(_Base):
@@ -231,6 +267,10 @@ class CanonicalEpisode(_Base):
     # --- certification (L4) ---
     episode_meta: EpisodeMeta = Field(default_factory=EpisodeMeta)
     strategy_alignment: dict[str, StrategyAlignment] = Field(default_factory=dict)
+    #: v4: per-embodiment verdict from L5 sim validation (MuJoCo replay: joint limits,
+    #: self-collision, IK convergence). Keyed by embodiment name. Absent = never validated,
+    #: which is NOT the same claim as False (validated and failed).
+    retarget_eligibility: dict[str, bool] = Field(default_factory=dict)
 
     #: THE HARD GATE. Fail-closed: only GRANTED + PASSED may be packaged for delivery.
     #: There is no default that opens the gate.

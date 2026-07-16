@@ -61,7 +61,7 @@ def test_build_from_perception_produces_v3_mano_and_53dim_state(tmp_path):
         rig=RigType.HEAD_MOUNTED, task="synthetic",
     )
 
-    assert ep.schema_version == 3
+    assert ep.schema_version >= 3      # v3 introduced the 45-MANO this test pins below
     hand = next(iter(ep.frames[0].hands.values()))
     assert len(hand.mano.theta) == 45                       # full axis-angle, not 15-PCA
     # wrist placed at metric depth (~0.6 m), not floating at the origin

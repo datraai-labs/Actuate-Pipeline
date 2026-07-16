@@ -44,8 +44,134 @@ is **deferred** until the Phase 3.5 depth gate passes — `run` works on any wri
 it's only as good as the depth that produced it. Nothing about this arm-retargeting work changes
 if depth pivots to stereo, so none of it is wasted.
 
-**Not built (later parts):** Part E finger (GeoRT), Part F reconcile + sim no-slip validation.
-Gravity in `run` is a camera-down placeholder (real IMU gravity not wired). 119 unit tests green.
+**Not built (later parts):** ~~Part F reconcile + sim validation~~ — built in Phase 5 Part B.0
+(below). Contact-stability / no-slip validation remains unbuilt (no contact model, no hardware).
+Gravity in `run` is a camera-down placeholder (real IMU gravity not wired).
+
+## Phase 5 Part B — THE QUALITY CERTIFICATE BECOMES REAL (schema v4, certify.score)
+
+**B.0 unblocked the certificate first.** Part B's gate 1 needs `retarget_eligibility` (from sim
+validation) and `strategy_alignment` (from L5 reconciliation) — neither existed (Phase 4a Part F
+was never built). Built minimal, honest versions:
+
+- `retarget/reconcile.py` — frame overlap, teleport detection (0.3 rad/frame — a discontinuity
+  detector, NOT an actuator model), optional grasp-agreement vs fused interaction states.
+  **FAILS on a shuffled trajectory** (the required broken variant).
+- `retarget/sim_validate.py` — MuJoCo replay: joint limits, self-collision (added
+  `RobotModel.self_collision_count`, same touching≠interpenetrating semantics as the hand),
+  IK-convergence floor 90%. **CATCHES a deliberate limit violation**, including on the real
+  Franka model. Kinematic only: "eligible" means executable, not "the grasp will hold".
+
+**Schema v4** (one bump covering Parts B and D, additive-optional — v3 payloads validate
+unchanged, verified): `EpisodeMeta.components: CertificateComponents` (5 measured inputs behind
+`quality`, each `None` = NOT MEASURED, never zero), `CanonicalEpisode.retarget_eligibility`
+(per-embodiment, absent ≠ False), `FieldStats.p02/p05/p25/p50/p75/p95/p98` (full percentile set
+for TRI-LBM/EgoMimic re-derivation). Freeze shown red (2 failed) → `actuate schema freeze` →
+green.
+
+**`certify.score` on the real capture** (`actuate certify run`):
+
+| Component | Value | Why |
+|---|---|---|
+| sync_integrity | 0.88 | 3.94 ms drift vs 33 ms frame period (L0 report) |
+| calibration_completeness | **0.15** | intrinsics GUESSED (the fx 1.7× bug) caps at 0.3; no SLAM on the v1-legacy build halves it |
+| perception_confidence | 0.62 | mean of per-frame L1/L2 confidence |
+| contact_consistency | None | bare-hand rig, no sensor — not measured, NOT zero |
+| ik_convergence_rate | None | L5 not run on this ego-contaminated legacy episode |
+| **quality** | **3/5** | in the predicted 2–3 band, not 5 |
+| speed | 3 (slow) | 95 s by TIMESTAMP span — the raw-frame-count shim it replaces would misgrade a subsample |
+| mistakes | 9 flags | 6 low-confidence segments (seekable: `low_confidence@42s-43s`) + v1's 3 flags |
+
+**Gate 4 proven:** an episode boosted to quality=5 with consent=pending still raises
+`ConsentViolation`. Quality never opens the consent gate.
+
+Composite renormalises over MEASURED components only (an unmeasured channel neither helps nor
+hurts — tested). `certify` sits below `retarget` in the import contract, so L5 results arrive
+duck-typed; the CLI wires the layers. 145 unit tests green, import-linter 2/2.
+
+## Phase 5 Part D — DUAL-SPACE DELIVERY + TIERING (the product differentiator)
+
+**All five gates pass, verified through LeRobot's OWN loader on the real capture:**
+
+1. **Dual-space** — `export_lerobot_v3(..., embodiment="franka_panda")` ships the human-space
+   `action` (8-dof wrist) AND `action.robot.franka_panda` (7 joints) in ONE dataset, selectable
+   by feature tag. Loaded back via `LeRobotDataset`; both spaces present, no NaNs. (The robot
+   trajectory in the gate is SYNTHETIC and labelled so — it proves the plumbing on real video;
+   the retargeted values are validated by the L5 gates, not here.)
+2. **Tier filter** — episodes kept by their OWN `episode.tier`; unassigned = stage1_volume
+   (stage2 is a claim, never a default). `--tier stage1` on a stage2-only set refuses with
+   "excluded every episode — that is the filter working". Both directions tested; the
+   two-tier case is **synthetic fixtures (n=1 real corpus), unit-only and says so**.
+3. **Norm round-trip red→green** — `verify_round_trip` judges "in range" by the DATA's own
+   recomputed percentiles, never the stat under test: a check that trusts the shipped stat
+   lets a corrupted p99 shrink the clip region and hide its own damage (could never fail —
+   caught in design, rejected like the coherence-cos metric). Tampered p99 and degenerate
+   p01==p99 both FAIL loudly; swapped bounds documented as NOT catchable (sign-flipped but
+   perfectly invertible). Runs inside every export.
+4. **Manifest** — scene and demonstrator diversity SEPARATE (EgoVerse), task/tier
+   distributions, per-component certificate means (None stays None), modality inventory.
+   Honest on n=1: `episodes_with_unknown_demonstrator: 1` ships in the artifact.
+5. **Load+train gate still green** — full integration suite passes on the extended exporter
+   (provenance file became dataset-level: hashes/consent as lists, notes keyed by episode).
+
+Also: full percentile set (1,2,5,25,50,75,95,98,99) per space — human stats in the historical
+`actuate_norm_stats.json`, robot per-embodiment in `actuate_norm_stats.<emb>.json`; the two are
+verified to be genuinely different stats. Export-time co-training transforms (`masked_hand`,
+`eef_overlay` — EgoMimic) refuse to run without intrinsics: a mask projected with guessed
+intrinsics hides the wrong pixels silently. Robot-action alignment is by length and REFUSES
+ambiguity (RobotAction carries no frame ids — schema limitation, recorded). 159 unit tests
+green, import-linter 2/2.
+
+## Phase 4a Part E — GeoRT FINGER RETARGETING (Allegro): GATE 3 NOT TESTABLE ON THIS CAPTURE
+
+`retarget.finger.train/run` maps MANO fingertips → Allegro's 16 DoF. Contact-blind by
+construction; Allegro has no pinky, so the human pinky is dropped (real information loss).
+
+| Gate | Status | Evidence |
+|---|---|---|
+| 1 — trains without errors | **PASS** | fwd-model 4.3e-5 m², recon 1.4e-4 m², ~19 s CPU |
+| 2 — synthetic MANO plausible | **PASS** | open 0.112 > pinch 0.105 > fist 0.094 m; in-limits; no interpenetration. Discriminates: identity calibration **inverts** the ordering |
+| 3 — real capture | **NOT TESTABLE** | see below |
+
+**Gate 3's premise is false for this capture, and that is the finding.** It asks that a real flat
+hand retarget to an open robot hand. Measured against the demonstrator's *own* MANO canonical
+poses, the hand in this footage is **never open and never a fist** — median openness **0.50** of
+its own fist→open range, i.e. a half-curled writing posture, across 95 s. There is no flat hand to
+test, and no fist to calibrate on. The method's stated prerequisite (~5 min of per-human canonical
+finger motion) **was never captured**. Retargeting is therefore **validated on synthetic MANO +
+sim only — not on real manipulation footage.**
+
+**Two silent convention bugs were found and fixed on the way** (each ran fine and produced
+in-limit joints while being wrong):
+
+1. **The canonical fist wasn't a fist.** MANO's 45 = 15 joints × 3 axis-angle, and only axis 2 is
+   flexion. Filling all 45 uniformly twists and splays the hand: tips 0.146 → 0.113 m (barely
+   curled, thumb-only). Bending the flexion axis alone gives a real fist at 0.073 m. The
+   calibrated magnitude **0.8 is the end of the monotonic range** — past it the fingers
+   over-rotate and tips travel back *out* (1.6 → 0.092 m), so a bigger "more closed" number
+   silently means a *less* closed hand.
+2. **Wrist-relative was not enough.** WiLoR's `keypoints_3d` still carry the hand's
+   `global_orient`, while calibration poses are generated at orientation zero — comparing a
+   rotated hand to an unrotated reference. Per-finger alignment with the canonical open pose:
+   cosine **0.68 → 0.95** once de-rotated.
+
+Net effect on real frames: openness **0.086 → 0.093 m** and interpenetration **12/12 frames → 0**.
+The old value sat *below* the fist reference (0.094) — a real flat-ish hand retargeting to *more
+curled than a fist*, i.e. the map was inverted. It now lands between fist (0.088) and open (0.104),
+the correct region, though still more curled than the human's true 0.50.
+
+**Also verified: WiLoR emits MediaPipe keypoint order** (thumb 1-4, index 5-8, …), not MANO's
+(index 1-3, …). Confirmed empirically — its thumb chain matches MANO's to 1 mm across all four
+joints. `ALLEGRO_MANO_TIPS = (8, 12, 16, 4)` is correct.
+
+**A metric I rejected rather than banked.** Correlating human openness against retargeted openness
+over 40 real frames gives **+0.998** — but the *broken* identity-calibration variant scores
+**+0.938**. It does not discriminate (openness is a scalar dominated by tip magnitude, which
+survives a bad calibration), so it is not evidence of anything. Same failure class as the
+retracted coherence-cos depth metric. Gate 2's ordering test is the one that discriminates.
+
+**To actually close Gate 3:** capture ~5 min of the demonstrator opening, fisting, and freely
+moving their fingers. No amount of modelling substitutes for it.
 
 ---
 

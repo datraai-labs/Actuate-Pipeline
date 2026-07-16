@@ -95,3 +95,4 @@ infra/cdk.context.json
 
 # Perception cache for `actuate viz --cache` (pickled stage outputs; large, per-session)
 .actuate_cache/
+out/

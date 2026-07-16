@@ -95,6 +95,17 @@ class RobotModel:
     def clamp(self, q: np.ndarray) -> np.ndarray:
         return np.clip(q, self.joint_limits[:, 0], self.joint_limits[:, 1])
 
+    def self_collision_count(self, q: np.ndarray, penetration_tol: float = 2e-3) -> int:
+        """Count genuinely INTERPENETRATING body pairs at config q.
+
+        Same semantics as HandModel.self_collision_count: MuJoCo already excludes parent/child
+        pairs, and touching (contact distance ~0) is not interpenetration -- only overlap deeper
+        than `penetration_tol` counts, so legitimate near-contact configs are not flagged.
+        """
+        self._set_q(np.asarray(q, dtype=np.float64))
+        return sum(1 for i in range(self.data.ncon)
+                   if self.data.contact[i].dist < -abs(penetration_tol))
+
     def random_config(self, rng: np.random.Generator, margin: float = 0.1) -> np.ndarray:
         lo = self.joint_limits[:, 0] + margin
         hi = self.joint_limits[:, 1] - margin
