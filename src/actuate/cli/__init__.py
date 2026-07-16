@@ -14,10 +14,13 @@ from __future__ import annotations
 import typer
 
 from actuate.cli.certify_cmd import certify_app
+from actuate.cli.deliver_cmd import deliver_cmd
+from actuate.cli.ingest_cmd import ingest_app
 from actuate.cli.language_cmd import language_app
 from actuate.cli.migrate import migrate_app
 from actuate.cli.pipeline import canonical_app, package_app
 from actuate.cli.retarget import retarget_app
+from actuate.cli.run_all import run_app
 from actuate.cli.schema_cmd import schema_app
 from actuate.cli.storage import storage_app
 from actuate.cli.viz import viz_app
@@ -56,12 +59,14 @@ def _todo(group: str, spec: str) -> typer.Typer:
     return sub
 
 
-app.add_typer(_todo("ingest", "L0 — Master Spec §L0"), name="ingest")
+app.add_typer(ingest_app, name="ingest")
 app.add_typer(_todo("perceive", "L1 — Master Spec §L1; GPU"), name="perceive")
 app.add_typer(_todo("fuse", "L2 — Master Spec §L2; net-new"), name="fuse")
 app.add_typer(certify_app, name="certify")
 app.add_typer(retarget_app, name="retarget")
 app.add_typer(language_app, name="language")
+app.add_typer(run_app, name="run")
+app.command("deliver")(deliver_cmd)
 
 
 if __name__ == "__main__":

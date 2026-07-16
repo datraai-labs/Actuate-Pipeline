@@ -215,6 +215,10 @@ def log_episode(
     for src in (hands, depth, objects, fusion):
         if src is not None and hasattr(src, "frames"):
             ids |= set(src.frames)
+    if episode is not None:
+        # an episode-only call (no perception results) must still log its own frames --
+        # without this, `run all`'s viz stage produced an rrd with zero per-frame content
+        ids |= {f.frame_idx for f in episode.frames}
     frame_ids = sorted(ids)
     if max_frames is not None:
         frame_ids = frame_ids[:max_frames]
@@ -291,4 +295,51 @@ def log_episode(
                     counts["action"] += 1
                 prev_root[h.side] = root_cam
 
+    # --- Phase 5 completeness: language + certificate travel with the recording --------
+    if episode is not None:
+        counts["language"] = _log_episode_annotations(episode, frame_ids)
+
     return counts
+
+
+def _log_episode_annotations(episode, frame_ids: list[int]) -> int:
+    """Subtask instructions on the timeline + the quality certificate as a static panel.
+
+    Subtasks are logged as per-frame text so scrubbing shows WHICH instruction is active;
+    subgoal frames get a marker. The certificate (quality, components, mistakes) is one
+    static document -- the viewer sees the score next to the data it scores.
+    """
+    import rerun as rr
+
+    n = 0
+    spans = [(s.start_frame, s.end_frame, s.instruction, s.confidence)
+             for s in episode.subtasks]
+    subgoals = {g.frame_idx: (g.label or "") for g in episode.subgoal_frames}
+    for i in frame_ids:
+        rr.set_time("frame", sequence=i)
+        active = [f"[{c:.2f}] {t}" for a, b, t, c in spans if a <= i <= b]
+        if active:
+            rr.log("language/subtask", rr.TextDocument("\n".join(active)))
+            n += 1
+        if i in subgoals:
+            rr.log("language/subgoal", rr.TextLog(f"subgoal: {subgoals[i]}"))
+
+    m = episode.episode_meta
+    c = m.components
+    fmt = lambda v: "not measured" if v is None else f"{v:.2f}"  # noqa: E731
+    doc = [f"# {episode.episode_id}",
+           f"task: {episode.task or '(none)'}",
+           f"paraphrases: {len(episode.task_paraphrases)}",
+           f"tier: {episode.tier.value if episode.tier else 'unassigned'}",
+           "",
+           f"quality: {m.quality or '?'}/5   speed: {m.speed or '?'}",
+           f"  sync_integrity          {fmt(c.sync_integrity)}",
+           f"  calibration_completeness {fmt(c.calibration_completeness)}",
+           f"  perception_confidence   {fmt(c.perception_confidence)}",
+           f"  contact_consistency     {fmt(c.contact_consistency)}",
+           f"  ik_convergence_rate     {fmt(c.ik_convergence_rate)}",
+           f"mistakes: {len(m.mistakes)}"]
+    doc += [f"  - {x}" for x in m.mistakes[:8]]
+    rr.log("certificate", rr.TextDocument("\n".join(doc),
+                                          media_type=rr.MediaType.MARKDOWN), static=True)
+    return n

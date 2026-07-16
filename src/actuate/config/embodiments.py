@@ -45,6 +45,13 @@ class EmbodimentSpec(BaseModel):
     #: replay, and therefore no honest claim of retarget-eligibility.
     urdf_path: str | None = None
 
+    #: (fx, fy) of the robot's calibrated camera, for aligned-capture verification
+    #: (Phase 5 Part E). None == nobody has calibrated one, which means every
+    #: `--aligned-robot` claim against this embodiment is UNVERIFIABLE and flags --
+    #: it does not default to accepted. All current embodiments are None; that is
+    #: the true state of the hardware, not a placeholder to fill casually.
+    camera_intrinsics: tuple[float, float] | None = None
+
     #: True only after a real MuJoCo/Isaac replay passed collision + joint-limit +
     #: contact-stability + no-slip on a real episode (Master Spec §L5 gate).
     sim_validated: bool = False
