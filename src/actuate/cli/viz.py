@@ -100,6 +100,19 @@ def show(
     if not session.exists():
         raise typer.BadParameter(f"session dir not found: {session}")
 
+    # A user who just dropped a raw video in has no session_meta.json; derive it from the
+    # video so perception can read frame_count/fps without a manual step.
+    from actuate.ingest.run import ensure_session_meta
+
+    try:
+        meta = ensure_session_meta(session)
+        if meta.get("source") == "auto_from_video":
+            typer.secho(f"generated session_meta.json: {meta['frame_count']} frames @ "
+                        f"{meta['fps_nominal']} fps, {meta['width']}x{meta['height']}",
+                        fg="cyan")
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
     prompt_list = [p.strip() for p in prompts.split(",")]
 
     def report(stage: str, source: str) -> None:
