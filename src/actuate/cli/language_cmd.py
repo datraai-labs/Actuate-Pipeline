@@ -66,3 +66,46 @@ def annotate_cmd(
     target = out or in_path
     target.write_text(report.episode.model_dump_json(indent=2), encoding="utf-8")
     typer.secho(f"wrote {target}  (actual cost ${report.cost_usd:.4f})", fg="green")
+
+
+@language_app.command("label-actions")
+def label_actions_cmd(
+    in_path: Path = typer.Option(..., "--in", help="Canonical episode JSON."),
+    out: Path = typer.Option(None, help="Write the labelled episode here "
+                                        "(defaults to --in, updated in place)."),
+    use_vlm: bool = typer.Option(False, help="Refine ambiguous intervals with a VLM "
+                                             "(billed; off by default — geometry is $0)."),
+) -> None:
+    """Detect fine-grained atomic action intervals (closed 20-verb vocab) per actor.
+
+    Geometry-only by default: L2 states + wrist velocity + finger curl + object proximity.
+    Costs nothing. Actions the monocular bare-hand rig cannot support (pour, insert, ...)
+    are NOT fabricated — they stay in the vocabulary for cross-dataset comparison.
+    """
+    from actuate.language import label_actions
+    from actuate.schema import CanonicalEpisode
+
+    if use_vlm:
+        from actuate.language import get_api_key
+
+        if get_api_key() is None:
+            typer.secho("--use-vlm needs ANTHROPIC_API_KEY; falling back to geometry only.",
+                        fg="yellow")
+            use_vlm = False
+        elif not typer.confirm("--use-vlm will call the Anthropic API on ambiguous "
+                               "intervals (small cost). Proceed?"):
+            use_vlm = False
+
+    ep = CanonicalEpisode.model_validate_json(in_path.read_text(encoding="utf-8"))
+    res = label_actions(ep, use_vlm=use_vlm)
+    typer.secho(res.summary(), bold=True)
+    for iv in res.intervals[:20]:
+        flag = "  [FLAG]" if iv.confidence <= 0.5 else ""
+        typer.echo(f"  {iv.actor.value:11s} {iv.action_label.value:10s} "
+                   f"[{iv.start_frame:5d}-{iv.end_frame:5d}] conf {iv.confidence:.2f}{flag}")
+    if len(res.intervals) > 20:
+        typer.echo(f"  ... and {len(res.intervals) - 20} more")
+
+    target = out or in_path
+    target.write_text(res.episode.model_dump_json(indent=2), encoding="utf-8")
+    typer.secho(f"wrote {target}", fg="green")

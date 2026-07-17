@@ -244,6 +244,59 @@ models stack (Kaggle is the GPU path).
 · consent=pending on the only capture · monocular depth below the manipulation signal
 floor · no physical robot, no dexterous hand, no calibrated robot camera.
 
+## Phase 5b — FINE-GRAINED ACTION LABELING (closed 20-verb ontology) + gap-closing
+
+The one substantial gap the "Phase 5 Complete" prompt named that was genuinely unbuilt.
+Everything else in that prompt (paraphrase/subtask/judge, certify.score, RLDS, dual-space,
+ingest.run, deliver, run all) was already done — audited and confirmed, not rebuilt.
+
+**Schema v5** (additive-optional, v4 payloads validate unchanged, frozen red→green):
+- `ActionVerb` — the CLOSED 20-verb vocabulary (Master Spec v1 §10.3). Task identity is
+  open; atomic primitives are closed to this list, which is what makes cross-dataset
+  comparison possible.
+- `Actor` — 8 actors (§10.4), rig-constrained.
+- `ActionInterval` + `CanonicalEpisode.action_intervals[]` — per-actor, joinable to
+  per-frame data by [start_frame, end_frame].
+
+**`language.label_actions`** — geometry-only detector (L2 states + wrist velocity + finger
+curl + object proximity), **$0, VLM opt-in**. It honestly emits only the **9 verbs monocular
+bare-hand geometry can defend** (idle/reach/grasp/hold/lift/transport/lower/place/release);
+the other 11 (pour, insert, rotate, …) stay in the vocabulary for cross-dataset comparison
+but are **never fabricated** from noisy monocular data. Confidence per interval; low
+confidence flagged. Bimanual actions are separate overlapping rows.
+
+Measured on real data — the scale honesty matters:
+- Full 2850-frame episode: **212 intervals** over both hands, verbs {idle 95, transport 99,
+  lower 7, lift 11}. No grasp/hold/place because this capture carries no object *poses*
+  (masks only) and the fusion curl never reaches a grasp — honest absence, not a bug.
+- 45-frame perception subset (the VRAM-capped `run all` window): 2 idle intervals — a
+  1.5 s static window is idle, correctly.
+
+**9 gates pass**, including the mislabel red→green (a "pour" label on an idle frame is
+rejected by an independent VLM check, run against a fake client at $0).
+
+**Part B touch-ups:** `segment_subtasks` promoted to a public function; the no-key path now
+**degrades to rule-based paraphrases** (sentence restructuring + synonym map) instead of
+skipping — a no-key run still ships >1 instruction string.
+
+**Wired end-to-end:** new `label_actions` stage in `actuate run all`; Rerun shows per-verb
+color-coded bars per actor on the timeline. One re-runnability bug fixed on the way (RLDS
+export now clears a prior build of its own dataset name, so a second `run all` cannot fail
+because the first succeeded).
+
+**Integration gate — 10/10 on the clean end-to-end run** (schema v5, $0 API, language
+reused): action_intervals present (closed vocab, both actors, joinable) · task + 5
+paraphrases + 9 subtasks + 9 subgoals · certificate quality 3/5 (sync 0.88, calib 0.30;
+perception_confidence None on the perception-built canonical — that path doesn't emit
+per-frame confidence, honestly "not measured") · consent still blocks delivery · LeRobot
+loads at 53-dim observation.state (wrist + MANO-45) · RLDS `tfds.load` iterates 1 episode ·
+manifest reports scene/demonstrator diversity separately · norm stats carry percentiles +
+mean + std · pipeline.rrd present with action + language layers. 192 unit tests, import-
+linter 2/2.
+
+Still not launch-ready, same blockers. Action labeling is honest geometry, not a
+force/contact-aware labeller — the 11 contact/6-DoF verbs await hardware the rig lacks.
+
 ## Phase 4a Part E — GeoRT FINGER RETARGETING (Allegro): GATE 3 NOT TESTABLE ON THIS CAPTURE
 
 `retarget.finger.train/run` maps MANO fingertips → Allegro's 16 DoF. Contact-blind by

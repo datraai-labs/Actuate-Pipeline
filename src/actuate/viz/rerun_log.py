@@ -31,7 +31,10 @@ from actuate.viz.conventions import (
     STATE_COLORS,
     contact_color,
     skeleton_strips,
+    verb_color,
 )
+
+_verb_color = verb_color
 
 _CAM = "world/camera"
 _IMG = "world/camera/image"
@@ -323,6 +326,22 @@ def _log_episode_annotations(episode, frame_ids: list[int]) -> int:
             n += 1
         if i in subgoals:
             rr.log("language/subgoal", rr.TextLog(f"subgoal: {subgoals[i]}"))
+
+    # --- action intervals: per-frame verb + actor on the timeline (color by verb) ------
+    if episode.action_intervals:
+        by_actor: dict[str, list] = {}
+        for iv in episode.action_intervals:
+            by_actor.setdefault(iv.actor.value, []).append(iv)
+        for i in frame_ids:
+            rr.set_time("frame", sequence=i)
+            for actor, ivs in by_actor.items():
+                active = [iv for iv in ivs if iv.start_frame <= i <= iv.end_frame]
+                if active:
+                    iv = active[0]
+                    rr.log(f"actions/{actor}",
+                           rr.TextLog(f"{iv.action_label.value} ({iv.confidence:.2f})",
+                                      color=_verb_color(iv.action_label.value)))
+                    n += 1
 
     m = episode.episode_meta
     c = m.components

@@ -93,6 +93,7 @@ def run_all(
     _stage_ingest(ctx)
     perception = _stage_perceive(ctx)
     _stage_canonical(ctx, perception)
+    _stage_label_actions(ctx)
     _stage_retarget(ctx)
     _stage_certify(ctx)
     _stage_language(ctx)
@@ -102,6 +103,8 @@ def run_all(
     typer.secho(f"\npipeline complete in {time.time() - t0:.0f}s — stage summary:",
                 bold=True)
     for stage, rec in ctx.checkpoint.items():
+        if stage.startswith("_") or not isinstance(rec, dict):
+            continue                       # _capture_id / _tier / _sim are metadata, not stages
         color = {"done": "green", "skipped": "yellow"}.get(rec["status"], "red")
         typer.secho(f"  {stage:12s} {rec['status']:8s} {rec.get('note', '')}", fg=color)
     typer.echo(f"\ncanonical: {ctx.canonical_path}")
@@ -212,6 +215,23 @@ def _stage_canonical(ctx: _Ctx, perception: dict) -> None:
         ep = ep.model_copy(update={"tier": Tier(tier)})
     _write_canonical(ctx, ep)
     ctx.done(stage, f"{note}, {len(ep.frames)} frames")
+
+
+def _stage_label_actions(ctx: _Ctx) -> None:
+    stage = "label_actions"
+    if ctx.already(stage):
+        return
+    from actuate.language import label_actions
+
+    ep = _load_canonical(ctx)
+    fps = 30.0
+    meta = ctx.session / "session_meta.json"
+    if meta.exists():
+        fps = float(json.loads(meta.read_text(encoding="utf-8")).get("fps_nominal", 30.0))
+    res = label_actions(ep, fps=fps)          # geometry only, $0
+    _write_canonical(ctx, res.episode)
+    ctx.done(stage, f"{len(res.intervals)} intervals over {sorted(res.actors)}, "
+                    f"{res.flagged_for_review} flagged")
 
 
 def _stage_retarget(ctx: _Ctx) -> None:

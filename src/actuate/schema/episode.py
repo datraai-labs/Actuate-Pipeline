@@ -18,6 +18,8 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from actuate.config import (
+    Actor,
+    ActionVerb,
     Channel,
     ConsentStatus,
     ControlMode,
@@ -57,6 +59,35 @@ class SubgoalFrame(_Base):
 
     frame_idx: int = Field(ge=0)
     label: str | None = None
+
+
+class ActionInterval(_Base):
+    """One atomic action (Master Spec v1 §10.3-10.4). NEW in v5.
+
+    Fine-grained and per-actor, distinct from the coarse L2 interaction_state
+    (STATIC/GRASPED/MOVING) and from phase/subtask segmentation. `action_label` is drawn
+    from the CLOSED 20-verb vocabulary; `actor` names which end-effector performs it.
+    Joinable to per-frame pose/sensor data by [start_frame, end_frame]. Concurrent
+    bimanual actions are separate rows with different actors and overlapping spans.
+    """
+
+    action_label: ActionVerb
+    actor: Actor
+    start_frame: int = Field(ge=0)
+    end_frame: int = Field(ge=0)
+    start_time: float = Field(ge=0.0)
+    end_time: float = Field(ge=0.0)
+    confidence: Unit
+    #: optional index into `subtasks` this interval falls within
+    subtask_id: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _span_ordered(self) -> "ActionInterval":
+        if self.end_frame < self.start_frame:
+            raise ValueError(
+                f"action interval end_frame {self.end_frame} < start_frame "
+                f"{self.start_frame}")
+        return self
 
 
 # --------------------------------------------------------------------------------------
@@ -257,6 +288,9 @@ class CanonicalEpisode(_Base):
     task_paraphrases: tuple[str, ...] = ()
     subtasks: tuple[Subtask, ...] = ()
     subgoal_frames: tuple[SubgoalFrame, ...] = ()
+    #: v5: fine-grained atomic actions (closed 20-verb vocab, per-actor). Empty until
+    #: language.label_actions runs. Overlapping spans across actors are expected.
+    action_intervals: tuple[ActionInterval, ...] = ()
 
     # --- actions (L5) ---
     action_human: HumanAction | None = None

@@ -14,12 +14,18 @@ API key: ANTHROPIC_API_KEY env or .env.local -- never hardcoded, never logged. M
 
 from __future__ import annotations
 
+from actuate.language.actions import (
+    ActionLabelResult,
+    label_actions,
+    verify_vlm_label,
+)
 from actuate.language.annotate import (
     AnnotationReport,
     ConsistencyScore,
     annotate,
     judge,
     paraphrase,
+    segment_subtasks,
 )
 from actuate.language.vlm import (
     JUDGE_THRESHOLD,
@@ -31,8 +37,12 @@ from actuate.language.vlm import (
 
 __all__ = [
     "annotate",
+    "label_actions",
+    "ActionLabelResult",
+    "verify_vlm_label",
     "paraphrase",
     "judge",
+    "segment_subtasks",
     "AnnotationReport",
     "ConsistencyScore",
     "JUDGE_THRESHOLD",

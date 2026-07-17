@@ -66,12 +66,17 @@ def _episode(task="sort the papers"):
 
 
 # ---------------------------------------------------------------- key handling
-def test_no_key_skips_never_raises(monkeypatch, tmp_path):
+def test_no_key_degrades_to_rule_based_never_raises(monkeypatch, tmp_path):
+    """No key: NOT a hard skip -- rule-based paraphrases still ship (Part B fallback);
+    only the VLM-dependent captions/judge are skipped."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setattr(vlm, "get_api_key", lambda explicit=None: None)
-    report = lang_annotate.annotate(_episode(), video=tmp_path / "missing.mp4")
-    assert report.skipped
-    assert "ANTHROPIC_API_KEY" in report.skip_reason
+    monkeypatch.setattr(vlm, "make_client", lambda api_key=None: None)
+    report = lang_annotate.annotate(_episode(task="sort the papers"),
+                                    video=tmp_path / "missing.mp4")
+    assert not report.skipped                       # degraded, not skipped
+    assert len(report.paraphrases) >= 3             # rule-based variants present
+    assert "rule-based" in report.skip_reason       # reason still explains the degradation
+    assert report.subtasks == []                    # VLM parts skipped
 
 
 def test_get_api_key_never_returns_empty(monkeypatch):

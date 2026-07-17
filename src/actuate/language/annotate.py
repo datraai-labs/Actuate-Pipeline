@@ -66,14 +66,68 @@ class AnnotationReport:
                 f"${self.cost_usd:.4f}")
 
 
+#: Rule-based rephrasing templates for the no-key fallback. Not as good as an LLM -- but a
+#: single string is worse still (TRI LBM samples one paraphrase per training step, so zero
+#: variety hurts robustness). These restructure the sentence rather than swap synonyms.
+_PARAPHRASE_TEMPLATES = (
+    "{t}.",
+    "Please {tl}.",
+    "Your task: {tl}.",
+    "Go ahead and {tl}.",
+    "The goal is to {tl}.",
+)
+#: Light synonym map for the restructuring fallback (deliberately small and safe).
+_SYNONYMS = {"sort": "organize", "staple": "fasten", "pick up": "grab",
+             "place": "put", "move": "transport", "workbench": "work surface"}
+
+
+def _rule_based_paraphrases(task_str: str, n: int) -> list[str]:
+    base = task_str.strip().rstrip(".")
+    lowered = base[0].lower() + base[1:] if base else base
+    swapped = lowered
+    for a, b in _SYNONYMS.items():
+        swapped = swapped.replace(a, b)
+    variants: list[str] = []
+    for tmpl in _PARAPHRASE_TEMPLATES:
+        variants.append(tmpl.format(t=base, tl=lowered))
+        if swapped != lowered:
+            variants.append(tmpl.format(t=swapped.capitalize(), tl=swapped))
+    seen, out = set(), []
+    for v in variants:
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out[:n]
+
+
 def paraphrase(task_str: str, n: int = 5, *, client=None, api_key: str | None = None
                ) -> list[str]:
-    """N semantically diverse paraphrases of an operator-verified task string."""
+    """N diverse paraphrases of a task string.
+
+    LLM path when a client/key is available; otherwise a RULE-BASED fallback (sentence
+    restructuring + a small synonym map) so a no-key run still ships more than one string.
+    """
     client = client or vlm.make_client(api_key)
     if client is None:
-        raise RuntimeError("no ANTHROPIC_API_KEY available; cannot paraphrase")
+        return _rule_based_paraphrases(task_str, n)
     result, _ = vlm.call_paraphrase(client, task_str, n)
     return result
+
+
+def segment_subtasks(canonical, api_key: str | None = None, *, session_dir=None,
+                     video=None, client=None) -> list:
+    """Public subtask segmentation (Part B interface).
+
+    Uses the existing v1 phase boundaries as subtask spans and generates a per-segment
+    instruction via VLM. Delegates to `annotate` (which owns the shared per-segment
+    caption+judge loop) and returns just the `Subtask` list; a no-key or no-video run
+    returns []. Kept as its own entry point per the Master Spec §L6 interface list.
+    """
+    from pathlib import Path
+
+    report = annotate(canonical, api_key, session_dir=session_dir,
+                      video=Path(video) if video else None, client=client)
+    return list(report.subtasks)
 
 
 def judge(caption: dict, frames_b64: list[str], facts: dict, *, client=None,
@@ -156,13 +210,23 @@ def annotate(
         return AnnotationReport(episode_id=episode.episode_id, skipped=True,
                                 skip_reason=reason)
 
-    client = client or vlm.make_client(api_key)
-    if client is None:
-        return _skip("no ANTHROPIC_API_KEY (env or .env.local); language annotation "
-                     "needs one -- skipping, not failing")
     if not episode.task:
         return _skip("episode has no operator-verified task; paraphrasing a missing task "
                      "would invent a label")
+
+    client = client or vlm.make_client(api_key)
+    if client is None:
+        # degrade, don't skip: rule-based paraphrases still ship (better than one string);
+        # captions/judge (which need the VLM) are the parts that can't run without a key.
+        paras = _rule_based_paraphrases(episode.task, n_paraphrases)
+        updated = episode.model_copy(update={"task_paraphrases": tuple(paras)})
+        return AnnotationReport(
+            episode_id=episode.episode_id, skipped=False,
+            skip_reason="no ANTHROPIC_API_KEY: rule-based paraphrases only; VLM subtasks + "
+                        "judge skipped",
+            paraphrases=paras, episode=updated)
+    if video is None or not Path(video).exists():
+        return _skip(f"no video at {video}; captions and the judge need frames")
     if video is None or not Path(video).exists():
         return _skip(f"no video at {video}; captions and the judge need frames")
 

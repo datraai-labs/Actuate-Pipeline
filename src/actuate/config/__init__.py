@@ -15,6 +15,8 @@ from actuate.config.embodiments import (
     retarget_ready_embodiments,
 )
 from actuate.config.enums import (
+    ActionVerb,
+    Actor,
     MEASURED_PROVENANCES,
     PROVENANCE_TRUST_ORDER,
     Channel,
@@ -41,6 +43,8 @@ from actuate.config.settings import (
 )
 
 __all__ = [
+    "ActionVerb",
+    "Actor",
     "Bucket",
     "CANONICAL_REFERENCE_HAND",
     "Channel",
