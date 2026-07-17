@@ -63,9 +63,63 @@ def _session_video(src: Path) -> Path:
         p = src / name
         if p.exists():
             return p
+    # any other single .mp4 the user dropped in -- accept it so "add my video and run"
+    # doesn't require the exact filename
+    others = sorted(src.glob("*.mp4"))
+    if others:
+        return others[0]
     raise FileNotFoundError(
-        f"{src}: no video (compressed.mp4 / redacted_compressed.mp4 / raw.mp4). "
-        "ingest.run handles the processed session layout only -- see module docstring.")
+        f"{src}: no video (*.mp4). ingest.run handles the processed session layout only -- "
+        "see module docstring.")
+
+
+def ensure_session_meta(src: Path) -> dict:
+    """Generate session_meta.json from the video itself if it is missing (OpenCV).
+
+    The perception stages need frame_count/fps/resolution. A user who just drops a raw
+    video into a folder has none of that; deriving it from the video removes the manual
+    step so `actuate viz show <folder>` works on any clip. If a valid meta already exists
+    it is returned untouched.
+    """
+    import json as _json
+
+    src = Path(src)
+    meta_p = src / "session_meta.json"
+    if meta_p.exists():
+        try:
+            m = _json.loads(meta_p.read_text(encoding="utf-8"))
+            if m.get("frame_count"):
+                return m
+        except (ValueError, OSError):
+            pass  # malformed -> regenerate
+
+    import cv2
+
+    video = _session_video(src)
+    cap = cv2.VideoCapture(str(video))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    fc = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    cap.release()
+    if fc <= 0:                       # some containers don't report a count -> decode-count
+        cap = cv2.VideoCapture(str(video))
+        while cap.read()[0]:
+            fc += 1
+        cap.release()
+    meta = {
+        "session_id": src.name,
+        "frame_count": int(fc),
+        "fps_nominal": round(float(fps), 3),
+        "fps": round(float(fps), 3),
+        "duration_seconds": round(fc / fps, 3) if fps else None,
+        "resolution": [w, h],
+        "width": w,
+        "height": h,
+        "source": "auto_from_video",
+    }
+    meta_p.write_text(_json.dumps(meta, indent=2), encoding="utf-8")
+    return meta
 
 
 def _session_intrinsics(src: Path) -> tuple[float, float] | None:
