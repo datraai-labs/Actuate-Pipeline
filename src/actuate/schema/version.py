@@ -42,7 +42,13 @@ from pathlib import Path
 #:     customers on 2/98-per-timestep (TRI LBM) or z-score (EgoMimic) re-derive without
 #:     recomputing over the raw dataset.
 #:   All additive-optional: v3 payloads validate unchanged.
-SCHEMA_VERSION = 4
+#: v5 (2026-07-17) — fine-grained action labeling (Master Spec v1 §10.3-10.4).
+#:   + CanonicalEpisode.action_intervals: tuple[ActionInterval, ...] -- atomic actions
+#:     from the CLOSED 20-verb vocabulary (ActionVerb), each attributed to an Actor,
+#:     joinable to per-frame data by [start_frame, end_frame]. Overlapping across actors.
+#:   + enums ActionVerb (20) and Actor (8) -- closed vocabularies.
+#:   Additive-optional: v4 payloads validate unchanged.
+SCHEMA_VERSION = 5
 
 FROZEN_DIR = Path(__file__).parent / "frozen"
 

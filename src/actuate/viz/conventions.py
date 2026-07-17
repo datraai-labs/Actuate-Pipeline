@@ -46,6 +46,25 @@ STATE_COLORS: dict[InteractionState, tuple[int, int, int]] = {
 }
 
 
+#: Color per action verb, grouped by kind so the timeline reads at a glance:
+#: grey = idle, blue = transit/reach, green = grasp/hold, amber = manipulate.
+_VERB_COLORS: dict[str, tuple[int, int, int]] = {
+    "idle": (120, 120, 120),
+    "reach": (80, 160, 255), "transport": (80, 160, 255), "lift": (60, 200, 200),
+    "lower": (60, 200, 200), "place": (60, 200, 200),
+    "grasp": (60, 220, 90), "hold": (40, 180, 70), "release": (200, 220, 60),
+    "align": (240, 170, 40), "stabilize": (240, 170, 40), "insert": (240, 140, 40),
+    "remove": (240, 140, 40), "open": (240, 140, 40), "close": (240, 140, 40),
+    "push": (230, 110, 60), "pull": (230, 110, 60), "rotate": (230, 110, 60),
+    "wipe": (230, 110, 60), "pour": (230, 110, 60),
+}
+
+
+def verb_color(verb: str) -> tuple[int, int, int]:
+    """Timeline color for an action verb (grey if unknown, never crashes viz)."""
+    return _VERB_COLORS.get(verb, (150, 150, 150))
+
+
 def contact_color(confidence: float) -> tuple[int, int, int]:
     """Bright = confident contact, dim = uncertain. confidence in [0, 1] (vision caps it low).
 

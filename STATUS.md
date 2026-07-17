@@ -147,6 +147,156 @@ Install note: `pip` on PATH belonged to Python 3.11 while `python` is 3.10 — i
 silently going to the wrong interpreter; `python -m pip` fixed it. tensorflow bumped protobuf
 to 6.x (mediapipe pins <5 but still imports; v1-legacy only, `src/` never imports it).
 
+## Phase 5 Part A — LANGUAGE RICH-CONTEXT (all four gates PASS on the real capture, real API)
+
+Ported v1's `utils/vlm_language.py` (the injected-client seam kept — every code path
+unit-tests against a fake client, 10 tests, no network) and upgraded to π0.7-grade:
+
+| Gate | Result |
+|---|---|
+| 1 — paraphrases diverse | **PASS** — 5 paraphrases, different structures not word-swaps ("Head to the workbench, sort through the papers, and staple them" vs "Organize and bind the paperwork with staples once you're at the workbench") |
+| 2 — subtasks align with phase boundaries | **PASS** — 9 subtasks exactly on the (flicker-healed) v1 phase segments; subgoal_frames at each boundary |
+| 3 — judge catches hallucination, red→green | **PASS, real API on real frames** — planted "a red stapler and a coffee mug": object_consistency **0.10**, verdict inconsistent, all four fabrications named in unsupported_claims. The faithful caption passed at min 0.70, NOT flagged (a judge that flags everything is as useless as one that flags nothing — tested both directions) |
+| 4 — schema fields populated | **PASS** — task_paraphrases(5) / subtasks(9, all with judge-derived confidence) / subgoal_frames(9) in schema-valid v4 canonical output |
+
+**The judge design:** independent second call (never the generator scoring itself), four
+dimensions (hand/object/action/global), grounded in perception facts (tracked objects,
+interaction states) so it is more than a vibe check. Below-threshold captions are **flagged
+for review and shipped with low confidence — never silently accepted, never silently
+dropped** (a dropped segment hides the disagreement a reviewer needs). The real run flagged
+1/9 (a 10-frame flicker segment, conf 0.60) — the QA protocol doing its job.
+
+**Cost honesty:** estimate shown before every billed call (`--yes` to skip the prompt).
+Real run: estimated $0.84, actual **$0.8756** — above the ~$0.25 quoted at planning, because
+the capture has 9 real segments, not the 3-4 assumed. Merging v1's flickery same-phase
+segments (15 → 9) was done for subtask quality and cut the cost 40% as a side effect.
+
+**API-drift facts encoded** (per the claude-api reference, not memory): `temperature` is
+REMOVED on the current model family (the "temperature=0 for judge determinism" plan would
+have 400'd); structured-output schemas carry no numeric bounds (scores clamped client-side).
+Key from env/.env.local (git-ignored), never hardcoded/logged; no key → SKIP with a warning,
+the pipeline never fails on missing language. 169 unit tests green, import-linter 2/2.
+
+## Phase 5 Parts E+F — ALIGNED-CAPTURE MODE, DELIVERY HARDENING, THE FULL PIPELINE
+
+**Part E — minimal `ingest.run` + aligned-capture.** Handles the processed session layout
+only (MCAP/PyAV/sync/six RigAdapters remain unbuilt, stated). Stage-II anchor is EARNED:
+
+| Case | Result |
+|---|---|
+| matching calibrated intrinsics (±5%) | tier = **stage2_anchor** |
+| mismatch | **FLAGGED**, stays stage1 — never silently accepted |
+| calibration missing on either side | **FLAGGED UNVERIFIABLE**, stays stage1 |
+| no claim | stage1_volume |
+
+The real capture lands in the third row: no embodiment has `camera_intrinsics` registered
+(nobody has calibrated a robot camera), so `--aligned-robot franka_panda` flags
+UNVERIFIABLE — the true state of the hardware. Catalog leg written-only (no Docker).
+
+**Part F — `actuate deliver`** routes every byte through `DeliveryWriter` (never the raw
+backend), doubly gated: consent/PII (fail-closed, re-checked on every write) AND a quality
+floor where **unscored = unknown = blocked**, not "low". Proven live: the real certified
+episode (quality 3/5, consent=pending) is REFUSED at the delivery door. One bad episode
+blocks a whole multi-episode delivery. Presigned-URL leg implemented but **written-only —
+the delivery bucket has never been deployed** (no datraai-admin profile; StorageStack is
+synth-only), so the "delivery-dev still 0 objects" gate is restated as the stronger truth:
+**no delivery bucket exists; nothing can ship.** Delivery ledger is JSONL (no Postgres).
+
+**Part F — `actuate run all`** (YAML profile, checkpoint/resume, the viz `--cache` spine):
+
+| Stage | Run 1 | Resume |
+|---|---|---|
+| ingest | done (stage1_volume) | skipped (done) |
+| perceive | **skipped: CUDA OOM** (WiLoR+UniDepth stack past 4 GB) | **done, 45 frames** (VRAM freed) |
+| canonical | done — v1-legacy fallback, 2850 frames | kept (resume semantics; a fresh run would build from perception) |
+| retarget | skipped: no trained arm estimator (Kaggle job) | same |
+| certify | quality 3/5, 9 mistake flags | kept |
+| language | **REUSED paid annotations — $0 new API cost** (capture-id-matched; billed mode requires interactive confirmation) | kept |
+| package | lerobot 2680 f + rlds 2680 steps, human-space only (no robot action attached — stated) | kept |
+| viz | pipeline.rrd | video 300 / depth 45 / hand 91 / state 45 / contact 90 / action 89 / **language 2850** + certificate panel |
+
+Every skip carries its reason in `checkpoint.json`; a crash never repeats the GPU stages.
+
+**Integration gate verified:** LeRobot's own loader reads the export (2680 frames) ·
+`tfds.load` iterates the RLDS episode with the language instruction · manifest honest
+(n=1, stage1, quality 3.0, language modalities present) · certificate populated with real
+numbers (0.88/0.15/0.62), not placeholders · paraphrases+subtasks+subgoals present ·
+**consent still blocks delivery** · nothing shipped anywhere.
+
+## PHASE 5 FINAL — WHAT WORKS vs WHAT'S A DEMO
+
+**Mechanically complete on one non-deliverable, off-taxonomy clip — NOT launch-ready.**
+
+Works (tested on real data): content-addressed ingest · WiLoR hands + MANO-45 · UniDepth
+depth (below the wrist signal floor — stereo is the real fix) · L2 fusion · canonical v4 ·
+quality certificate with decomposable components · dual-space LeRobot v3 (load+train gate)
+· RLDS/Open-X (tfds.load gate) · language annotation with LLM-as-judge (real API) ·
+consent fail-closed at every door · one-command pipeline with honest degradation.
+
+Demo / written-only / blocked: arm retarget GATE 2 needs the Kaggle training run (84% IK)
+· finger retarget validated on synthetic only (GATE 3 needs a calibration capture: ~5 min
+of open/fist/free motion) · sim validation is kinematic (no contact model) · S3/presigned
+delivery, catalog writes: written-only (no deployed AWS, no Docker) · aligned-capture can
+verify but nothing is calibrated to verify against · perception on this laptop OOMs when
+models stack (Kaggle is the GPU path).
+
+**Launch blockers:** MANO/WiLoR are CC-BY-NC (MPI) — internal research only · corpus n=1
+· consent=pending on the only capture · monocular depth below the manipulation signal
+floor · no physical robot, no dexterous hand, no calibrated robot camera.
+
+## Phase 5b — FINE-GRAINED ACTION LABELING (closed 20-verb ontology) + gap-closing
+
+The one substantial gap the "Phase 5 Complete" prompt named that was genuinely unbuilt.
+Everything else in that prompt (paraphrase/subtask/judge, certify.score, RLDS, dual-space,
+ingest.run, deliver, run all) was already done — audited and confirmed, not rebuilt.
+
+**Schema v5** (additive-optional, v4 payloads validate unchanged, frozen red→green):
+- `ActionVerb` — the CLOSED 20-verb vocabulary (Master Spec v1 §10.3). Task identity is
+  open; atomic primitives are closed to this list, which is what makes cross-dataset
+  comparison possible.
+- `Actor` — 8 actors (§10.4), rig-constrained.
+- `ActionInterval` + `CanonicalEpisode.action_intervals[]` — per-actor, joinable to
+  per-frame data by [start_frame, end_frame].
+
+**`language.label_actions`** — geometry-only detector (L2 states + wrist velocity + finger
+curl + object proximity), **$0, VLM opt-in**. It honestly emits only the **9 verbs monocular
+bare-hand geometry can defend** (idle/reach/grasp/hold/lift/transport/lower/place/release);
+the other 11 (pour, insert, rotate, …) stay in the vocabulary for cross-dataset comparison
+but are **never fabricated** from noisy monocular data. Confidence per interval; low
+confidence flagged. Bimanual actions are separate overlapping rows.
+
+Measured on real data — the scale honesty matters:
+- Full 2850-frame episode: **212 intervals** over both hands, verbs {idle 95, transport 99,
+  lower 7, lift 11}. No grasp/hold/place because this capture carries no object *poses*
+  (masks only) and the fusion curl never reaches a grasp — honest absence, not a bug.
+- 45-frame perception subset (the VRAM-capped `run all` window): 2 idle intervals — a
+  1.5 s static window is idle, correctly.
+
+**9 gates pass**, including the mislabel red→green (a "pour" label on an idle frame is
+rejected by an independent VLM check, run against a fake client at $0).
+
+**Part B touch-ups:** `segment_subtasks` promoted to a public function; the no-key path now
+**degrades to rule-based paraphrases** (sentence restructuring + synonym map) instead of
+skipping — a no-key run still ships >1 instruction string.
+
+**Wired end-to-end:** new `label_actions` stage in `actuate run all`; Rerun shows per-verb
+color-coded bars per actor on the timeline. One re-runnability bug fixed on the way (RLDS
+export now clears a prior build of its own dataset name, so a second `run all` cannot fail
+because the first succeeded).
+
+**Integration gate — 10/10 on the clean end-to-end run** (schema v5, $0 API, language
+reused): action_intervals present (closed vocab, both actors, joinable) · task + 5
+paraphrases + 9 subtasks + 9 subgoals · certificate quality 3/5 (sync 0.88, calib 0.30;
+perception_confidence None on the perception-built canonical — that path doesn't emit
+per-frame confidence, honestly "not measured") · consent still blocks delivery · LeRobot
+loads at 53-dim observation.state (wrist + MANO-45) · RLDS `tfds.load` iterates 1 episode ·
+manifest reports scene/demonstrator diversity separately · norm stats carry percentiles +
+mean + std · pipeline.rrd present with action + language layers. 192 unit tests, import-
+linter 2/2.
+
+Still not launch-ready, same blockers. Action labeling is honest geometry, not a
+force/contact-aware labeller — the 11 contact/6-DoF verbs await hardware the rig lacks.
+
 ## Phase 4a Part E — GeoRT FINGER RETARGETING (Allegro): GATE 3 NOT TESTABLE ON THIS CAPTURE
 
 `retarget.finger.train/run` maps MANO fingertips → Allegro's 16 DoF. Contact-blind by

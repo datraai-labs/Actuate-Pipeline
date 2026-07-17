@@ -21,6 +21,7 @@ from actuate.schema.episode import (
     RobotAction,
     StrategyAlignment,
     SubgoalFrame,
+    ActionInterval,
     Subtask,
 )
 from actuate.schema.frame import (
@@ -59,6 +60,7 @@ __all__ = [
     "RobotAction",
     "StrategyAlignment",
     "SubgoalFrame",
+    "ActionInterval",
     "Subtask",
     "dump_json_schema",
     "frozen_schema_path",

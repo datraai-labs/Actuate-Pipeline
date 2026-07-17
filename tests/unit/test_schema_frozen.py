@@ -45,16 +45,15 @@ REQUIRED_FRAME_FIELDS = (
 )
 
 
-def test_schema_version_is_four():
-    """v4 = the certificate becomes real (Phase 5): CertificateComponents on EpisodeMeta,
-    retarget_eligibility on the episode, full percentile set on FieldStats. All additive-
-    optional — v3 payloads validate unchanged.
+def test_schema_version_is_five():
+    """v5 = fine-grained action labeling: action_intervals[] on the episode (closed 20-verb
+    ActionVerb + Actor vocabularies). Additive-optional — v4 payloads validate unchanged.
 
     This assertion failing is the freeze mechanism working: a schema change that forgets to
     bump the version cannot pass, and a version bump that forgets to re-freeze the JSON
     Schema cannot pass either.
     """
-    assert SCHEMA_VERSION == 4
+    assert SCHEMA_VERSION == 5
 
 
 def test_frozen_schema_exists():

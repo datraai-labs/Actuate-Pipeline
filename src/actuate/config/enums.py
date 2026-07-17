@@ -165,3 +165,57 @@ class Finger(str, Enum):
     MIDDLE = "middle"
     RING = "ring"
     PINKY = "pinky"
+
+
+class ActionVerb(str, Enum):
+    """The CLOSED atomic-manipulation vocabulary (Master Spec v1 §10.3).
+
+    Task identity is OPEN (free-form task names); the atomic primitives are CLOSED to
+    exactly these 20 verbs. That is what makes cross-episode and cross-dataset comparison
+    possible -- two datasets can only be compared on a shared, fixed action alphabet.
+    Adding a member is a schema change and needs a SCHEMA_VERSION bump (see header).
+    """
+
+    REACH = "reach"
+    GRASP = "grasp"
+    HOLD = "hold"
+    LIFT = "lift"
+    TRANSPORT = "transport"
+    LOWER = "lower"
+    PLACE = "place"
+    ALIGN = "align"
+    STABILIZE = "stabilize"
+    RELEASE = "release"
+    OPEN = "open"
+    CLOSE = "close"
+    INSERT = "insert"
+    REMOVE = "remove"
+    PUSH = "push"
+    PULL = "pull"
+    ROTATE = "rotate"
+    WIPE = "wipe"
+    POUR = "pour"
+    IDLE = "idle"
+
+
+class Actor(str, Enum):
+    """Who performs an action interval (Master Spec v1 §10.4).
+
+    Constrained per rig to actors for which a tracking stream actually exists -- a
+    head_mounted bare-hand rig has left_hand/right_hand/head, never left_gripper. The
+    per-rig allowed set lives on RigSpec (config.rigs). Concurrent bimanual actions are
+    SEPARATE overlapping rows keyed on different actors, never collapsed into one.
+    """
+
+    LEFT_HAND = "left_hand"
+    RIGHT_HAND = "right_hand"
+    LEFT_GRIPPER = "left_gripper"
+    RIGHT_GRIPPER = "right_gripper"
+    LEFT_FINGERS = "left_fingers"
+    RIGHT_FINGERS = "right_fingers"
+    BODY = "body"
+    HEAD = "head"
+
+    @staticmethod
+    def for_side(side: "Side") -> "Actor":
+        return Actor.LEFT_HAND if side == Side.LEFT else Actor.RIGHT_HAND

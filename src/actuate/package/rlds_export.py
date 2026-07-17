@@ -178,6 +178,15 @@ def export_rlds(
         return {"steps": steps}
 
     root = Path(out)
+    # tfds refuses to re-prepare a dataset that already exists at this data_dir (it hashes
+    # the prior build and errors on any change). An exporter must be re-runnable -- a second
+    # `run all` cannot fail because the first one succeeded -- so clear a prior build of THIS
+    # dataset name first. Only our own named subtree is removed, never the whole data_dir.
+    import shutil
+
+    prior = root / name
+    if prior.exists():
+        shutil.rmtree(prior)
     root.mkdir(parents=True, exist_ok=True)
     tfds.dataset_builders.store_as_tfds_dataset(
         name=name,
