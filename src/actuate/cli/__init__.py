@@ -22,6 +22,14 @@ from actuate.cli.pipeline import canonical_app, package_app
 from actuate.cli.retarget import retarget_app
 from actuate.cli.run_all import run_app
 from actuate.cli.schema_cmd import schema_app
+from actuate.cli.simple import (
+    config_app,
+    export_cmd,
+    login_app,
+    process_cmd,
+    report_cmd,
+    status_cmd,
+)
 from actuate.cli.storage import storage_app
 from actuate.cli.viz import viz_app
 
@@ -67,6 +75,14 @@ app.add_typer(retarget_app, name="retarget")
 app.add_typer(language_app, name="language")
 app.add_typer(run_app, name="run")
 app.command("deliver")(deliver_cmd)
+
+# --- Phase 6: the simplified, SDK-backed surface (the common case) --------------------
+app.add_typer(login_app, name="login")
+app.add_typer(config_app, name="config")
+app.command("process")(process_cmd)
+app.command("export")(export_cmd)
+app.command("status")(status_cmd)
+app.command("report")(report_cmd)
 
 
 if __name__ == "__main__":
