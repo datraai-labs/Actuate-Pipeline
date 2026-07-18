@@ -60,6 +60,7 @@ def _resolve_source(source: str, work_root: Path) -> Path:
             f"source not found: {p}. Give a local video file, a processed session "
             "directory, or a remote source (hf:// s3:// https:// openx://).")
     if p.is_dir():
+        _normalize(p)
         return p                                   # already a session directory
     # a single video file -> stage it into its own session directory
     session = work_root / p.stem
@@ -69,7 +70,15 @@ def _resolve_source(source: str, work_root: Path) -> Path:
         import shutil
 
         shutil.copy2(p, dest)
+    _normalize(session)
     return session
+
+
+def _normalize(session: Path) -> None:
+    """Rename spaces/parens/unicode files to pipeline-safe names (the Kaggle bug)."""
+    from actuate.sources.detect import normalize_filenames
+
+    normalize_filenames(session)
 
 
 def _video_name(session: Path) -> str:
@@ -121,11 +130,26 @@ def process(
     if max_frames is None:
         max_frames = int(meta.get("frame_count") or 45)
 
+    # auto-task: a VLM keyframe call when a key is available and no task was given
+    # ($ tiny, one image). No key -> stays None, and the exporter fail-closes on it.
+    if task is None and kwargs.get("auto_task", True):
+        from actuate.sources.detect import auto_task as _auto_task
+
+        task = _auto_task(session)
+
+    # local processing = your own data -> consent GRANTED. pii_status stays PENDING, so the
+    # delivery gate still blocks (see pipeline._stage_canonical). Cloud mode keeps PENDING.
+    from actuate.sources.detect import local_consent_default
+
+    consent = (local_consent_default().value if cfg.get("mode", "local") == "local"
+               else None)
+
     run_out = work_root / f"{session.name}_out"
     profile = {
         "rig": rig,
         "embodiment": embodiment,
         "task": task,
+        "consent": consent,
         "video": _video_name(session),
         "perception": {"enabled": True, "max_frames": max_frames,
                        "prompts": prompts or _DEFAULT_PROMPTS},

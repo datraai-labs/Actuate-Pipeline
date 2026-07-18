@@ -216,9 +216,21 @@ def _stage_canonical(ctx: _Ctx, perception: dict) -> None:
         note = "from v1-legacy outputs (perception unavailable)"
     from actuate.config import Tier
 
+    updates = {}
     tier = ctx.checkpoint.get("_tier")
     if tier:
-        ep = ep.model_copy(update={"tier": Tier(tier)})
+        updates["tier"] = Tier(tier)
+    # local/self-hosted processing may mark consent GRANTED (your own data). pii_status is
+    # deliberately NOT touched here -- it stays PENDING, so is_deliverable() and the
+    # DeliveryWriter gate still block. The consent boundary is unchanged; this only spares a
+    # developer a PENDING-consent block on data they own.
+    consent = ctx.profile.get("consent")
+    if consent:
+        from actuate.config import ConsentStatus
+
+        updates["consent"] = ConsentStatus(consent)
+    if updates:
+        ep = ep.model_copy(update=updates)
     _write_canonical(ctx, ep)
     ctx.done(stage, f"{note}, {len(ep.frames)} frames")
 
