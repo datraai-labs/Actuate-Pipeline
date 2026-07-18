@@ -175,27 +175,76 @@ def mediapipe_hand_presence(video: Path, n_frames: int) -> np.ndarray:
     return present
 
 
+def estimator_for(model: str, device: str):
+    """Build a hand-pose estimator exposing `.predict(frame_bgr) -> list[HandFrame]`.
+
+    A single seam so the primary and the fallback are constructed the same way and the
+    frame-scan loop stays estimator-agnostic (and so tests can inject a stub).
+    """
+    if model == "wilor":
+        return WiLoREstimator(device=device)
+    if model == "hamer":
+        from actuate.perception.hands.hamer import HaMeREstimator
+
+        return HaMeREstimator(device=device)
+    raise NotImplementedError(
+        f"hand model {model!r} is not implemented. Supported: 'wilor' (primary) and "
+        "'hamer' (the detection fallback)."
+    )
+
+
+def _scan(video: Path, indices: list[int], present: np.ndarray, estimator,
+          result: HandResult) -> HandResult:
+    """Run one estimator over the sampled frames, filling `result` in place.
+
+    Shared by the primary and fallback passes so sampling/seek/prefilter behave identically
+    for both -- the only thing that changes is which model does `.predict`.
+    """
+    n = len(indices)
+    contiguous = indices == list(range(n))
+    cap = cv2.VideoCapture(str(video))
+    for i in indices:
+        if not contiguous:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, i)   # seek when sampling sparsely
+        ok, frame = cap.read()
+        if not ok:
+            if contiguous:
+                break                             # sequential EOF -> done
+            continue                              # a bad seek skips one frame, not the run
+        if not present[i]:
+            continue
+        hands = estimator.predict(frame)
+        if hands:
+            result.frames[i] = hands
+            result.n_with_hands += 1
+    cap.release()
+    return result
+
+
 def run(
     session_dir: Path,
     model: str = "wilor",
     device: str = "cuda",
     max_frames: int | None = None,
     prefilter: bool = True,
+    fallback: str | None = "hamer",
 ) -> HandResult:
     """`perception.hands.run(store, model="wilor")` -- Master Spec §L1.
 
-    HaMeR is the designated fallback and is not implemented: it is also MANO-based and
-    therefore carries the identical non-commercial licence problem, so it buys nothing on
-    the axis that actually blocks us.
+    ### The HaMeR fallback (`fallback="hamer"`, default)
+
+    WiLoR's detector (a YOLO hand detector) has a real detection envelope: on several
+    egocentric datasets it returns **0 hands** on footage that plainly contains them. HaMeR
+    reaches the hands through a **different detector** (ViTDet person detection -> ViTPose
+    -> hand crops), so it recovers hands WiLoR's detector misses. When the primary pass finds
+    hands in **zero** scanned frames and a `fallback` is configured, we re-scan with it.
+
+    This does NOT change the licence position: HaMeR is also MANO-based, so its output is
+    equally non-deliverable without an MPI commercial licence. The fallback buys *detection
+    coverage*, not deliverability -- those were always two separate blockers, and this closes
+    only the first. Provenance/notes record which model actually produced each frame.
     """
     import json
-
-    if model != "wilor":
-        raise NotImplementedError(
-            f"hand model {model!r} is not implemented. HaMeR is the spec's fallback but is "
-            "also MANO-based, so it inherits the same non-commercial licence constraint "
-            "that already blocks WiLoR from delivery -- it solves nothing we need solved."
-        )
 
     session_dir = Path(session_dir)
     meta = json.loads((session_dir / "session_meta.json").read_text())
@@ -214,7 +263,7 @@ def run(
         else np.ones(frame_count, dtype=bool)
     )
 
-    est = WiLoREstimator(device=device)
+    est = estimator_for(model, device)
     result = HandResult(n_scanned=n)
     result.provenance = {
         # A metric hand-mesh model IS the primary source available on a bare-hand rig.
@@ -241,23 +290,25 @@ def run(
         ),
     }
 
-    cap = cv2.VideoCapture(str(video))
-    contiguous = indices == list(range(n))
-    for i in indices:
-        if not contiguous:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, i)   # seek when sampling sparsely
-        ok, frame = cap.read()
-        if not ok:
-            if contiguous:
-                break                             # sequential EOF -> done
-            continue                              # a bad seek skips one frame, not the run
-        if not present[i]:
-            continue
-        hands = est.predict(frame)
-        if hands:
-            result.frames[i] = hands
-            result.n_with_hands += 1
-    cap.release()
+    result.notes["hand_model"] = model
+    _scan(video, indices, present, est, result)
+
+    # WiLoR's detector found nothing -- fall through to HaMeR's (different) detector before
+    # declaring the clip hand-free. Only worth it when the primary is empty: a partial WiLoR
+    # result is already trustworthy and mixing two models' roots per clip would be worse.
+    if result.n_with_hands == 0 and fallback and fallback != model:
+        try:
+            fb_est = estimator_for(fallback, device)
+        except (NotImplementedError, ImportError, RuntimeError) as exc:
+            result.notes["fallback"] = (
+                f"{model} found 0 hands; {fallback} fallback unavailable ({exc}). "
+                f"Install it on the GPU box to recover hands {model}'s detector misses.")
+            return result
+        _scan(video, indices, present, fb_est, result)
+        result.notes["hand_model"] = fallback if result.n_with_hands else model
+        result.notes["fallback"] = (
+            f"{model} detected 0 hands; re-scanned with {fallback} -> "
+            f"{result.n_with_hands} frames with hands. Same MANO non-commercial licence.")
     return result
 
 

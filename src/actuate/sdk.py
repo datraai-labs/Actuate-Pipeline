@@ -194,6 +194,9 @@ def process(
         "embodiment": embodiment,
         "task": task,
         "consent": consent,
+        # PII redaction (face blur -> pii_status PASSED). Opt-in: only when you ask for it,
+        # because PASSED is a delivery claim, not a default (see io.redact / io.consent).
+        "redact_pii": bool(kwargs.get("redact_pii", False)),
         "video": _video_name(session),
         "perception": {"enabled": True, "max_frames": max_frames,
                        "prompts": prompts or _DEFAULT_PROMPTS},

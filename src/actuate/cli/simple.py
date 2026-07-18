@@ -99,6 +99,8 @@ def process_cmd(
                                     help="Where --export writes the dataset."),
     to_s3: bool = typer.Option(None, "--to-s3/--local", help="Upload artifacts to S3 and "
                                "clean local (overrides `config storage`)."),
+    redact_pii: bool = typer.Option(False, "--redact-pii", help="Blur faces and mark "
+                                    "pii_status=passed (required, with consent, to deliver)."),
 ) -> None:
     """Process a source into a certified canonical episode + Rerun recording.
 
@@ -111,7 +113,7 @@ def process_cmd(
     try:
         run = actuate.process(source, rig=rig, embodiment=embodiment, task=task,
                               max_frames=max_frames, out=out, reporter=_reporter,
-                              prompt_fn=prompt_fn)
+                              prompt_fn=prompt_fn, redact_pii=redact_pii)
     except FileNotFoundError as exc:
         typer.secho(f"cannot process: {exc}", fg="red")
         raise typer.Exit(1) from exc

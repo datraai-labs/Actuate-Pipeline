@@ -241,6 +241,17 @@ def _stage_canonical(ctx: _Ctx, perception: dict) -> None:
         from actuate.config import ConsentStatus
 
         updates["consent"] = ConsentStatus(consent)
+    # PII redaction is what legitimately earns pii_status=PASSED. Only when the profile asks
+    # for it: run a real redaction pass (-> redacted_compressed.mp4, the filename export +
+    # canonical already point at) and record PASSED. Without this flag pii_status stays
+    # PENDING and the delivery gate keeps blocking -- the boundary is unchanged.
+    if ctx.profile.get("redact_pii"):
+        from actuate.io import redact
+
+        report = redact.redact_session(ctx.session)
+        updates["pii_status"] = report.status
+        ctx.flag(stage, f"PII redaction: blurred {report.regions_blurred} region(s) over "
+                        f"{report.frames_scanned} frames -> pii_status={report.status.value}")
     if updates:
         ep = ep.model_copy(update=updates)
     _write_canonical(ctx, ep)
