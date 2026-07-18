@@ -52,26 +52,31 @@ def resolve_hf(spec: str, work_root: Path, *, files: str | None = None,
                split: str | None = None) -> Path:
     """hf://<repo_id>[/<subpath>] -> a staged session directory.
 
-    Downloads the dataset repo (huggingface_hub snapshot), finds a video (LeRobot datasets
-    keep them under videos/…), and stages it. `files=` narrows to one filename; `split=` is
-    accepted for API compatibility (video processing is per-episode, not per-split).
+    `files=` a CONCRETE path -> downloads just that ONE file (essential for large datasets:
+    a 30 GB multimodal repo must not be pulled whole to process one clip). Without `files=`
+    it snapshots the repo and finds a video (LeRobot datasets keep them under videos/…).
+    `split=` is accepted for API compatibility (video processing is per-episode).
     """
-    from huggingface_hub import snapshot_download
-
     body = spec[len("hf://"):]
     repo_id = "/".join(body.split("/")[:2]) if body.count("/") >= 1 else body
     token = _hf_token()
 
-    cache = work_root / "hf" / repo_id.replace("/", "__")
-    local = Path(snapshot_download(repo_id, repo_type="dataset", local_dir=cache,
-                                   token=token))
-    if files:
-        cand = next(iter(local.rglob(files)), None)
-        if cand is None:
-            raise FileNotFoundError(f"{files!r} not found in {repo_id}")
-        video = cand
+    if files and "*" not in files and "?" not in files:
+        # single-file download -- do NOT pull the whole repo
+        from huggingface_hub import hf_hub_download
+
+        video = Path(hf_hub_download(repo_id, filename=files, repo_type="dataset",
+                                     token=token))
     else:
-        video = _find_video(local)
+        from huggingface_hub import snapshot_download
+
+        cache = work_root / "hf" / repo_id.replace("/", "__")
+        local = Path(snapshot_download(repo_id, repo_type="dataset", local_dir=cache,
+                                       token=token))
+        video = (next(iter(local.rglob(files)), None) if files
+                 else _find_video(local))
+        if video is None:
+            raise FileNotFoundError(f"{files!r} not found in {repo_id}")
     return _stage_video(video, work_root / repo_id.split("/")[-1])
 
 
