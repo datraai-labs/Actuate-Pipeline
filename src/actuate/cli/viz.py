@@ -16,52 +16,25 @@ without a viewer.
 
 from __future__ import annotations
 
-import hashlib
-import pickle
 from pathlib import Path
 from typing import Callable
 
 import typer
 
+from actuate.pipeline.cache import stage_cached
+
 viz_app = typer.Typer(help="F -- Rerun visualization: see the pipeline (Master Spec §F).")
 
 _STAGES = ("depth", "hands", "objects", "fusion", "slam")
-_CACHE_DIR = ".actuate_cache"
 
 
-def _stage_cached(
-    session: Path, stage: str, key: str, *, use_cache: bool, force: bool,
-    run_fn: Callable,
-):
-    """Run a perception stage, or load a matching cached result.
-
-    Returns (result, source) where source is 'cache' or 'ran'. The cache key hashes the inputs
-    that change the output (frame count, prompts), so a changed input misses the cache and the
-    stage re-runs -- no stale results. `--force` re-runs even on a hit; without `--cache` the
-    cache is neither read nor written (the old always-run behaviour).
-    """
-    if not use_cache:
-        return run_fn(), "ran"
-
-    cache_dir = session / _CACHE_DIR
-    cache_dir.mkdir(exist_ok=True)
-    keyhash = hashlib.sha256(f"{stage}|{key}".encode()).hexdigest()[:12]
-    path = cache_dir / f"{stage}_{keyhash}.pkl"
-
-    if path.exists() and not force:
-        try:
-            with path.open("rb") as fh:
-                return pickle.load(fh), "cache"
-        except Exception:
-            pass  # corrupt/old-format cache -> fall through and re-run
-
-    result = run_fn()
-    try:
-        with path.open("wb") as fh:
-            pickle.dump(result, fh, protocol=pickle.HIGHEST_PROTOCOL)
-    except Exception as exc:  # caching is best-effort; never fail the viz over it
-        typer.secho(f"  ({stage}: could not write cache: {exc})", fg="yellow")
-    return result, "ran"
+def _stage_cached(session: Path, stage: str, key: str, *, use_cache: bool, force: bool,
+                  run_fn: Callable):
+    """CLI adapter over the library `pipeline.cache.stage_cached` (cache logic lives there
+    now so the SDK can reuse it). Prints a best-effort write miss with typer."""
+    return stage_cached(session, stage, key, use_cache=use_cache, force=force,
+                        run_fn=run_fn,
+                        warn=lambda m: typer.secho(f"  ({m})", fg="yellow"))
 
 
 @viz_app.command("show")
