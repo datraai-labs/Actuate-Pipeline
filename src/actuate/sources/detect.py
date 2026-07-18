@@ -107,50 +107,6 @@ def local_consent_default() -> ConsentStatus:
     return ConsentStatus.GRANTED
 
 
-def auto_task(session: Path, api_key: str | None = None, *, client=None,
-              prompt_fn=None) -> str | None:
-    """Name the manipulation task from a keyframe.
-
-    With a VLM client/key: one call on the middle frame -> a short task string ($ tiny,
-    one image). Without a key: call `prompt_fn(message)` if given (the CLI passes an
-    interactive prompt), else return None so the caller can decide. Never fabricates a task
-    silently -- a None here means "unknown", which the exporter fail-closes on.
-    """
-    from actuate.language import make_client
-
-    client = client or make_client(api_key)
-    if client is None:
-        if prompt_fn is not None:
-            ans = prompt_fn("No task given and no API key. Describe the manipulation task "
-                            "(or leave blank to skip)")
-            return ans.strip() or None if ans else None
-        return None
-
-    from actuate.ingest.run import _session_video
-    from actuate.language.vlm import VLM_MODEL, encode_frame_base64
-
-    video = _session_video(session)
-    import cv2
-
-    cap = cv2.VideoCapture(str(video))
-    mid = int((cap.get(cv2.CAP_PROP_FRAME_COUNT) or 2) // 2)
-    cap.release()
-    b64 = encode_frame_base64(video, mid)
-    if b64 is None:
-        return None
-    import json
-
-    schema = {"type": "object",
-              "properties": {"task": {"type": "string", "description":
-                             "the manipulation task, imperative, e.g. 'pick up the cup'"}},
-              "required": ["task"], "additionalProperties": False}
-    resp = client.messages.create(
-        model=VLM_MODEL, max_tokens=128,
-        messages=[{"role": "user", "content": [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                                         "data": b64}},
-            {"type": "text", "text": "What manipulation task is being performed? "
-                                     "Answer as one short imperative instruction."}]}],
-        output_config={"format": {"type": "json_schema", "schema": schema}})
-    text = next(b.text for b in resp.content if b.type == "text")
-    return json.loads(text)["task"].strip() or None
+# NOTE: task auto-detection needs the VLM (actuate.language), which sits ABOVE this layer in
+# the import graph -- so `auto_task` lives in actuate.sdk, not here. sources.detect stays
+# pure geometry/filesystem: rig, layout, filenames, consent.
