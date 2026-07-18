@@ -88,11 +88,20 @@ def test_resolve_missing_source_errors(tmp_path):
         sdk._resolve_source(str(tmp_path / "nope.mp4"), tmp_path)
 
 
-def test_resolve_remote_scheme_not_wired_yet(tmp_path):
+def test_resolve_remote_scheme_dispatches_to_sources(tmp_path, monkeypatch):
+    """Remote schemes now route through actuate.sources (Part F). Stub the resolver so no
+    network is touched -- we only assert the dispatch happens."""
+    from actuate import sdk, sources
+
+    monkeypatch.setattr(sources, "resolve", lambda src, wr, **k: tmp_path / "staged")
+    assert sdk._resolve_source("hf://foo/bar", tmp_path) == tmp_path / "staged"
+
+
+def test_resolve_unknown_scheme_errors(tmp_path):
     from actuate import sdk
 
-    with pytest.raises((NotImplementedError, ValueError)):
-        sdk._resolve_source("hf://foo/bar", tmp_path)
+    with pytest.raises(ValueError, match="unrecognised source scheme"):
+        sdk._resolve_source("ftp://foo/bar", tmp_path)
 
 
 def test_export_format_aliases():

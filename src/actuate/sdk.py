@@ -38,21 +38,17 @@ def login(api_key: str | None = None, *, aws_profile: str | None = None) -> dict
 
 
 # ------------------------------------------------------------------ source resolution
-def _resolve_source(source: str, work_root: Path) -> Path:
+def _resolve_source(source: str, work_root: Path, **kwargs) -> Path:
     """Resolve a source spec to a local session directory the pipeline can read.
 
-    Part A handles LOCAL paths (a video file or an existing session dir). Remote schemes
-    (hf://, s3://, http(s)://, openx://) are dispatched to `actuate.sources` when present;
-    a clear error names what's missing otherwise.
+    Local paths (a video file or an existing session dir) are handled here; remote schemes
+    (hf://, s3://, http(s)://, openx://) dispatch to `actuate.sources`. `kwargs` like
+    `files=`/`split=` pass through to the remote resolver.
     """
     if "://" in source:
-        try:
-            from actuate import sources
-        except ImportError:
-            raise ValueError(
-                f"source {source!r} needs a resolver, but actuate.sources is not "
-                "available. Use a local path for now, or install the source extras.")
-        return sources.resolve(source, work_root)
+        from actuate import sources
+
+        return sources.resolve(source, work_root, **kwargs)
 
     p = Path(source).expanduser()
     if not p.exists():
@@ -60,6 +56,7 @@ def _resolve_source(source: str, work_root: Path) -> Path:
             f"source not found: {p}. Give a local video file, a processed session "
             "directory, or a remote source (hf:// s3:// https:// openx://).")
     if p.is_dir():
+        _normalize(p)
         return p                                   # already a session directory
     # a single video file -> stage it into its own session directory
     session = work_root / p.stem
@@ -69,13 +66,70 @@ def _resolve_source(source: str, work_root: Path) -> Path:
         import shutil
 
         shutil.copy2(p, dest)
+    _normalize(session)
     return session
+
+
+def _normalize(session: Path) -> None:
+    """Rename spaces/parens/unicode files to pipeline-safe names (the Kaggle bug)."""
+    from actuate.sources.detect import normalize_filenames
+
+    normalize_filenames(session)
 
 
 def _video_name(session: Path) -> str:
     from actuate.ingest.run import _session_video
 
     return _session_video(session).name
+
+
+def auto_task(session: Path, api_key: str | None = None, *, client=None,
+              prompt_fn=None) -> str | None:
+    """Name the manipulation task from a keyframe (SDK layer -- it needs the VLM).
+
+    With a VLM client/key: one call on the middle frame -> a short imperative task ($ tiny,
+    one image). Without a key: call `prompt_fn(message)` if given (the CLI passes an
+    interactive prompt), else None. Never fabricates a task silently -- None means "unknown",
+    which the exporter fail-closes on.
+    """
+    from actuate.language import make_client
+
+    client = client or make_client(api_key)
+    if client is None:
+        if prompt_fn is not None:
+            ans = prompt_fn("No task given and no API key. Describe the manipulation task "
+                            "(or leave blank to skip)")
+            return (ans.strip() or None) if ans else None
+        return None
+
+    import json
+
+    import cv2
+
+    from actuate.ingest.run import _session_video
+    from actuate.language.vlm import VLM_MODEL, encode_frame_base64
+
+    video = _session_video(session)
+    cap = cv2.VideoCapture(str(video))
+    mid = int((cap.get(cv2.CAP_PROP_FRAME_COUNT) or 2) // 2)
+    cap.release()
+    b64 = encode_frame_base64(video, mid)
+    if b64 is None:
+        return None
+    schema = {"type": "object",
+              "properties": {"task": {"type": "string", "description":
+                             "the manipulation task, imperative, e.g. 'pick up the cup'"}},
+              "required": ["task"], "additionalProperties": False}
+    resp = client.messages.create(
+        model=VLM_MODEL, max_tokens=128,
+        messages=[{"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                         "data": b64}},
+            {"type": "text", "text": "What manipulation task is being performed? "
+                                     "Answer as one short imperative instruction."}]}],
+        output_config={"format": {"type": "json_schema", "schema": schema}})
+    text = next(b.text for b in resp.content if b.type == "text")
+    return json.loads(text)["task"].strip() or None
 
 
 def _detect_rig(session: Path, override: str) -> str:
@@ -115,17 +169,31 @@ def process(
     work_root = Path(out).expanduser() if out else Path("./actuate_runs")
     work_root.mkdir(parents=True, exist_ok=True)
 
-    session = _resolve_source(source, work_root)
+    src_kwargs = {k: kwargs[k] for k in ("files", "split", "max_episodes") if k in kwargs}
+    session = _resolve_source(source, work_root, **src_kwargs)
     meta = ensure_session_meta(session)
     rig = _detect_rig(session, rig)
     if max_frames is None:
         max_frames = int(meta.get("frame_count") or 45)
+
+    # auto-task: a VLM keyframe call when a key is available and no task was given
+    # ($ tiny, one image). No key -> stays None, and the exporter fail-closes on it.
+    if task is None and kwargs.get("auto_task", True):
+        task = auto_task(session, prompt_fn=kwargs.get("prompt_fn"))
+
+    # local processing = your own data -> consent GRANTED. pii_status stays PENDING, so the
+    # delivery gate still blocks (see pipeline._stage_canonical). Cloud mode keeps PENDING.
+    from actuate.sources.detect import local_consent_default
+
+    consent = (local_consent_default().value if cfg.get("mode", "local") == "local"
+               else None)
 
     run_out = work_root / f"{session.name}_out"
     profile = {
         "rig": rig,
         "embodiment": embodiment,
         "task": task,
+        "consent": consent,
         "video": _video_name(session),
         "perception": {"enabled": True, "max_frames": max_frames,
                        "prompts": prompts or _DEFAULT_PROMPTS},
@@ -231,6 +299,15 @@ class ProcessingRun:
             res = export_rlds(ep, path, embodiment=emb, video=video, tier="all")
             n = res.n_steps
         return ExportResult(format=format, path=path, n_frames=n, embodiment=emb)
+
+    def push_to_hub(self, repo_id: str, *, private: bool = True, token: str | None = None,
+                    format: str = "lerobot_v3") -> str:
+        """Export and push this run's dataset to the HuggingFace Hub. Returns the repo URL."""
+        from actuate.sources import push_to_hub as _push
+
+        export_dir = self._result.out / "hub_export"
+        self.export(format, path=export_dir)
+        return _push(export_dir, repo_id, private=private, token=token)
 
     def viz(self, live: bool = False) -> None:
         """Open the pipeline recording in Rerun. `live` spawns a viewer."""
