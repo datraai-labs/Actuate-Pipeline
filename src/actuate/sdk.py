@@ -300,6 +300,22 @@ class ProcessingRun:
             n = res.n_steps
         return ExportResult(format=format, path=path, n_frames=n, embodiment=emb)
 
+    def upload_to_s3(self, *, export_dirs: list | None = None,
+                     clean_local: bool = False) -> dict:
+        """Push this run's durable artifacts (raw video, canonical, exports) to S3.
+
+        `clean_local=True` deletes the local copies after a verified upload, so the result
+        lives in AWS, not on disk. Needs an `aws_profile` in `actuate config` (or AWS_PROFILE).
+        """
+        from actuate.cloud import upload_run
+
+        ep = self._ep()
+        video = self.session / self.profile["video"]
+        return upload_run(self.canonical_path, ep.capture_id, ep.episode_id,
+                          video=video if video.exists() else None,
+                          export_dirs=[Path(d) for d in (export_dirs or [])],
+                          clean_local=clean_local)
+
     def push_to_hub(self, repo_id: str, *, private: bool = True, token: str | None = None,
                     format: str = "lerobot_v3") -> str:
         """Export and push this run's dataset to the HuggingFace Hub. Returns the repo URL."""

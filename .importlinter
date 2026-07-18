@@ -51,6 +51,7 @@ source_modules =
     actuate.pipeline
     actuate.sdk
     actuate.sources
+    actuate.cloud
 forbidden_modules =
     actuate.cli
     actuate.service

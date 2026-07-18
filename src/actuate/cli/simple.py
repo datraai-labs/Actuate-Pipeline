@@ -97,6 +97,8 @@ def process_cmd(
                                                       "lerobot_v3 | rlds."),
     dataset_out: str = typer.Option("./dataset/", "--dataset-out",
                                     help="Where --export writes the dataset."),
+    to_s3: bool = typer.Option(None, "--to-s3/--local", help="Upload artifacts to S3 and "
+                               "clean local (overrides `config storage`)."),
 ) -> None:
     """Process a source into a certified canonical episode + Rerun recording.
 
@@ -114,17 +116,37 @@ def process_cmd(
         typer.secho(f"cannot process: {exc}", fg="red")
         raise typer.Exit(1) from exc
     _run_summary(run)
+    exported_dirs = []
     if export:
         try:
             res = run.export(export, path=dataset_out)
         except ValueError as exc:
             typer.secho(f"export failed: {exc}", fg="red")
             raise typer.Exit(1) from exc
+        exported_dirs = [dataset_out]
         typer.secho(f"\nexported {res.n_frames} frames -> {res.path}  ({export})",
                     fg="green")
     else:
         typer.secho(f"export with:  actuate export {run._result.out} "
                     "--format lerobot_v3", fg="cyan")
+
+    # S3 storage: --to-s3 flag wins, else the `config storage` default
+    from actuate.config import auth
+
+    use_s3 = to_s3 if to_s3 is not None else (auth.load_config().get("storage") == "s3")
+    if use_s3:
+        try:
+            uris = run.upload_to_s3(export_dirs=exported_dirs, clean_local=True)
+        except Exception as exc:
+            typer.secho(f"S3 upload failed ({type(exc).__name__}: {exc}). Artifacts kept "
+                        "locally. Check `actuate config` aws_profile + that the buckets "
+                        "are deployed.", fg="red")
+            raise typer.Exit(1) from exc
+        typer.secho("\nstored in S3 (local copies cleaned):", fg="green", bold=True)
+        typer.echo(f"  raw:       {uris.get('raw', '(no raw video)')}")
+        typer.echo(f"  canonical: {uris['canonical']}")
+        for name, files in uris.get("exports", {}).items():
+            typer.echo(f"  export {name}: {len(files)} objects")
 
 
 def export_cmd(
