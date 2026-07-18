@@ -75,3 +75,5 @@ __all__ = [
     "retarget_ready_embodiments",
     "trust_rank",
 ]
+
+from actuate.config import auth  # noqa: E402,F401  (user auth + defaults)
