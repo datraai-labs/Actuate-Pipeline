@@ -97,7 +97,15 @@ def export_rlds(
     Load it back with ``tfds.load(name, data_dir=out, split="train")`` -- which is exactly
     what the verification gate does.
     """
-    import tensorflow_datasets as tfds
+    try:
+        import tensorflow_datasets as tfds
+    except ImportError as exc:
+        raise ExportRefused(
+            "RLDS export needs tensorflow-datasets, which requires protobuf>=6.31 -- but the "
+            "[all] install pins protobuf<6 so the PERCEPTION stage (UniDepth/wandb) can "
+            "import. LeRobot v3 export works here; for RLDS, export in a separate env with "
+            "`pip install tensorflow-datasets 'protobuf>=6.31'`. (Details: STATUS.md, "
+            "Phase 6 dependency note.)") from exc
 
     eps = [episodes] if isinstance(episodes, CanonicalEpisode) else list(episodes)
     if not eps:

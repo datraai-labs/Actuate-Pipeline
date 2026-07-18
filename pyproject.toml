@@ -64,10 +64,12 @@ all = [
     "boto3>=1.34", "s3fs>=2024.6", "fsspec>=2024.6", "pyarrow>=16.0",
     "lerobot>=0.1", "tensorflow-datasets>=4.9",
     "anthropic>=0.40", "pyyaml>=6.0",
-    # tensorflow/tfds need protobuf >=6.31; without this pin the s3fs/aws chain resolves it
-    # DOWN to 4.x and breaks the RLDS export. mediapipe pins <5 but is v1-legacy only
-    # (src/ never imports it), so the tf-satisfying pin wins.
-    "protobuf>=6.31.1",
+    # protobuf is a genuine three-way conflict: tensorflow/tfds want >=6.31, but wandb
+    # (imported by UniDepth, the DEPTH stage) and mediapipe break on protobuf 7.x. PERCEPTION
+    # is the core path and must import, so we pin protobuf <6 -- LeRobot v3 export works here
+    # too. The one casualty is the RLDS (tfds) SECONDARY exporter, which needs >=6.31 and
+    # degrades with a clear message; run RLDS export in a separate env if you need it.
+    "protobuf>=5.28,<6",
 ]
 
 [project.scripts]

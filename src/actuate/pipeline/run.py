@@ -209,11 +209,23 @@ def _stage_canonical(ctx: _Ctx, perception: dict) -> None:
             objects=perception.get("objects"),
             rig=RigType(ctx.profile.get("rig", "head_mounted")), task=task)
         note = "from perception"
-    else:
+    elif (ctx.session / "hand_pose_3d.json").exists():
+        # v1-legacy fallback ONLY when the session actually carries v1 artifacts (the bundled
+        # demo). A fresh source has none, so never guess this path for it.
         from actuate.canonical import build_episode
 
         ep = build_episode(ctx.session, capture_id, task=task)
         note = "from v1-legacy outputs (perception unavailable)"
+    else:
+        # Perception failed AND there's nothing precomputed to fall back to. Surface the
+        # ACTUAL perceive failure (in the checkpoint), not a downstream metric-depth crash.
+        why = ctx.checkpoint.get("perceive", {}).get("note", "perception did not run")
+        raise RuntimeError(
+            "cannot build a canonical episode: the perception stage did not produce hands, "
+            f"and this source has no pre-computed outputs to fall back to.\n\n  reason: {why}\n\n"
+            "Perception (WiLoR hands + UniDepth depth) must run for a fresh source. If it "
+            "failed on an import/dependency error, fix that environment; if it ran out of "
+            "GPU memory, retry with a smaller --max-frames.")
     from actuate.config import Tier
 
     updates = {}
