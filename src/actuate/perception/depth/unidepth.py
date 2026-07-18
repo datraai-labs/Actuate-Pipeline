@@ -38,6 +38,7 @@ from pathlib import Path
 import numpy as np
 
 from actuate.config import Provenance, RigType
+from actuate.perception.sampling import sampled_indices
 
 _VITL = "lpiccinelli/unidepth-v2-vitl14"
 _VITS = "lpiccinelli/unidepth-v2-vits14"
@@ -277,10 +278,11 @@ def run(
 
     session_dir = Path(session_dir)
     meta = json.loads((session_dir / "session_meta.json").read_text())
-    n = int(meta["frame_count"])
-    if max_frames:
-        n = min(n, max_frames)
-    want = set(frames) if frames is not None else set(range(n))
+    frame_count = int(meta["frame_count"])
+    # even-sample across the clip (shared helper) so depth lands on the SAME frames hands
+    # does -- a short cap must span the whole video, not just its opening.
+    indices = frames if frames is not None else sampled_indices(frame_count, max_frames)
+    want = set(indices)
 
     video = session_dir / "redacted_compressed.mp4"
     if not video.exists():
@@ -292,11 +294,14 @@ def run(
     res = DepthResult(model=est.name)
     Ks = []
     cap = cv2.VideoCapture(str(video))
-    for i in range(n):
+    contiguous = sorted(want) == list(range(len(want)))
+    for i in sorted(want):
+        if not contiguous:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, i)
         ok, bgr = cap.read()
         if not ok:
-            break
-        if i not in want:
+            if contiguous:
+                break
             continue
         df = est.predict(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
         res.frames[i] = df

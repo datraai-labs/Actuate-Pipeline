@@ -50,6 +50,7 @@ import cv2
 import numpy as np
 
 from actuate.config import Provenance, Side
+from actuate.perception.sampling import sampled_indices
 
 #: HaMeR/WiLoR convention: virtual focal 5000 for a 256 px crop, scaled to the image.
 #: Root translation is metric in THIS camera, not in the real one.
@@ -198,16 +199,19 @@ def run(
 
     session_dir = Path(session_dir)
     meta = json.loads((session_dir / "session_meta.json").read_text())
-    n = int(meta["frame_count"])
-    if max_frames:
-        n = min(n, max_frames)
+    frame_count = int(meta["frame_count"])
+    # sample EVENLY across the clip, not the first max_frames -- otherwise a short cap only
+    # sees the opening seconds and misses hands that enter later (shared with depth).
+    indices = sampled_indices(frame_count, max_frames)
+    n = len(indices)
 
     video = session_dir / "redacted_compressed.mp4"
     if not video.exists():
         video = session_dir / "compressed.mp4"
 
     present = (
-        mediapipe_hand_presence(video, n) if prefilter else np.ones(n, dtype=bool)
+        mediapipe_hand_presence(video, frame_count) if prefilter
+        else np.ones(frame_count, dtype=bool)
     )
 
     est = WiLoREstimator(device=device)
@@ -238,10 +242,15 @@ def run(
     }
 
     cap = cv2.VideoCapture(str(video))
-    for i in range(n):
+    contiguous = indices == list(range(n))
+    for i in indices:
+        if not contiguous:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, i)   # seek when sampling sparsely
         ok, frame = cap.read()
         if not ok:
-            break
+            if contiguous:
+                break                             # sequential EOF -> done
+            continue                              # a bad seek skips one frame, not the run
         if not present[i]:
             continue
         hands = est.predict(frame)
