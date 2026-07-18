@@ -14,6 +14,7 @@ name = Actuate layered architecture (higher may import lower; never the reverse)
 type = layers
 layers =
     actuate.cli : actuate.service
+    actuate.pipeline
     actuate.feedback
     actuate.package
     actuate.language
@@ -45,6 +46,7 @@ source_modules =
     actuate.language
     actuate.package
     actuate.feedback
+    actuate.pipeline
 forbidden_modules =
     actuate.cli
     actuate.service
