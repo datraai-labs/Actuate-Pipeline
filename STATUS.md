@@ -1011,3 +1011,52 @@ Idle: **~$4-5/month** — KMS CMK (~$1), Secrets Manager (~$0.40), SSM bastion t
 (~$3). **Aurora auto-pauses to $0.** Storage is negligible until real data lands.
 
 The bastion is the only always-on compute and is stoppable when not in use.
+
+## Phase 6 — DEVELOPER EXPERIENCE: pip-installable SDK + simplified CLI
+
+The perception→retargeting→certification stack was strong but took ~15 manual steps to
+drive. Phase 6 wraps it in a Refiner-grade product surface **without touching the stack** —
+SDK is the simplest consumer, CLI wraps SDK, service wraps SDK.
+
+**Enabling refactor:** the full-pipeline orchestration moved out of `cli/run_all.py` (top
+layer) into a new `actuate.pipeline` library layer, so the SDK below the CLI can drive the
+identical stages without inverting the import-linter contract. Typer-free: progress via a
+`reporter` callback, billed steps via a `confirm` callback that defaults to DENY. Two new
+layers (`actuate.sdk`, `actuate.sources`) added coherently; import-linter still 2/2.
+
+**The 10-line experience now works:**
+```python
+import actuate
+actuate.login()                                          # local, one-time, no key
+run = actuate.process("./video.mp4", task="pick up cup") # or hf:// s3:// https:// openx://
+run.export("lerobot_v3", path="./dataset/")
+```
+CLI equivalent: `actuate login --local` → `actuate process <src> --export lerobot_v3`.
+
+| Part | What shipped | Verified |
+|---|---|---|
+| A — SDK | `process`/`process_and_export`/`ProcessingRun` (status/quality/export/viz/summary/certificate) | real capture: process→export→LeRobot loads (19f) |
+| C — auth | `~/.actuate/config.json`, local default (no key), cloud key masked to `set (hidden)`, coming-soon stub | key never in repo/env/logs |
+| D — auto-detect | rig from video geometry, layout, filename normalize, VLM auto-task, local-consent default | 2 real-capture false-positives caught + fixed; delivery still blocks (pii pending) |
+| A-sources + F | `hf/s3/http/openx` resolvers + HF read/write | **hf:// verified on real `lerobot/pusht`**; s3 written-only; openx tfds-slice |
+| B — CLI | `login/config/process/export/status/report`, SDK-backed, actionable errors | login→config→process --export→report→export, all on real capture |
+| E — docs | `docs/quickstart.md` + 7 runnable `examples/` | `01_*.py` runs end-to-end (quality 2/5, 19f exported) |
+
+**Naming:** `run` is the existing `run all` power-user group, so the one-shot is
+`process --export`, not a colliding `run <video>`. The whole advanced tree (`run all`,
+`ingest`, `certify`, `retarget`, `language`, `deliver`, `package`) is untouched — a test
+asserts it stays registered.
+
+**`pip install -e ".[all]"` integration test passed** — one dependency conflict surfaced
+and was fixed: the aws/s3fs chain resolved protobuf DOWN to 4.x and broke tfds/RLDS; pinned
+`protobuf>=6.31.1` in `[all]` (mediapipe pins <5 but is v1-legacy, `src/` never imports it).
+After the pin: LeRobot AND RLDS both export and load via their own libraries.
+
+**Smart consent, stated plainly:** local processing marks your own data `consent=granted`,
+but `pii_status` stays `pending`, so `is_deliverable` is still False and the DeliveryWriter
+gate still blocks. `actuate report` shows `deliverable: False (consent=granted, pii=pending)`.
+The consent boundary is unchanged — this only spares a developer a PENDING block on their
+own data. 236 unit tests, import-linter 2/2.
+
+Still not launch-ready — the DX is now product-grade, but the same blockers hold (MPI/MANO
+licence, n=1 corpus, monocular depth floor, no robot hardware, no deployed cloud).
