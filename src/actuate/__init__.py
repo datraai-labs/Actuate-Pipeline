@@ -12,6 +12,17 @@ High-level SDK (Phase 6):
 
 from __future__ import annotations
 
+import os as _os
+
+# Force `transformers` onto its PyTorch backend for the whole process. Left alone it also
+# imports TensorFlow when TF is installed, and TF here needs protobuf>=6.31 while perception
+# is pinned to protobuf<6 (wandb/mediapipe) -> a hard VersionError. WiLoR imports transformers
+# during the hands stage, BEFORE the objects module loads, so the guard must be set here (at
+# first `import actuate`) to beat every transformers import. Our models are all pure PyTorch.
+_os.environ.setdefault("USE_TF", "0")
+_os.environ.setdefault("USE_FLAX", "0")
+_os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+
 from actuate.schema import SCHEMA_VERSION
 
 __version__ = "2.0.0-dev"
