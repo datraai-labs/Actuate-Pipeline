@@ -27,10 +27,12 @@ DEFAULT_CONFIG = {
     "api_key": None,                       # populated in cloud mode; never printed raw
     "default_embodiment": "franka_panda",
     "default_export_format": "lerobot_v3",
+    "storage": "local",           # "local" | "s3" -- where durable artifacts live
 }
 
 #: Keys a user may set via `actuate config set`.
-SETTABLE = ("mode", "aws_profile", "default_embodiment", "default_export_format")
+SETTABLE = ("mode", "aws_profile", "default_embodiment", "default_export_format",
+            "storage")
 
 
 def config_dir() -> Path:
