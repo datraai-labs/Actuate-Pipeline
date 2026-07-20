@@ -24,6 +24,17 @@ pass, also never co-resident.
 
 from __future__ import annotations
 
+import os
+
+# Grounding DINO + SAM2 are pure PyTorch. Left to itself, `transformers` also imports
+# TensorFlow/Flax if they're installed -- and TF here demands protobuf>=6.31 while perception
+# is pinned to protobuf<6 (wandb/mediapipe), so that import HARD-CRASHES the objects stage.
+# Tell transformers to use the torch backend only. Must be set before transformers is first
+# imported (its lazy import lives in GroundingDinoDetector.__init__ below), hence module top.
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("USE_FLAX", "0")
+os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
