@@ -41,7 +41,9 @@ class Bucket(str, Enum):
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="ACTUATE_",
-        env_file=".env",
+        # `.env.local` holds the developer's real DB URL / AWS profile and takes
+        # precedence over a committed `.env`. Real process env still wins over both.
+        env_file=(".env", ".env.local"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -71,6 +73,13 @@ class Settings(BaseSettings):
     #: fallback to sqlite would make the catalog's guarantees untestable.
     database_url: SecretStr | None = None
     db_secret_arn: str | None = None
+
+    #: Local-only escape hatch. A private RDS is unreachable from a laptop except through
+    #: an SSM tunnel, but the secret's `host` is the private cluster endpoint. This
+    #: overrides host[:port] (e.g. "127.0.0.1:15432") so `db_secret_arn` can be used from a
+    #: developer machine without ever copying the password out of Secrets Manager. Unset in
+    #: prod, where in-VPC compute reaches the endpoint directly.
+    db_endpoint_override: str | None = None
 
     # --- gates -------------------------------------------------------------------
     #: Exists to be read, never to be set True in a config file. See the validator.

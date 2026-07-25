@@ -71,7 +71,10 @@ class DataStack(cdk.Stack):
             "Catalog",
             engine=rds.DatabaseClusterEngine.aurora_postgres(
                 # pgvector needs PG >= 15 for the version we pin in the app.
-                version=rds.AuroraPostgresEngineVersion.VER_16_4
+                # 16.4 is only offered as Aurora "limitless" in eu-north-1; the latest
+                # standard 16.x available there is 16.13. `.of()` avoids depending on the
+                # CDK enum carrying this exact patch level.
+                version=rds.AuroraPostgresEngineVersion.of("16.13", "16")
             ),
             cluster_identifier=f"actuate-catalog-{env_name}",
             default_database_name="actuate",

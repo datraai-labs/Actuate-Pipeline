@@ -34,7 +34,9 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    config.set_main_option("sqlalchemy.url", _url())
+    # `%` is ConfigParser's interpolation sigil; a URL-encoded password (e.g. %5E) would
+    # raise "invalid interpolation syntax" here. Escaping to %% is the alembic-standard fix.
+    config.set_main_option("sqlalchemy.url", _url().replace("%", "%%"))
     # Same resume tolerance as actuate.catalog.db: Aurora at min_capacity=0 sleeps.
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),

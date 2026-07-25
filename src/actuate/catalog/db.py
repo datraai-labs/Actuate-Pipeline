@@ -31,6 +31,7 @@ def resolve_database_url(settings: Settings) -> str:
 
     if settings.db_secret_arn:
         import json
+        from urllib.parse import quote
 
         import boto3
 
@@ -41,10 +42,18 @@ def resolve_database_url(settings: Settings) -> str:
             SecretId=settings.db_secret_arn
         )
         s = json.loads(secret["SecretString"])
-        return (
-            f"postgresql+psycopg://{s['username']}:{s['password']}"
-            f"@{s['host']}:{s.get('port', 5432)}/{s.get('dbname', 'actuate')}"
-        )
+        host, port = s["host"], s.get("port", 5432)
+        # Local escape hatch: reach the private endpoint through an SSM tunnel without
+        # copying the password out of Secrets Manager. Unset in prod (see Settings).
+        if settings.db_endpoint_override:
+            h, _, p = settings.db_endpoint_override.partition(":")
+            host = h or host
+            port = p or port
+        # Encode credentials: a generated password can contain characters (`:`, `%`, ...)
+        # that would otherwise corrupt the URL. quote() with an empty safe set is exact.
+        user = quote(s["username"], safe="")
+        pw = quote(s["password"], safe="")
+        return f"postgresql+psycopg://{user}:{pw}@{host}:{port}/{s.get('dbname', 'actuate')}"
 
     raise CatalogNotConfigured(
         "no database configured. Set ACTUATE_DATABASE_URL, or ACTUATE_DB_SECRET_ARN to "
