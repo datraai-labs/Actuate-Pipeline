@@ -11,14 +11,13 @@ Phase 5 Part E adds a MINIMAL `run` for the already-processed session layout, wi
 aligned-capture verification (stage2_anchor is EARNED by matching calibrated intrinsics,
 never defaulted; unverifiable claims FLAG).
 
-Still not built: MCAP container, PyAV decode, Polars sync, the six RigAdapters
-(incl. DexUMI exoskeleton), SLAM/IMU ego-motion.
+Raw JSON/CSV IMU sidecars are synchronized to the video frame axis in ``session.h5`` for
+the modern VIO/SLAM path. Still not built: MCAP containers, the six RigAdapters (including
+DexUMI exoskeleton), or a general multi-clock/Polars synchronization layer.
 """
 
 from __future__ import annotations
 
-from actuate.ingest.run import IngestResult
-from actuate.ingest.run import run as run_ingest
 from actuate.ingest.content_address import (
     CaptureManifest,
     IntegrityError,
@@ -28,15 +27,20 @@ from actuate.ingest.content_address import (
     read_manifest,
     write_manifest,
 )
+from actuate.ingest.imu import IMUSyncResult, sync_imu
+from actuate.ingest.run import IngestResult
+from actuate.ingest.run import run as run_ingest
 
 __all__ = [
-    "IngestResult",
-    "run_ingest",
     "CaptureManifest",
+    "IMUSyncResult",
+    "IngestResult",
     "IntegrityError",
     "build_manifest",
     "check_legacy_claims",
     "hash_file",
     "read_manifest",
+    "run_ingest",
+    "sync_imu",
     "write_manifest",
 ]

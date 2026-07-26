@@ -182,7 +182,12 @@ def estimator_for(model: str, device: str):
     frame-scan loop stays estimator-agnostic (and so tests can inject a stub).
     """
     if model == "wilor":
-        return WiLoREstimator(device=device)
+        # WiLoR's grid sampler has no CPU fp16 kernel. CUDA keeps fp16 for memory;
+        # local CPU execution must use fp32.
+        return WiLoREstimator(
+            device=device,
+            dtype="float16" if device == "cuda" else "float32",
+        )
     if model == "hamer":
         from actuate.perception.hands.hamer import HaMeREstimator
 
@@ -224,7 +229,7 @@ def _scan(video: Path, indices: list[int], present: np.ndarray, estimator,
 def run(
     session_dir: Path,
     model: str = "wilor",
-    device: str = "cuda",
+    device: str = "auto",
     max_frames: int | None = None,
     prefilter: bool = True,
     fallback: str | None = "hamer",
@@ -246,6 +251,13 @@ def run(
     """
     import json
 
+    import torch
+
+    if device == "auto":
+        # MPS currently reaches a non-contiguous-view failure inside WiLoR. CPU fp32 is
+        # slower but is the verified portable path on Apple silicon.
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
     session_dir = Path(session_dir)
     meta = json.loads((session_dir / "session_meta.json").read_text())
     frame_count = int(meta["frame_count"])
@@ -254,9 +266,9 @@ def run(
     indices = sampled_indices(frame_count, max_frames)
     n = len(indices)
 
-    video = session_dir / "redacted_compressed.mp4"
-    if not video.exists():
-        video = session_dir / "compressed.mp4"
+    from actuate.ingest.run import _session_video
+
+    video = _session_video(session_dir)
 
     present = (
         mediapipe_hand_presence(video, frame_count) if prefilter

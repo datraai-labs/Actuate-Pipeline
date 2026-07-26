@@ -2,8 +2,9 @@
 
 Scope is deliberately small and stated: this handles a session directory that already has
 `session_meta.json` + a video (what the real corpus is), reusing the existing
-content-addressing. It does NOT build the full L0: no MCAP container, no PyAV decode, no
-Polars sync, none of the six RigAdapters -- those stay unbuilt (see the package docstring).
+content-addressing. A raw JSON/CSV IMU sidecar is synchronized onto the video frame axis for
+SLAM. It does NOT build the full L0: no MCAP container, no general multi-clock sync, none of
+the six RigAdapters -- those stay unbuilt (see the package docstring).
 
 ### Aligned-capture mode (the Stage-II anchor gate, EgoScale/EgoVerse)
 
@@ -45,6 +46,9 @@ class IngestResult:
     intrinsics_match: bool | None         # None = could not verify (missing calibration)
     flags: list[str] = field(default_factory=list)
     manifest_path: Path | None = None
+    imu_sync_path: Path | None = None
+    imu_samples: int = 0
+    imu_frames: int = 0
 
     def summary(self) -> str:
         lines = [f"{self.session_dir.name}: capture {self.capture_id[:16]}… | "
@@ -55,6 +59,11 @@ class IngestResult:
             lines.append(f"  aligned-robot claim [{self.aligned_robot}]: {v}")
         for f in self.flags:
             lines.append(f"  FLAG: {f}")
+        if self.imu_sync_path is not None:
+            lines.append(
+                f"  IMU: {self.imu_samples} samples synchronized to "
+                f"{self.imu_frames} video frames"
+            )
         return "\n".join(lines)
 
 
@@ -116,6 +125,10 @@ def ensure_session_meta(src: Path) -> dict:
         "resolution": [w, h],
         "width": w,
         "height": h,
+        # Retain the explicit names used by the VIO/SLAM contract. The aliases above
+        # remain for existing consumers.
+        "video_width": w,
+        "video_height": h,
         "source": "auto_from_video",
     }
     meta_p.write_text(_json.dumps(meta, indent=2), encoding="utf-8")
@@ -195,6 +208,16 @@ def run(rig: RigType | str, src: Path, store: Path | None = None,
     manifest_path = out_dir / "capture_manifest.json"
     write_manifest(manifest_path, manifest)
 
+    imu_result = None
+    try:
+        from actuate.ingest.imu import sync_imu
+
+        imu_result = sync_imu(src, meta) if meta else None
+    except Exception as exc:
+        # A malformed optional sensor sidecar must be visible, but it must not make a valid
+        # video unprocessable. SLAM will honestly fall back to vision-only rotation.
+        flags.append(f"IMU sync failed: {type(exc).__name__}: {exc}")
+
     tier, match = Tier.STAGE1_VOLUME, None
     if aligned_robot is not None:
         tier, match = _check_alignment(src, aligned_robot, flags)
@@ -203,4 +226,7 @@ def run(rig: RigType | str, src: Path, store: Path | None = None,
         session_dir=src, capture_id=capture_id, rig=rig, tier=tier,
         aligned_robot=aligned_robot, intrinsics_match=match, flags=flags,
         manifest_path=manifest_path,
+        imu_sync_path=imu_result.session_h5 if imu_result else None,
+        imu_samples=imu_result.raw_samples if imu_result else 0,
+        imu_frames=imu_result.frame_count if imu_result else 0,
     )

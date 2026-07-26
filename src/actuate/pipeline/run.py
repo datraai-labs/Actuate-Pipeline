@@ -133,7 +133,15 @@ def _stage_ingest(ctx: _Ctx) -> None:
     ctx.checkpoint["_tier"] = res.tier.value
     for f in res.flags:
         ctx.flag("ingest", f)
-    ctx.done("ingest", f"capture {res.capture_id[:12]}… tier {res.tier.value}")
+    imu_note = (
+        f", IMU {res.imu_samples} samples -> {res.imu_frames} frames"
+        if res.imu_sync_path is not None
+        else ""
+    )
+    ctx.done(
+        "ingest",
+        f"capture {res.capture_id[:12]}… tier {res.tier.value}{imu_note}",
+    )
 
 
 def _stage_perceive(ctx: _Ctx) -> dict:
@@ -160,8 +168,23 @@ def _stage_perceive(ctx: _Ctx) -> dict:
         try:
             from actuate.perception.slam import runner as slam_runner
 
+            # SLAM output changes when a raw IMU sidecar is synchronized after an earlier
+            # vision-only run. Include the aligned stream identity so that cache cannot
+            # silently return the old modality result.
+            imu_h5 = ctx.session / "session.h5"
+            if imu_h5.exists():
+                import hashlib
+
+                h = hashlib.sha256()
+                with imu_h5.open("rb") as fh:
+                    for chunk in iter(lambda: fh.read(1 << 20), b""):
+                        h.update(chunk)
+                imu_key = h.hexdigest()[:12]
+            else:
+                imu_key = "none"
             results["slam"], _ = stage_cached(
-                ctx.session, "slam", f"n={n}", use_cache=True, force=False, warn=warn,
+                ctx.session, "slam", f"v2|n={n}|imu={imu_key}",
+                use_cache=True, force=False, warn=warn,
                 run_fn=lambda: slam_runner.run(ctx.session, max_frames=n))
         except Exception as exc:
             ctx.flag(stage, f"slam unavailable: {exc}")
@@ -280,18 +303,30 @@ def _stage_retarget(ctx: _Ctx) -> None:
     if ctx.already(stage):
         return
     cfg = ctx.profile.get("retarget", {})
-    model = cfg.get("arm_model")
-    if not model or not Path(model).exists():
-        ctx.skip(stage, f"no trained arm estimator at {model!r} — train with "
-                        "`actuate retarget train-arm` (Kaggle GPU)")
+    emb = ctx.profile.get("embodiment", "franka_panda")
+    configured_model = cfg.get("arm_model")
+    if configured_model:
+        model = Path(configured_model).expanduser()
+    else:
+        # Resolve the default without importing the optional MuJoCo/Torch retarget stack.
+        # A core-only install with no trained model should skip cleanly, as it did before
+        # user-local model discovery was added.
+        from actuate.config.auth import config_dir
+
+        model = config_dir() / "models" / f"{emb}_root_frame.pt"
+    if not model.exists():
+        ctx.skip(
+            stage,
+            f"no trained arm estimator at {str(model)!r} — train it with "
+            f"`actuate retarget train-arm --embodiment {emb}`",
+        )
         return
     try:
         from actuate.retarget import arm as armmod
         from actuate.retarget import sim_validate as simval
 
         ep = _load_canonical(ctx)
-        emb = ctx.profile.get("embodiment", "franka_panda")
-        result = armmod.run(ep, emb, Path(model))
+        result = armmod.run(ep, emb, model)
         ep = armmod.attach_to_episode(ep, result)
         sim = simval.run(ep, emb, result)
         ctx.checkpoint["_sim"] = {"eligible": sim.eligible,

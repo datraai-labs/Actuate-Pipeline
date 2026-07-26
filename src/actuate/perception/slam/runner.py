@@ -22,6 +22,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from actuate.config import Provenance
+from actuate.perception.sampling import sampled_indices
 from actuate.perception.slam.vio import (
     SlamResult,
     approximate_intrinsics,
@@ -66,11 +67,17 @@ def run(
     method: str = "auto",
     max_frames: int | None = None,
     stride: int = 1,
+    frames: list[int] | None = None,
 ) -> SlamResult:
     """Estimate per-frame camera pose. Reads only; returns the result for the caller to store.
 
-    `stride > 1` subsamples the visual cross-check (the gyro channel is always full-rate).
-    The cross-check is a verification, not a product, so it does not need every frame.
+    ``max_frames``/``frames`` select the video frames used for the visual cross-check. Camera
+    poses remain indexed on the full original frame axis so downstream perception sampled at
+    frame 1799 can read pose 1799 instead of silently losing it.
+
+    ``stride > 1`` further subsamples the visual cross-check (the gyro channel is always
+    full-rate). The cross-check is a verification, not a product, so it need not decode every
+    frame.
     """
     session_dir = Path(session_dir)
     meta = json.loads((session_dir / "session_meta.json").read_text())
@@ -79,8 +86,9 @@ def run(
     dt = 1.0 / fps
     W, H = int(meta["video_width"]), int(meta["video_height"])
 
-    if max_frames:
-        n_frames = min(n_frames, max_frames)
+    selected = frames if frames is not None else sampled_indices(n_frames, max_frames)
+    selected = sorted({int(i) for i in selected if 0 <= int(i) < n_frames})
+    selected = selected[::stride]
 
     gyro = _load_gyro(session_dir, int(meta["frame_count"]))
     has_imu = gyro is not None
@@ -114,11 +122,9 @@ def run(
         notes["rotation"] = "No IMU on this capture; rotation comes from vision alone."
 
     # --- the cross-check + translation direction, from the camera -----------------------
-    video = session_dir / "redacted_compressed.mp4"
-    if not video.exists():
-        video = session_dir / "compressed.mp4"
-    if not video.exists():
-        raise SlamError(f"{session_dir}: no video to run visual odometry on")
+    from actuate.ingest.run import _session_video
+
+    video = _session_video(session_dir)
 
     K = approximate_intrinsics(_TRACK_WIDTH, int(H * _TRACK_WIDTH / W))
     notes["intrinsics"] = (
@@ -129,7 +135,7 @@ def run(
     )
     provenance["camera_pose.intrinsics"] = Provenance.APPROXIMATED
 
-    # The cross-check compares consecutive KEPT frames. With stride > 1 that spans several
+    # The cross-check compares consecutive KEPT frames. Sampling/stride can span several
     # frame intervals, so the gyro side must be accumulated over the same span or the two
     # sensors would be answering different questions.
     rot_vision = np.full(n_frames, np.nan)
@@ -140,11 +146,12 @@ def run(
     cap = cv2.VideoCapture(str(video))
     scale = _TRACK_WIDTH / W
     prev, prev_i = None, None
-    for i in range(n_frames):
+    contiguous = selected == list(range(len(selected)))
+    for i in selected:
+        if not contiguous:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, i)
         ok, frame = cap.read()
         if not ok:
-            break
-        if i % stride:
             continue
         small = cv2.resize(frame, (_TRACK_WIDTH, int(H * scale)), interpolation=cv2.INTER_AREA)
         gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)

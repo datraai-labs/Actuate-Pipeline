@@ -208,7 +208,9 @@ class RootFrameEstimator:
     def load(cls, path, device="cpu"):
         import torch
 
-        ckpt = torch.load(str(path), map_location=device)
+        # The checkpoint is our own tensor state dict plus the integer hidden width. Restrict
+        # loading to that safe subset instead of allowing arbitrary pickle execution.
+        ckpt = torch.load(str(path), map_location=device, weights_only=True)
         est = cls(hidden=ckpt["hidden"], device=device)
         est.net.load_state_dict(ckpt["state"])
         return est

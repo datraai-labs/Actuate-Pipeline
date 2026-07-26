@@ -99,15 +99,31 @@ def sync_integrity(session_dir: Path | None) -> float | None:
     """
     if session_dir is None:
         return None
-    cert = Path(session_dir) / "quality_certificate.json"
-    meta = Path(session_dir) / "session_meta.json"
-    if not cert.exists():
-        return None
-    try:
-        eps = json.loads(cert.read_text(encoding="utf-8"))["episodes"]
-        drift_ms = max(e["components"]["sync_drift"]["max_drift_ms"] for e in eps)
-    except (KeyError, ValueError):
-        return None
+    session_dir = Path(session_dir)
+    cert = session_dir / "quality_certificate.json"
+    meta = session_dir / "session_meta.json"
+    drift_ms = None
+    if cert.exists():
+        try:
+            eps = json.loads(cert.read_text(encoding="utf-8"))["episodes"]
+            drift_ms = max(e["components"]["sync_drift"]["max_drift_ms"] for e in eps)
+        except (KeyError, ValueError):
+            pass
+    if drift_ms is None:
+        h5_path = session_dir / "session.h5"
+        if not h5_path.exists():
+            return None
+        try:
+            import h5py
+
+            with h5py.File(h5_path, "r") as h5:
+                sample_ts = np.asarray(h5["imu/timestamp_ns"][:], dtype=np.float64)
+                video_ts = np.asarray(h5["imu/video_timestamp_ns"][:], dtype=np.float64)
+            if len(sample_ts) != len(video_ts) or not len(sample_ts):
+                return None
+            drift_ms = float(np.max(np.abs(sample_ts - video_ts)) / 1e6)
+        except (KeyError, OSError):
+            return None
     fps = 30.0
     if meta.exists():
         fps = float(json.loads(meta.read_text(encoding="utf-8")).get("fps_nominal", 30.0))
