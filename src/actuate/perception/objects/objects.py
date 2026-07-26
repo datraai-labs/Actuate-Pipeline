@@ -228,9 +228,9 @@ def run(
     n = int(meta["frame_count"])
     if max_frames:
         n = min(n, max_frames)
-    video = session_dir / "redacted_compressed.mp4"
-    if not video.exists():
-        video = session_dir / "compressed.mp4"
+    from actuate.ingest.run import _session_video
+
+    video = _session_video(session_dir)
 
     prompt_list = _prompts_from(prompts, task)
 

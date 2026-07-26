@@ -91,6 +91,12 @@ def process_cmd(
                                          "| teleop_robot | ..."),
     embodiment: str = typer.Option(None, help="Robot for retargeting/robot-space export "
                                               "(defaults to your config)."),
+    arm_model: Path = typer.Option(
+        None,
+        "--arm-model",
+        help="Optional trained root-frame estimator. Without this, Actuate uses the "
+        "user-local model written by `actuate retarget train-arm`.",
+    ),
     max_frames: int = typer.Option(None, help="Cap frames (default: full video)."),
     out: str = typer.Option(None, help="Working directory (default: ./actuate_runs)."),
     export: str = typer.Option(None, "--export", help="Also export in one shot: "
@@ -113,7 +119,8 @@ def process_cmd(
     try:
         run = actuate.process(source, rig=rig, embodiment=embodiment, task=task,
                               max_frames=max_frames, out=out, reporter=_reporter,
-                              prompt_fn=prompt_fn, redact_pii=redact_pii)
+                              prompt_fn=prompt_fn, redact_pii=redact_pii,
+                              retarget={"arm_model": str(arm_model)} if arm_model else {})
     except FileNotFoundError as exc:
         typer.secho(f"cannot process: {exc}", fg="red")
         raise typer.Exit(1) from exc

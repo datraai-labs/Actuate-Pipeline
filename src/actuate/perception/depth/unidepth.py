@@ -74,24 +74,34 @@ class DepthResult:
 
 
 class UniDepthEstimator:
-    """Loads once. fp16 is what makes ViT-L fit; falls back to ViT-S rather than OOM."""
+    """Loads once with a CUDA fp16 path and a portable CPU fp32 path."""
 
-    def __init__(self, variant: str = "auto", device: str = "cuda") -> None:
+    def __init__(self, variant: str = "auto", device: str = "auto") -> None:
         import torch
 
         from unidepth.models import UniDepthV2
 
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+
         self._torch = torch
         self._device = device
+        self._dtype = torch.float16 if device == "cuda" else torch.float32
 
-        order = [_VITL, _VITS] if variant == "auto" else [
+        # ViT-L is the quality-first CUDA path. On CPU, select ViT-S directly: it is the
+        # verified local fallback and avoids loading a model too large for most laptops.
+        order = ([_VITL, _VITS] if device == "cuda" else [_VITS]) if variant == "auto" else [
             {"vitl": _VITL, "vits": _VITS}[variant]
         ]
         last: Exception | None = None
         for name in order:
             try:
-                torch.cuda.empty_cache()
-                self.model = UniDepthV2.from_pretrained(name).to(device).eval().half()
+                if device == "cuda":
+                    torch.cuda.empty_cache()
+                self.model = UniDepthV2.from_pretrained(name).to(device).eval()
+                self.model = (
+                    self.model.half() if self._dtype is torch.float16 else self.model.float()
+                )
                 self.name = name
                 return
             except torch.cuda.OutOfMemoryError as exc:  # pragma: no cover -- hardware path
@@ -104,7 +114,11 @@ class UniDepthEstimator:
 
     def predict(self, rgb: np.ndarray) -> DepthFrame:
         torch = self._torch
-        t = torch.from_numpy(rgb).permute(2, 0, 1).to(self._device).half()
+        t = (
+            torch.from_numpy(rgb)
+            .permute(2, 0, 1)
+            .to(device=self._device, dtype=self._dtype)
+        )
         with torch.no_grad():
             out = self.model.infer(t)
         return DepthFrame(
@@ -257,6 +271,7 @@ def run(
     rig: RigType = RigType.HEAD_MOUNTED,
     frames: list[int] | None = None,
     max_frames: int | None = None,
+    device: str = "auto",
 ) -> DepthResult:
     """`perception.depth.run(store, model="auto")` -- Master Spec §L1.
 
@@ -284,12 +299,12 @@ def run(
     indices = frames if frames is not None else sampled_indices(frame_count, max_frames)
     want = set(indices)
 
-    video = session_dir / "redacted_compressed.mp4"
-    if not video.exists():
-        video = session_dir / "compressed.mp4"
+    from actuate.ingest.run import _session_video
+
+    video = _session_video(session_dir)
 
     variant = {"auto": "auto", "unidepth_v2": "auto", "vitl": "vitl", "vits": "vits"}[model]
-    est = UniDepthEstimator(variant=variant)
+    est = UniDepthEstimator(variant=variant, device=device)
 
     res = DepthResult(model=est.name)
     Ks = []

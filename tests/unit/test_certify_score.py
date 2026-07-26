@@ -47,6 +47,17 @@ def test_sync_integrity_is_none_without_a_report(tmp_path):
     assert sync_integrity(tmp_path) is None      # empty dir: not measured, not 0.0
 
 
+def test_sync_integrity_reads_modern_frame_aligned_imu(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    with h5py.File(tmp_path / "session.h5", "w") as h5:
+        imu = h5.create_group("imu")
+        imu.create_dataset("timestamp_ns", data=[1_002_000_000, 1_035_000_000])
+        imu.create_dataset("video_timestamp_ns", data=[1_000_000_000, 1_033_000_000])
+    (tmp_path / "session_meta.json").write_text(json.dumps({"fps_nominal": 30.0}))
+
+    assert sync_integrity(tmp_path) == pytest.approx(1 - 2.0 / (1000 / 30))
+
+
 def test_contact_consistency_is_none_on_a_contactless_rig():
     """head_mounted measures nothing. None (not measured) -- 0.0 would claim 'measured,
     catastrophic' about a channel with no sensor."""

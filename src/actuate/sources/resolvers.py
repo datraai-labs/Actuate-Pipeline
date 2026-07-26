@@ -21,11 +21,26 @@ _VIDEO_EXTS = (".mp4", ".mov", ".avi", ".mkv", ".webm")
 
 
 def _stage_video(video: Path, session: Path) -> Path:
-    """Copy a video into a fresh session dir, normalise names, generate session_meta."""
+    """Stage a source as the session layout consumed by every perception backend.
+
+    Remote datasets often keep calibration/IMU JSON beside the video, so retain those
+    sidecars at this boundary. The shared ingest video resolver lets downstream stages
+    accept the source filename without manufacturing a duplicate camera stream.
+    """
     session.mkdir(parents=True, exist_ok=True)
     dest = session / video.name
     if not dest.exists():
         shutil.copy2(video, dest)
+
+    for sidecar in video.parent.iterdir():
+        if (
+            sidecar.is_file()
+            and sidecar != video
+            and sidecar.suffix.lower() in {".json", ".csv", ".yaml", ".yml", ".h5", ".hdf5"}
+        ):
+            sidecar_dest = session / sidecar.name
+            if not sidecar_dest.exists():
+                shutil.copy2(sidecar, sidecar_dest)
     from actuate.ingest.run import ensure_session_meta
     from actuate.sources.detect import normalize_filenames
 

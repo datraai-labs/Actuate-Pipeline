@@ -17,14 +17,20 @@ retarget_app = typer.Typer(help="L5 -- cross-embodiment retargeting (Master Spec
 @retarget_app.command("train-arm")
 def train_arm(
     embodiment: str = typer.Option("franka_panda", help="Target robot (embodiment registry)."),
-    out: Path = typer.Option(..., "--out", help="Write the trained estimator (.pt) here."),
+    out: Path = typer.Option(
+        None,
+        "--out",
+        help="Write the estimator here. Default: ACTUATE_HOME/models/<embodiment>_root_frame.pt.",
+    ),
     pairs: int = typer.Option(2000, help="Number of sim (wrist, root) training pairs."),
     epochs: int = typer.Option(2000, help="Training epochs (full run ~1.5-2 hrs on a T4)."),
     length: int = typer.Option(32, help="Trajectory length per pair."),
     device: str = typer.Option("cpu", help="cpu or cuda."),
 ) -> None:
     """Train the SE(3)-equivariant root-frame estimator in sim (no real capture needed)."""
-    from actuate.retarget.arm import train_estimator
+    from actuate.retarget.arm import default_model_path, train_estimator
+
+    out = out or default_model_path(embodiment)
 
     typer.secho(f"training {embodiment} root-frame estimator: {pairs} pairs, {epochs} epochs "
                 f"on {device} ...", fg="cyan")
@@ -36,15 +42,27 @@ def train_arm(
 def arm(
     in_: Path = typer.Option(..., "--in", help="Canonical episode JSON (from `canonical build`)."),
     embodiment: str = typer.Option("franka_panda", help="Target robot."),
-    model: Path = typer.Option(..., "--model", help="Trained estimator (.pt) from train-arm."),
+    model: Path = typer.Option(
+        None,
+        "--model",
+        help="Trained estimator. Default: the user-local model written by train-arm.",
+    ),
     out: Path = typer.Option(None, "--out", help="Write the episode + action.robot here."),
     candidates: int = typer.Option(16, help="Root-frame hypotheses to sample."),
 ) -> None:
     """Retarget a canonical episode's wrist trajectory to a robot joint trajectory."""
-    from actuate.retarget.arm import attach_to_episode, run
+    from actuate.retarget.arm import attach_to_episode, default_model_path, run
     from actuate.schema import CanonicalEpisode
 
     episode = CanonicalEpisode.model_validate_json(Path(in_).read_text())
+    model = model or default_model_path(embodiment)
+    if not model.exists():
+        typer.secho(
+            f"no estimator at {model}. Train it first with "
+            f"`actuate retarget train-arm --embodiment {embodiment}`.",
+            fg="red",
+        )
+        raise typer.Exit(1)
     result = run(episode, embodiment, model, n_candidates=candidates)
 
     typer.secho(result.summary(), bold=True)

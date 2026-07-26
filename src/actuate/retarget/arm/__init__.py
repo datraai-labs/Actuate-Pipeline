@@ -46,6 +46,13 @@ class ArmRetargetResult:
                 f"{self.candidate_spread_m:.2f} m")
 
 
+def default_model_path(embodiment: str) -> Path:
+    """User-local location used by both ``train-arm`` and the processing pipeline."""
+    from actuate.config.auth import config_dir
+
+    return config_dir() / "models" / f"{embodiment}_root_frame.pt"
+
+
 def _wrist_rot6d(pose: SE3) -> np.ndarray:
     w, x, y, z = pose.quaternion_wxyz
     M = Rotation.from_quat([x, y, z, w]).as_matrix()
@@ -138,8 +145,9 @@ def attach_to_episode(episode, result: ArmRetargetResult):
 
 __all__ = [
     "ArmRetargetResult",
-    "train_estimator",
-    "run",
-    "attach_to_episode",
     "RootFrameEstimator",
+    "attach_to_episode",
+    "default_model_path",
+    "run",
+    "train_estimator",
 ]
