@@ -301,6 +301,23 @@ class ProcessingRun:
 
             res = export_rlds(ep, path, embodiment=emb, video=video, tier="all")
             n = res.n_steps
+        manifest_path = self._result.out / "run_manifest.json"
+        if manifest_path.exists():
+            import json
+
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            exports = manifest.setdefault("artifacts", {}).setdefault("exports", [])
+            record = {
+                "format": format,
+                "path": path.resolve().as_uri(),
+                "frames": int(n),
+                "embodiment": emb,
+            }
+            exports[:] = [x for x in exports if not (
+                x.get("format") == format and x.get("path") == record["path"]
+            )]
+            exports.append(record)
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         return ExportResult(format=format, path=path, n_frames=n, embodiment=emb)
 
     def upload_to_s3(self, *, export_dirs: list | None = None,

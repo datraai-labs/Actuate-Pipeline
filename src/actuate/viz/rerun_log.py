@@ -22,6 +22,8 @@ The camera uses OpenCV RDF coordinates (+x right, +y down, +z forward), so depth
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import numpy as np
 
 from actuate.config import Side
@@ -189,7 +191,7 @@ def log_episode(
     objects=None,
     fusion=None,
     slam=None,
-    video_frames: list | None = None,
+    video_frames: list | Mapping[int, np.ndarray] | None = None,
     intrinsics: np.ndarray | None = None,
     max_frames: int | None = None,
 ) -> dict[str, int]:
@@ -214,7 +216,8 @@ def log_episode(
     # frame set = union of what the sources cover, bounded by max_frames
     ids: set[int] = set()
     if video_frames is not None:
-        ids |= set(range(len(video_frames)))
+        ids |= (set(video_frames) if isinstance(video_frames, Mapping)
+                else set(range(len(video_frames))))
     for src in (hands, depth, objects, fusion):
         if src is not None and hasattr(src, "frames"):
             ids |= set(src.frames)
@@ -227,8 +230,17 @@ def log_episode(
         frame_ids = frame_ids[:max_frames]
 
     wh = None
+    def video_at(i: int):
+        if video_frames is None:
+            return None
+        if isinstance(video_frames, Mapping):
+            return video_frames.get(i)
+        return video_frames[i] if i < len(video_frames) else None
+
     if video_frames:
-        h0, w0 = video_frames[0].shape[:2]
+        first = next(iter(video_frames.values())) if isinstance(video_frames, Mapping) \
+            else video_frames[0]
+        h0, w0 = first.shape[:2]
         wh = (w0, h0)
 
     # --- pre-solve per-frame root depth for hand placement (Part C) ---------------------
@@ -251,10 +263,11 @@ def log_episode(
 
     prev_root: dict[Side, np.ndarray] = {}
     for i in frame_ids:
-        if video_frames is not None and i < len(video_frames):
-            log_video_frame(i, video_frames[i])
+        video_frame = video_at(i)
+        if video_frame is not None:
+            log_video_frame(i, video_frame)
             counts["video"] += 1
-            wh = (video_frames[i].shape[1], video_frames[i].shape[0])
+            wh = (video_frame.shape[1], video_frame.shape[0])
 
         if (slam is not None and getattr(slam, "poses", None)
                 and i < len(slam.poses) and K is not None and wh):
@@ -263,7 +276,7 @@ def log_episode(
 
         df = depth.frames.get(i) if depth is not None else None
         if df is not None and K is not None:
-            rgb = video_frames[i] if (video_frames and i < len(video_frames)) else None
+            rgb = video_frame
             log_depth_frame(i, df.depth_m, K, rgb=rgb)
             counts["depth"] += 1
 

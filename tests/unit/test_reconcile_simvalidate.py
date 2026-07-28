@@ -111,6 +111,27 @@ def test_sim_validate_flags_low_ik_convergence():
     assert any("IK convergence" in reason for reason in r.reasons)
 
 
+def test_sim_validate_catches_a_temporal_teleport():
+    arm = _Arm(
+        frame_ids=[0, 1, 2],
+        joint_traj=np.array([[0.0, 0.0, 0.0], [0.8, 0.0, 0.0], [0.81, 0.0, 0.0]]),
+    )
+    r = sim_validate.run(None, "test", arm, robot_model=_Robot())
+    assert not r.eligible
+    assert r.temporal_discontinuities == 1
+    assert any("trajectory jump" in reason for reason in r.reasons)
+
+
+def test_sim_validate_scales_motion_by_sparse_source_frame_gaps():
+    arm = _Arm(
+        frame_ids=[0, 100, 200],
+        joint_traj=np.array([[0.0, 0.0, 0.0], [0.8, 0.0, 0.0], [0.81, 0.0, 0.0]]),
+    )
+    r = sim_validate.run(None, "test", arm, robot_model=_Robot())
+    assert r.eligible
+    assert r.temporal_discontinuities == 0
+
+
 def test_sim_validate_finger_traj_requires_a_hand_model():
     with pytest.raises(ValueError, match="hand_model"):
         sim_validate.run(None, "test", np.zeros((5, 3)), robot_model=_Robot(),

@@ -120,6 +120,7 @@ def _side_intervals(episode: CanonicalEpisode, side: Side, fps: float) -> list[A
     verbs: list[ActionVerb] = []
     confs: list[float] = []
     prev_xyz: np.ndarray | None = None
+    prev_t: float | None = None
     prev_grasped: bool | None = None
     for idx, t, h, f in frames:
         has_hand = h is not None
@@ -129,7 +130,10 @@ def _side_intervals(episode: CanonicalEpisode, side: Side, fps: float) -> list[A
         speed = v_up = 0.0
         near_obj = approaching = False
         if wrist is not None and prev_xyz is not None:
-            dt = max(1.0 / fps, 1e-3)
+            # Episodes may preserve original timestamps after subsampling. Using a hardcoded
+            # 1/fps here inflated a 13-second gap into a one-frame movement and produced
+            # physically impossible speeds.
+            dt = max(float(t - prev_t) if prev_t is not None else 1.0 / fps, 1e-3)
             vel = (wrist - prev_xyz) / dt
             speed = float(np.linalg.norm(vel))
             v_up = float(-vel[1])          # camera Y is down; up is negative
@@ -144,6 +148,7 @@ def _side_intervals(episode: CanonicalEpisode, side: Side, fps: float) -> list[A
         confs.append(0.8 if verb in (ActionVerb.IDLE, ActionVerb.HOLD, ActionVerb.GRASP,
                                      ActionVerb.RELEASE) else 0.55)
         prev_xyz = wrist if wrist is not None else prev_xyz
+        prev_t = t if wrist is not None else prev_t
         if has_hand:
             prev_grasped = grasped
 

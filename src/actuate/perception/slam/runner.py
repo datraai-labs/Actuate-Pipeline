@@ -126,14 +126,27 @@ def run(
 
     video = _session_video(session_dir)
 
-    K = approximate_intrinsics(_TRACK_WIDTH, int(H * _TRACK_WIDTH / W))
-    notes["intrinsics"] = (
-        "APPROXIMATED from an assumed 82 deg HFOV -- this capture carries no calibration "
-        "for its device. UniDepthV2 (Part C) estimates intrinsics from the image itself, "
-        "which is the real fix. Rotation is far less sensitive to intrinsics error than "
-        "translation, which is another reason rotation is the trustworthy channel here."
-    )
-    provenance["camera_pose.intrinsics"] = Provenance.APPROXIMATED
+    from actuate.ingest.run import load_camera_matrix
+
+    source_K = load_camera_matrix(session_dir)
+    if source_K is not None:
+        scale = _TRACK_WIDTH / W
+        K = source_K.copy()
+        K[0, :] *= scale
+        K[1, :] *= scale
+        notes["intrinsics"] = (
+            "MEASURED calibration loaded from camera_intrinsics.json and scaled to the "
+            f"{_TRACK_WIDTH}px tracking image."
+        )
+        provenance["camera_pose.intrinsics"] = Provenance.MEASURED_HUMAN
+    else:
+        K = approximate_intrinsics(_TRACK_WIDTH, int(H * _TRACK_WIDTH / W))
+        notes["intrinsics"] = (
+            "APPROXIMATED from an assumed 82 deg HFOV because this capture carries no valid "
+            "camera_intrinsics.json. Rotation is less sensitive to intrinsics error than "
+            "translation, which is another reason rotation is the trustworthy channel here."
+        )
+        provenance["camera_pose.intrinsics"] = Provenance.APPROXIMATED
 
     # The cross-check compares consecutive KEPT frames. Sampling/stride can span several
     # frame intervals, so the gyro side must be accumulated over the same span or the two

@@ -26,7 +26,6 @@ import json
 from pathlib import Path
 
 import numpy as np
-from scipy.spatial.transform import Rotation
 
 from actuate.config import (
     ConsentStatus,
@@ -38,21 +37,108 @@ from actuate.config import (
     Side,
 )
 from actuate.schema import (
+    SE3,
     CanonicalEpisode,
     CanonicalFrame,
+    DepthRef,
     HandState,
     ImageRef,
     MANOParams,
     MaskRef,
     ObjectState,
-    SE3,
 )
+
+
+def _write_depth_artifact(
+    depth, frame_ids: list[int], artifact_dir: Path, cam: str, intrinsics: np.ndarray
+):
+    """Persist dense metric depth that would otherwise disappear with the process cache.
+
+    ``DepthRef.frame_index`` indexes the first dimension of this NPZ chunk. The original
+    source-frame IDs are stored alongside it so the mapping remains explicit and lossless.
+    UniDepth's second raster is named ``confidence`` rather than being mislabeled as a
+    calibrated uncertainty probability.
+    """
+    selected = [(i, depth.frames.get(i)) for i in frame_ids]
+    selected = [(i, f) for i, f in selected if f is not None]
+    if not selected:
+        return {}, None
+    shapes = {tuple(np.asarray(f.depth_m).shape) for _, f in selected}
+    if len(shapes) != 1:
+        raise ValueError(f"depth frames do not share one raster shape: {sorted(shapes)}")
+
+    rel = Path("artifacts") / "depth" / f"{cam}.npz"
+    dst = Path(artifact_dir) / rel
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        dst,
+        frame_indices=np.asarray([i for i, _ in selected], dtype=np.int64),
+        depth_m=np.stack([np.asarray(f.depth_m, dtype=np.float32) for _, f in selected]),
+        confidence=np.stack(
+            [np.asarray(f.confidence, dtype=np.float32) for _, f in selected]
+        ),
+        intrinsics=np.asarray(intrinsics, dtype=np.float64),
+        model_intrinsics=np.asarray(depth.intrinsics, dtype=np.float64),
+        model=np.asarray(str(getattr(depth, "model", ""))),
+    )
+    refs = {
+        source_i: DepthRef(uri=rel.as_posix(), frame_index=chunk_i)
+        for chunk_i, (source_i, _) in enumerate(selected)
+    }
+    return refs, rel.as_posix()
+
+
+def _write_object_artifact(objects, artifact_dir: Path) -> str | None:
+    """Persist labels, detector scores, boxes, and metric centroids not present in schema.
+
+    The canonical schema carries each track's mask but intentionally has no position-only
+    object pose (an SE3 would falsely imply a measured orientation). This sidecar preserves
+    the useful partial result without weakening that invariant.
+    """
+    if objects is None or not getattr(objects, "frames", None):
+        return None
+    rel = Path("artifacts") / "perception" / "objects.json"
+    dst = Path(artifact_dir) / rel
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "coordinate_frame": "camera",
+        "position_units": "metres",
+        "orientation_available": False,
+        "tracks": {str(k): v for k, v in getattr(objects, "tracks", {}).items()},
+        "frames": {
+            str(i): [
+                {
+                    "track_id": int(o.track_id),
+                    "label": str(o.label),
+                    "score": float(o.score),
+                    "bbox_xyxy_px": [float(v) for v in o.bbox],
+                    "position_cam_m": (
+                        None if o.position_cam is None
+                        else [float(v) for v in o.position_cam]
+                    ),
+                }
+                for o in frame_objects
+            ]
+            for i, frame_objects in sorted(objects.frames.items())
+        },
+        "provenance": {
+            k: (v.value if hasattr(v, "value") else str(v))
+            for k, v in getattr(objects, "provenance", {}).items()
+        },
+        "notes": dict(getattr(objects, "notes", {})),
+    }
+    dst.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return rel.as_posix()
 
 
 def _wrist_pose_from(hand, root_cam: np.ndarray) -> SE3:
     """SE3 wrist pose: metric position (root_cam) + orientation from WiLoR global_orient."""
     go = np.asarray(hand.global_orient, dtype=np.float64).reshape(3)
-    q_xyzw = Rotation.from_rotvec(go).as_quat()  # (x,y,z,w)
+    angle = float(np.linalg.norm(go))
+    if angle < 1e-12:
+        q_xyzw = np.array([0.0, 0.0, 0.0, 1.0])
+    else:
+        q_xyzw = np.r_[go / angle * np.sin(angle / 2.0), np.cos(angle / 2.0)]
     return SE3(
         position_m=(float(root_cam[0]), float(root_cam[1]), float(root_cam[2])),
         quaternion_wxyz=(float(q_xyzw[3]), float(q_xyzw[0]), float(q_xyzw[1]), float(q_xyzw[2])),
@@ -74,6 +160,8 @@ def build_from_perception(
     consent: ConsentStatus = ConsentStatus.PENDING,
     pii_status: PiiStatus = PiiStatus.PENDING,
     max_frames: int | None = None,
+    artifact_dir: Path | None = None,
+    video_uri: str | None = None,
 ) -> CanonicalEpisode:
     """Assemble a schema-v3 CanonicalEpisode (MANO 45 populated) from perception results."""
     from actuate.perception.depth import backproject, smooth_root_depth, solve_root_depth
@@ -83,12 +171,38 @@ def build_from_perception(
     fps = float(meta.get("fps_nominal", meta.get("fps", 30.0)))
     eid = episode_id or f"{capture_hash[:16]}_ep00"
     cam = "head" if rig is RigType.HEAD_MOUNTED else "wrist"
-    video = f"processed/{meta['session_id']}/redacted_compressed.mp4"
-    K = depth.intrinsics if depth is not None else None
+    if video_uri is None:
+        try:
+            from actuate.ingest.run import _session_video
+
+            video_uri = _session_video(session_dir).resolve().as_uri()
+        except FileNotFoundError:
+            # Synthetic/unit sessions may intentionally carry no pixels. Production paths
+            # always resolve the real source above.
+            video_uri = f"processed/{meta['session_id']}/redacted_compressed.mp4"
+
+    K = None
+    if depth is not None:
+        from actuate.ingest.run import load_camera_matrix
+
+        K = load_camera_matrix(session_dir)
+        if K is None:
+            K = depth.intrinsics
 
     frame_ids = sorted(hands.frames)
     if max_frames is not None:
         frame_ids = frame_ids[:max_frames]
+    depth_refs: dict[int, DepthRef] = {}
+    depth_artifact = None
+    if depth is not None and artifact_dir is not None:
+        depth_refs, depth_artifact = _write_depth_artifact(
+            depth, frame_ids, Path(artifact_dir), cam, K
+        )
+    objects_artifact = (
+        _write_object_artifact(objects, Path(artifact_dir))
+        if objects is not None and artifact_dir is not None
+        else None
+    )
 
     # per-frame root depth (metric wrist placement) -- Part C
     root_z: dict[int, float] = {}
@@ -119,6 +233,17 @@ def build_from_perception(
             "vision-inferred contact from masquerading as one. Fusion's soft contact is viz-only."
         ),
     }
+    if depth_artifact is not None:
+        notes["depth_artifact"] = (
+            f"Dense metric depth and UniDepth relative confidence are stored in "
+            f"{depth_artifact}; DepthRef.frame_index indexes its first array dimension."
+        )
+    if objects_artifact is not None:
+        notes["objects_artifact"] = (
+            f"Object labels, detection scores, 2D boxes, and depth-derived metric centroids "
+            f"are stored in {objects_artifact}. Canonical objects carry the masks; orientation "
+            "remains absent because no CAD mesh/FoundationPose result exists."
+        )
 
     frames = []
     for k, i in enumerate(frame_ids):
@@ -145,6 +270,17 @@ def build_from_perception(
             )
         if hand_states:
             provenance["hands"] = Provenance.VISION_PRIMARY
+            confidence["hands"] = float(np.clip(np.mean(
+                [getattr(h, "detection_confidence", 1.0) for h in hs]
+            ), 0.0, 1.0))
+
+        frame_depth = {}
+        df = depth.frames.get(i) if depth is not None else None
+        if i in depth_refs and df is not None:
+            frame_depth[cam] = depth_refs[i]
+            provenance["depth"] = Provenance.VISION_PRIMARY
+            d = np.asarray(df.depth_m)
+            confidence["depth"] = float(np.mean(np.isfinite(d) & (d > 0)))
 
         cam_pose = None
         if slam is not None and getattr(slam, "poses", None) and i < len(slam.poses):
@@ -164,12 +300,16 @@ def build_from_perception(
         # frame is the honest, real signal (what is being manipulated).
         obj_states: dict[str, ObjectState] = {}
         if objects is not None:
-            for o in objects.frames.get(i, []):
+            object_frames = objects.frames.get(i, [])
+            for o in object_frames:
                 obj_states[str(o.track_id)] = ObjectState(
                     mask=MaskRef(rle=o.mask_rle), pose=None
                 )
             if obj_states:
                 provenance["objects"] = Provenance.VISION_PRIMARY
+                confidence["objects"] = float(np.clip(
+                    np.mean([o.score for o in object_frames]), 0.0, 1.0
+                ))
 
         frames.append(
             CanonicalFrame(
@@ -177,10 +317,11 @@ def build_from_perception(
                 rig=rig,
                 episode_id=eid,
                 frame_idx=i,
-                images={cam: ImageRef(uri=video, frame_index=i)},
+                images={cam: ImageRef(uri=video_uri, frame_index=i)},
                 camera_pose=cam_pose,
                 hands=hand_states,
                 objects=obj_states,
+                depth=frame_depth,
                 interaction_state=istate,
                 confidence=confidence,
                 provenance=provenance,

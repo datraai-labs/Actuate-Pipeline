@@ -1,9 +1,12 @@
-"""`actuate retarget arm` -- wrist trajectory -> robot joint trajectory (Master Spec §L5).
+"""Cross-embodiment retargeting commands.
 
-Thin wrapper over `actuate.retarget.arm`. `train-arm` generates sim data and trains the
-root-frame estimator (full run: Kaggle T4). `arm` loads a canonical episode, retargets its wrist
-trajectory to the target robot, and writes the episode back with `action.robot.<embodiment>`.
+`arm` is the wrist-to-Franka-style path. `humanoid` is the full-body BVH-to-humanoid
+path from the General Motion Retargeting paper (arXiv:2510.02252). They deliberately
+remain separate because their inputs and target embodiments are different.
 """
+
+# Typer's supported declaration style uses Option calls as defaults.
+# ruff: noqa: B008
 
 from __future__ import annotations
 
@@ -12,6 +15,26 @@ from pathlib import Path
 import typer
 
 retarget_app = typer.Typer(help="L5 -- cross-embodiment retargeting (Master Spec §L5).")
+
+
+@retarget_app.command("setup-humanoid")
+def setup_humanoid(
+    out: Path = typer.Option(
+        None,
+        "--out",
+        help="Asset cache destination. Default: ACTUATE_HOME/vendor/gmr/<commit>.",
+    ),
+) -> None:
+    """Download pinned Unitree G1 models and BVH mappings omitted from GMR's wheel."""
+    from actuate.retarget.humanoid import GMRDependencyError, install_reference_assets
+
+    typer.echo("downloading pinned GMR robot models and IK mappings ...")
+    try:
+        root = install_reference_assets(out)
+    except (GMRDependencyError, OSError, ValueError) as exc:
+        typer.secho(str(exc), fg="red")
+        raise typer.Exit(1) from exc
+    typer.secho(f"GMR assets ready: {root}", fg="green")
 
 
 @retarget_app.command("train-arm")
@@ -77,3 +100,93 @@ def arm(
         typer.secho(f"wrote {out}  (action.robot.{embodiment} added)", fg="green")
     else:
         typer.echo("(no --out; not written. Pass --out to persist action.robot.)")
+
+
+@retarget_app.command("humanoid")
+def humanoid(
+    in_: Path = typer.Option(..., "--in", help="Full-body BVH motion file."),
+    out: Path = typer.Option(..., "--out", help="Output directory for motion.npz/report.json."),
+    source_format: str = typer.Option(
+        "xsens",
+        "--source-format",
+        help="BVH skeleton convention: xsens, lafan1, or nokov.",
+    ),
+    robot: str = typer.Option("unitree_g1", help="GMR target robot."),
+    start: int = typer.Option(None, help="First source frame (inclusive)."),
+    end: int = typer.Option(None, help="Last source frame (exclusive)."),
+    max_frames: int = typer.Option(None, help="Limit frames for a quick test/demo."),
+    scale: float = typer.Option(0.01, help="Xsens BVH position scale (centimetres -> metres)."),
+    fps: float = typer.Option(None, help="Override the frame rate stored in the BVH."),
+    human_height: float = typer.Option(None, help="Override inferred human height in metres."),
+    solver: str = typer.Option("daqp", help="Mink/qpsolvers backend."),
+    damping: float = typer.Option(0.5, help="Differential IK damping."),
+    velocity_limit: bool = typer.Option(
+        True,
+        "--velocity-limit/--no-velocity-limit",
+        help="Constrain joints to 3*pi rad/s during each IK solve.",
+    ),
+    ground_align: bool = typer.Option(
+        True,
+        "--ground-align/--no-ground-align",
+        help="Apply the paper's whole-clip minimum-height correction.",
+    ),
+    reset_to_zero: bool = typer.Option(
+        False,
+        "--reset-to-zero",
+        help="Remove initial X/Y displacement and heading in Xsens BVH.",
+    ),
+    preview: Path = typer.Option(
+        None,
+        "--preview",
+        help="Optional headless .mp4 or .gif preview (no desktop viewer).",
+    ),
+    gmr_root: Path = typer.Option(
+        None,
+        "--gmr-root",
+        help="GMR checkout/cache root. Normally set by `setup-humanoid`.",
+    ),
+    verbose: bool = typer.Option(False, "--verbose", help="Print GMR body/joint mappings."),
+) -> None:
+    """Retarget full-body BVH motion to a humanoid with the GMR paper method."""
+    from actuate.retarget.humanoid import (
+        GMRDependencyError,
+        cli_progress_printer,
+        render_preview,
+        retarget_bvh,
+    )
+
+    try:
+        result = retarget_bvh(
+            in_,
+            source_format=source_format,
+            robot=robot,
+            scale=scale,
+            start=start,
+            end=end,
+            max_frames=max_frames,
+            reset_to_zero=reset_to_zero,
+            fps=fps,
+            actual_human_height=human_height,
+            solver=solver,
+            damping=damping,
+            velocity_limit=velocity_limit,
+            ground_align=ground_align,
+            verbose=verbose,
+            progress=cli_progress_printer(),
+            reference_root=gmr_root,
+        )
+        motion_path, report_path = result.write(out)
+        if preview is not None:
+            render_preview(result, preview)
+    except (GMRDependencyError, FileNotFoundError, ValueError) as exc:
+        typer.secho(str(exc), fg="red")
+        raise typer.Exit(1) from exc
+
+    typer.secho(result.summary(), bold=True, fg="green")
+    typer.echo(f"motion: {motion_path}")
+    typer.echo(f"report: {report_path}")
+    if result.quality.warnings:
+        for warning in result.quality.warnings:
+            typer.secho(f"warning: {warning}", fg="yellow")
+    if preview is not None:
+        typer.echo(f"preview: {preview}")

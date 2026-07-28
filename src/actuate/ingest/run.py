@@ -68,7 +68,10 @@ class IngestResult:
 
 
 def _session_video(src: Path) -> Path:
-    for name in ("compressed.mp4", "redacted_compressed.mp4", "raw.mp4"):
+    # Once a redaction pass exists it is the safe/default view of this capture. Picking
+    # compressed.mp4 first silently sent the unredacted source to visualization/export even
+    # after --redact-pii had completed successfully.
+    for name in ("redacted_compressed.mp4", "compressed.mp4", "raw.mp4"):
         p = src / name
         if p.exists():
             return p
@@ -137,16 +140,45 @@ def ensure_session_meta(src: Path) -> dict:
 
 def _session_intrinsics(src: Path) -> tuple[float, float] | None:
     """(fx, fy) from camera_intrinsics.json when present; None = not calibrated."""
+    K = load_camera_matrix(src)
+    if K is None:
+        return None
+    return float(K[0, 0]), float(K[1, 1])
+
+
+def load_camera_matrix(src: Path):
+    """Load a valid 3x3 pinhole calibration supplied with the capture.
+
+    Accepts either a full ``camera_matrix`` or the common ``fx/fy/cx/cy`` form. Returning
+    ``None`` is deliberate: callers can then keep an estimated-intrinsics provenance instead
+    of silently upgrading malformed metadata into a measured calibration claim.
+    """
+    import numpy as np
+
+    src = Path(src)
     p = src / "camera_intrinsics.json"
     if not p.exists():
         return None
-    d = json.loads(p.read_text(encoding="utf-8"))
-    fx = d.get("fx") or (d.get("camera_matrix") or [[None]])[0][0]
-    fy = d.get("fy") or (d.get("camera_matrix") or [[None], [None, None]])[1][1] \
-        if d.get("camera_matrix") else d.get("fy")
-    if fx is None or fy is None:
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+        if d.get("camera_matrix") is not None:
+            K = np.asarray(d["camera_matrix"], dtype=np.float64)
+        else:
+            fx, fy = float(d["fx"]), float(d["fy"])
+            meta_p = src / "session_meta.json"
+            meta = json.loads(meta_p.read_text(encoding="utf-8")) if meta_p.exists() else {}
+            width = float(meta.get("video_width", meta.get("width", 0)))
+            height = float(meta.get("video_height", meta.get("height", 0)))
+            cx = float(d.get("cx", width / 2.0))
+            cy = float(d.get("cy", height / 2.0))
+            K = np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]])
+    except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError):
         return None
-    return float(fx), float(fy)
+    if K.shape != (3, 3) or not np.all(np.isfinite(K)):
+        return None
+    if K[0, 0] <= 0 or K[1, 1] <= 0 or abs(K[2, 2] - 1.0) > 1e-6:
+        return None
+    return K
 
 
 def _check_alignment(src: Path, aligned_robot: str,

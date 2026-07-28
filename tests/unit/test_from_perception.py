@@ -58,7 +58,7 @@ def test_build_from_perception_produces_v3_mano_and_53dim_state(tmp_path):
 
     ep = build_from_perception(
         _session(tmp_path, n), "a" * 64, hands=_HR(n), depth=depth,
-        rig=RigType.HEAD_MOUNTED, task="synthetic",
+        rig=RigType.HEAD_MOUNTED, task="synthetic", artifact_dir=tmp_path / "run",
     )
 
     assert ep.schema_version >= 3      # v3 introduced the 45-MANO this test pins below
@@ -72,6 +72,17 @@ def test_build_from_perception_produces_v3_mano_and_53dim_state(tmp_path):
     assert len(dof) == 53                                   # 8 wrist+grasp + 45 MANO
     assert state.shape[1] == 53
     assert valid.sum() >= n - 1
+    # Dense depth survives beyond the ephemeral perception cache and every canonical frame
+    # points to the correct row in the durable artifact.
+    depth_path = tmp_path / "run" / "artifacts" / "depth" / "head.npz"
+    assert depth_path.exists()
+    with np.load(depth_path, allow_pickle=False) as arrays:
+        assert arrays["depth_m"].shape == (n, H, W)
+        assert arrays["confidence"].shape == (n, H, W)
+        assert arrays["frame_indices"].tolist() == list(range(n))
+    assert ep.frames[3].depth["head"].uri == "artifacts/depth/head.npz"
+    assert ep.frames[3].depth["head"].frame_index == 3
+    assert ep.frames[3].confidence["depth"] == 1.0
 
 
 def test_build_from_perception_carries_object_masks(tmp_path):

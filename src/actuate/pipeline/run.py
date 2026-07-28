@@ -117,11 +117,85 @@ def run_pipeline(session: Path, out: Path, profile: dict, *, resume: bool = True
     _stage_language(ctx)
     _stage_package(ctx)
     _stage_viz(ctx, perception)
+    _write_run_manifest(ctx)
     return PipelineResult(out=out, canonical_path=ctx.canonical_path,
                           checkpoint=ctx.checkpoint, seconds=time.time() - t0)
 
 
 # ---------------------------------------------------------------- stages
+def _write_run_manifest(ctx: _Ctx) -> None:
+    """Write a portable index of source signals and every durable run artifact."""
+    from actuate.ingest.run import _session_video
+
+    ep = _load_canonical(ctx)
+    meta_p = ctx.session / "session_meta.json"
+    meta = json.loads(meta_p.read_text(encoding="utf-8")) if meta_p.exists() else {}
+    video = ctx.session / ctx.profile.get("video", _session_video(ctx.session).name)
+
+    def rel_files(pattern: str) -> list[str]:
+        return [
+            p.relative_to(ctx.out).as_posix()
+            for p in sorted(ctx.out.glob(pattern))
+            if p.is_file()
+        ]
+
+    manifest = {
+        "version": 1,
+        "episode_id": ep.episode_id,
+        "capture_id": ep.capture_id,
+        "task": ep.task,
+        "source": {
+            "session": ctx.session.resolve().as_uri(),
+            "video": video.resolve().as_uri(),
+            "metadata": meta,
+            "camera_intrinsics": (
+                (ctx.session / "camera_intrinsics.json").resolve().as_uri()
+                if (ctx.session / "camera_intrinsics.json").exists() else None
+            ),
+            "imu_raw": (
+                (ctx.session / "imu.json").resolve().as_uri()
+                if (ctx.session / "imu.json").exists() else None
+            ),
+            "imu_frame_aligned": (
+                (ctx.session / "session.h5").resolve().as_uri()
+                if (ctx.session / "session.h5").exists() else None
+            ),
+        },
+        "result": {
+            "sampled_source_frames": [f.frame_idx for f in ep.frames],
+            "quality": ep.episode_meta.quality,
+            "robot_actions": sorted(ep.action_robot),
+        },
+        "artifacts": {
+            "canonical": ctx.canonical_path.relative_to(ctx.out).as_posix(),
+            "checkpoint": "checkpoint.json",
+            "visualization": "pipeline.rrd" if (ctx.out / "pipeline.rrd").exists() else None,
+            "depth": rel_files("artifacts/depth/*"),
+            "perception": rel_files("artifacts/perception/*"),
+            "exports": [],
+        },
+        "not_produced": {
+            "atomic_action_labels": (
+                ctx.checkpoint.get("label_actions", {}).get("note")
+                if ctx.checkpoint.get("label_actions", {}).get("status") == "skipped"
+                else None
+            ),
+            "hardware_contact": "The head-mounted rig has no tactile/contact sensor.",
+            "object_orientation_6dof": (
+                "No object CAD mesh/FoundationPose result; metric centroids are preserved "
+                "without inventing an orientation."
+            ),
+            "full_body_humanoid_motion": (
+                "The egocentric source has no observed full-body skeleton; Franka arm "
+                "retargeting is produced from the visible wrist trajectory."
+            ),
+        },
+    }
+    (ctx.out / "run_manifest.json").write_text(
+        json.dumps(manifest, indent=2), encoding="utf-8"
+    )
+
+
 def _stage_ingest(ctx: _Ctx) -> None:
     if ctx.already("ingest"):
         return
@@ -183,7 +257,7 @@ def _stage_perceive(ctx: _Ctx) -> dict:
             else:
                 imu_key = "none"
             results["slam"], _ = stage_cached(
-                ctx.session, "slam", f"v2|n={n}|imu={imu_key}",
+                ctx.session, "slam", f"v3|n={n}|imu={imu_key}",
                 use_cache=True, force=False, warn=warn,
                 run_fn=lambda: slam_runner.run(ctx.session, max_frames=n))
         except Exception as exc:
@@ -191,13 +265,20 @@ def _stage_perceive(ctx: _Ctx) -> dict:
             results["slam"] = None
         prompts = cfg.get("prompts", ["stapler", "paper"])
         try:
+            from actuate.ingest.run import load_camera_matrix
             from actuate.perception import objects as objmod
 
+            object_K = load_camera_matrix(ctx.session)
+            if object_K is None:
+                object_K = results["depth"].intrinsics
             results["objects"], _ = stage_cached(
-                ctx.session, "objects", f"n={n}|{','.join(prompts)}",
+                ctx.session, "objects", f"v2|n={n}|{','.join(prompts)}",
                 use_cache=True, force=False, warn=warn,
                 run_fn=lambda: objmod.run(ctx.session, prompts=prompts,
-                                          max_frames=n, chunk=n))
+                                          task=ctx.profile.get("task"),
+                                          max_frames=n, chunk=n,
+                                          depth=results["depth"],
+                                          intrinsics=object_K))
         except Exception as exc:
             ctx.flag(stage, f"objects unavailable: {exc}")
             results["objects"] = None
@@ -230,7 +311,8 @@ def _stage_canonical(ctx: _Ctx, perception: dict) -> None:
             hands=perception["hands"], depth=perception.get("depth"),
             fusion=perception.get("fusion"), slam=perception.get("slam"),
             objects=perception.get("objects"),
-            rig=RigType(ctx.profile.get("rig", "head_mounted")), task=task)
+            rig=RigType(ctx.profile.get("rig", "head_mounted")), task=task,
+            artifact_dir=ctx.out)
         note = "from perception"
     elif (ctx.session / "hand_pose_3d.json").exists():
         # v1-legacy fallback ONLY when the session actually carries v1 artifacts (the bundled
@@ -272,6 +354,18 @@ def _stage_canonical(ctx: _Ctx, perception: dict) -> None:
         from actuate.io import redact
 
         report = redact.redact_session(ctx.session)
+        ctx.profile["video"] = report.output.name
+        # The episode was assembled before the redaction pass. Repoint its image refs to the
+        # file that actually passed the PII step; exporters read the same updated profile.
+        safe_uri = report.output.resolve().as_uri()
+        ep = ep.model_copy(update={
+            "frames": tuple(f.model_copy(update={
+                "images": {
+                    name: ref.model_copy(update={"uri": safe_uri})
+                    for name, ref in f.images.items()
+                }
+            }) for f in ep.frames)
+        })
         updates["pii_status"] = report.status
         ctx.flag(stage, f"PII redaction: blurred {report.regions_blurred} region(s) over "
                         f"{report.frames_scanned} frames -> pii_status={report.status.value}")
@@ -292,6 +386,22 @@ def _stage_label_actions(ctx: _Ctx) -> None:
     meta = ctx.session / "session_meta.json"
     if meta.exists():
         fps = float(json.loads(meta.read_text(encoding="utf-8")).get("fps_nominal", 30.0))
+    if len(ep.frames) >= 2:
+        gaps = [b.t - a.t for a, b in zip(ep.frames, ep.frames[1:])]
+        largest_gap = max(gaps)
+        if largest_gap > 2.0 / fps:
+            # Atomic reach/grasp/pour boundaries cannot be recovered from widely-spaced
+            # representative frames. An earlier version confidently labeled the entire
+            # two-minute clip IDLE; absence is more honest than that false training target.
+            if ep.action_intervals:
+                ep = ep.model_copy(update={"action_intervals": ()})
+                _write_canonical(ctx, ep)
+            ctx.skip(
+                stage,
+                f"sparse sampling (largest gap {largest_gap:.2f}s); atomic action labels "
+                "require contiguous frames",
+            )
+            return
     res = label_actions(ep, fps=fps)          # geometry only, $0
     _write_canonical(ctx, res.episode)
     ctx.done(stage, f"{len(res.intervals)} intervals over {sorted(res.actors)}, "
@@ -331,6 +441,9 @@ def _stage_retarget(ctx: _Ctx) -> None:
         sim = simval.run(ep, emb, result)
         ctx.checkpoint["_sim"] = {"eligible": sim.eligible,
                                   "ik": sim.ik_convergence_rate,
+                                  "joint_limit_violations": sim.joint_limit_violations,
+                                  "collision_frames": sim.collision_count,
+                                  "temporal_discontinuities": sim.temporal_discontinuities,
                                   "reasons": sim.reasons}
         _write_canonical(ctx, ep)
         ctx.done(stage, result.summary())
@@ -353,8 +466,15 @@ def _stage_certify(ctx: _Ctx) -> None:
         sim = SimpleNamespace(eligible=sim_rec["eligible"],
                               ik_convergence_rate=sim_rec["ik"],
                               reasons=sim_rec["reasons"])
-    report = score(ep, ctx.profile.get("embodiment"), session_dir=ctx.session,
-                   sim_result=sim)
+    from actuate.ingest.run import load_camera_matrix
+
+    report = score(
+        ep,
+        ctx.profile.get("embodiment"),
+        session_dir=ctx.session,
+        intrinsics_measured=load_camera_matrix(ctx.session) is not None,
+        sim_result=sim,
+    )
     _write_canonical(ctx, report.episode)
     ctx.done(stage, f"quality {report.quality}/5, {len(report.mistakes)} mistake flags")
 
@@ -467,12 +587,13 @@ def _stage_viz(ctx: _Ctx, perception: dict) -> None:
             import cv2
 
             cap = cv2.VideoCapture(str(video))
-            video_frames = []
-            for _ in range(min(300, len(ep.frames) or 300)):
+            video_frames = {}
+            for source_i in [f.frame_idx for f in ep.frames[:300]]:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, source_i)
                 ok, f = cap.read()
                 if not ok:
-                    break
-                video_frames.append(cv2.cvtColor(f, cv2.COLOR_BGR2RGB))
+                    continue
+                video_frames[source_i] = f
             cap.release()
         counts = rerun_log.log_episode(
             ep,

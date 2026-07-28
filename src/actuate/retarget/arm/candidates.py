@@ -31,13 +31,15 @@ class CandidateScore:
     manipulability: float       # mean, higher = further from singularity
     joint_margin: float         # min normalised distance to a joint limit (0=at limit)
     smoothness: float           # mean joint speed (lower = smoother); NaN if <2 frames
+    collision_frames: int       # frames with a self-collision in the robot model
     joint_traj: np.ndarray      # (T, n) solved configs
     ee_traj: list               # (T,) SE3, FK of the solved configs (in root frame)
 
     def rank_key(self) -> tuple:
-        # convergence dominates; then smoother, more manipulable, better margin, lower residual
-        return (self.convergence, -self.smoothness, self.manipulability, self.joint_margin,
-                -self.residual_mm)
+        # A physically invalid candidate must never beat a collision-free candidate merely
+        # because its residual is slightly lower.  Within the safe set, convergence dominates.
+        return (-self.collision_frames, self.convergence, -self.smoothness,
+                self.manipulability, self.joint_margin, -self.residual_mm)
 
 
 def wrist_to_root(wrist_pos_cam, wrist_rot6d_cam, root_pos, root_R) -> list[SE3]:
@@ -54,13 +56,16 @@ def wrist_to_root(wrist_pos_cam, wrist_rot6d_cam, root_pos, root_R) -> list[SE3]
 
 
 def score_candidate(robot: RobotModel, root_pos, root_R, wrist_pos_cam, wrist_rot6d_cam,
-                    ik_restarts: int = 2) -> CandidateScore:
+                    ik_restarts: int = 2, seed: int = 0) -> CandidateScore:
     targets = wrist_to_root(wrist_pos_cam, wrist_rot6d_cam, root_pos, root_R)
     q_prev = None
     js, residuals, manips, margins, conv = [], [], [], [], 0
     ee = []
+    rng = np.random.default_rng(seed)
     for tgt in targets:
-        res = robot.ik(tgt, q0=q_prev, restarts=ik_restarts)
+        # Robot.ik uses random restarts.  Supplying one episode-local generator makes the same
+        # footage/model produce the same candidate verdict on every worker.
+        res = robot.ik(tgt, q0=q_prev, restarts=ik_restarts, rng=rng)
         js.append(res.q)
         ee.append(robot.fk(res.q))
         if res.converged:
@@ -72,13 +77,14 @@ def score_candidate(robot: RobotModel, root_pos, root_R, wrist_pos_cam, wrist_ro
             q_prev = res.q
     js = np.array(js)
     smooth = float(np.mean(np.linalg.norm(np.diff(js, axis=0), axis=1))) if len(js) > 1 else float("nan")
+    collisions = int(sum(robot.self_collision_count(q) > 0 for q in js))
     return CandidateScore(
         root_pos=np.asarray(root_pos), root_R=np.asarray(root_R),
         convergence=conv / len(targets),
         residual_mm=float(np.mean(residuals)) if residuals else float("nan"),
         manipulability=float(np.mean(manips)) if manips else 0.0,
         joint_margin=float(np.min(margins)) if margins else 0.0,
-        smoothness=smooth, joint_traj=js, ee_traj=ee,
+        smoothness=smooth, collision_frames=collisions, joint_traj=js, ee_traj=ee,
     )
 
 
