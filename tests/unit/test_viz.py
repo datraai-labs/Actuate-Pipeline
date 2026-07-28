@@ -148,6 +148,22 @@ def test_log_episode_writes_every_modality_to_a_real_rrd(tmp_path):
     assert out.exists() and out.stat().st_size > 1000
 
 
+def test_log_episode_accepts_sparse_video_frames_on_source_timeline(tmp_path):
+    rr = pytest.importorskip("rerun")
+    from actuate.viz import log_episode
+
+    sparse = {
+        0: np.zeros((24, 32, 3), dtype=np.uint8),
+        50: np.zeros((24, 32, 3), dtype=np.uint8),
+        99: np.zeros((24, 32, 3), dtype=np.uint8),
+    }
+    rr.init("actuate-sparse-video-test")
+    counts = log_episode(video_frames=sparse)
+    rr.save(str(tmp_path / "sparse.rrd"))
+
+    assert counts["video"] == 3
+
+
 def test_stage_cache_runs_on_miss_loads_on_hit_reruns_on_change(tmp_path):
     """The `actuate viz --cache` behaviour: never re-run a stage whose inputs are unchanged."""
     from actuate.cli.viz import _stage_cached

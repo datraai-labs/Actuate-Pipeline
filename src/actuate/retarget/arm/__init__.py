@@ -110,11 +110,15 @@ def run(
     model: Path | RootFrameEstimator,
     *,
     n_candidates: int = 16,
-    cluster_k: int | None = 6,
+    cluster_k: int | None = None,
     control_mode: ControlMode = ControlMode.JOINT,
     side: Side = Side.RIGHT,
 ) -> ArmRetargetResult:
-    """Retarget a canonical episode's wrist trajectory to `embodiment` joint space."""
+    """Retarget a canonical episode's wrist trajectory to `embodiment` joint space.
+
+    All sampled roots are scored by default.  Clustering is available for large candidate
+    sweeps, but at the normal 16 samples it can discard the one collision-free IK solution.
+    """
     robot = load_robot(embodiment)
     est = model if isinstance(model, RootFrameEstimator) else RootFrameEstimator.load(Path(model))
 

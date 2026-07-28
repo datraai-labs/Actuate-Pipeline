@@ -225,9 +225,10 @@ def run(
 
     session_dir = Path(session_dir)
     meta = json.loads((session_dir / "session_meta.json").read_text())
-    n = int(meta["frame_count"])
-    if max_frames:
-        n = min(n, max_frames)
+    frame_count = int(meta["frame_count"])
+    from actuate.perception.sampling import sampled_indices
+
+    indices = sampled_indices(frame_count, max_frames)
     from actuate.ingest.run import _session_video
 
     video = _session_video(session_dir)
@@ -237,11 +238,18 @@ def run(
     # Read the frames we will process (chunked). Kept as PIL for the models.
     cap = cv2.VideoCapture(str(video))
     frames_bgr: list = []
-    for _ in range(n):
+    contiguous = indices == list(range(len(indices)))
+    kept_indices: list[int] = []
+    for source_i in indices:
+        if not contiguous:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, source_i)
         ok, f = cap.read()
         if not ok:
-            break
+            if contiguous:
+                break
+            continue
         frames_bgr.append(f)
+        kept_indices.append(source_i)
     cap.release()
     n = len(frames_bgr)
     frames_pil = [Image.fromarray(cv2.cvtColor(f, cv2.COLOR_BGR2RGB)) for f in frames_bgr]
@@ -306,7 +314,10 @@ def run(
         for s in seeded:
             masks = tracker.propagate(chunk_pil, s["box"])
             for local_idx, mask in masks.items():
-                gidx = start + local_idx
+                sampled_idx = start + local_idx
+                if sampled_idx >= len(kept_indices):
+                    continue
+                gidx = kept_indices[sampled_idx]
                 pos = None
                 if depth is not None and intrinsics is not None and gidx in depth.frames:
                     df = depth.frames[gidx]

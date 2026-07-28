@@ -98,14 +98,20 @@ def export_rlds(
     what the verification gate does.
     """
     try:
+        import tensorflow  # noqa: F401  # TFDS writing uses tf.data internally
         import tensorflow_datasets as tfds
-    except ImportError as exc:
+
+        if not hasattr(tfds, "dataset_builders"):
+            raise ImportError("tensorflow_datasets was only partially imported")
+    except Exception as exc:
         raise ExportRefused(
-            "RLDS export needs tensorflow-datasets, which requires protobuf>=6.31 -- but the "
-            "[all] install pins protobuf<6 so the PERCEPTION stage (UniDepth/wandb) can "
-            "import. LeRobot v3 export works here; for RLDS, export in a separate env with "
-            "`pip install tensorflow-datasets 'protobuf>=6.31'`. (Details: STATUS.md, "
-            "Phase 6 dependency note.)") from exc
+            "RLDS export needs TensorFlow/TFDS with protobuf>=6.31, but the perception "
+            "environment pins protobuf<6 so UniDepth/MediaPipe can import. LeRobot v3 export "
+            "works here. Run RLDS in a separate env:\n"
+            "  python3.12 -m venv .venv-rlds\n"
+            "  .venv-rlds/bin/python -m pip install -e '.[rlds]'\n"
+            "  .venv-rlds/bin/actuate export <run> --format rlds --out <dataset>"
+        ) from exc
 
     eps = [episodes] if isinstance(episodes, CanonicalEpisode) else list(episodes)
     if not eps:

@@ -142,3 +142,34 @@ def test_result_attaches_to_episode_and_flags_low_confidence():
     res = label_actions(_episode(frames))
     assert res.episode.action_intervals == tuple(res.intervals)
     assert res.flagged_for_review == sum(1 for iv in res.intervals if iv.confidence <= 0.5)
+
+
+def test_pipeline_refuses_atomic_labels_for_sparse_demo_frames(tmp_path):
+    from actuate.pipeline.run import _Ctx, _stage_label_actions
+
+    # Ten representative frames over two minutes are useful for an end-to-end smoke test,
+    # but not enough to infer atomic reach/grasp/pour boundaries honestly.
+    frames = [
+        _frame(i * 400, t=i * 400 / 30.0, sides={Side.RIGHT: _kp(0.1 * i, 0.0, 0.5)})
+        for i in range(10)
+    ]
+    out = tmp_path / "run"
+    out.mkdir()
+    canonical_path = out / "canonical.json"
+    canonical_path.write_text(_episode(frames).model_dump_json(), encoding="utf-8")
+    ctx = _Ctx(
+        session=tmp_path,
+        out=out,
+        profile={},
+        reporter=lambda *args: None,
+        confirm=lambda prompt: False,
+    )
+    ctx.canonical_path = canonical_path
+
+    _stage_label_actions(ctx)
+
+    assert ctx.checkpoint["label_actions"]["status"] == "skipped"
+    assert "sparse sampling" in ctx.checkpoint["label_actions"]["note"]
+    assert not CanonicalEpisode.model_validate_json(
+        canonical_path.read_text(encoding="utf-8")
+    ).action_intervals

@@ -37,6 +37,22 @@ def _stage_cached(session: Path, stage: str, key: str, *, use_cache: bool, force
                         warn=lambda m: typer.secho(f"  ({m})", fg="yellow"))
 
 
+@viz_app.command("preview")
+def preview(
+    run_dir: Path = typer.Argument(..., help="Completed run directory (has canonical.json)."),
+    out: Path = typer.Option(None, "--out", help="Preview MP4 path."),
+    contact_sheet: Path = typer.Option(None, "--contact-sheet", help="Contact-sheet PNG path."),
+) -> None:
+    """Render a portable RGB/depth/object/Franka preview without the Rerun viewer."""
+    from actuate.viz.preview import render_run_preview
+
+    video, sheet = render_run_preview(
+        run_dir, video_out=out, contact_sheet_out=contact_sheet
+    )
+    typer.secho(f"preview: {video}", fg="green")
+    typer.secho(f"contact sheet: {sheet}", fg="green")
+
+
 @viz_app.command("show")
 def show(
     session: Path = typer.Argument(..., help="processed/<session> directory"),

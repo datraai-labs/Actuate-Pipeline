@@ -8,10 +8,14 @@ reconciliation, and sim no-slip validation are the remaining branches (Parts E, 
 sim-validated (gates 1/2/4). Real-capture validation (gate 3) is deferred until depth is
 trustworthy (Phase 3.5 gate). DexUMI exoskeleton rigs BYPASS the finger branch — already
 robot-space.
+
+`actuate.retarget.humanoid` is the separate full-body path from the GMR paper
+(arXiv:2510.02252). It consumes BVH motion and targets humanoids; it is not a Franka
+replacement and cannot consume an egocentric wrist trajectory by itself.
 """
 
 from __future__ import annotations
 
-from actuate.retarget import arm
+from actuate.retarget import arm, humanoid
 
-__all__ = ["arm"]
+__all__ = ["arm", "humanoid"]

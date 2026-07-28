@@ -129,7 +129,7 @@ def process_cmd(
     if export:
         try:
             res = run.export(export, path=dataset_out)
-        except ValueError as exc:
+        except (ValueError, RuntimeError) as exc:
             typer.secho(f"export failed: {exc}", fg="red")
             raise typer.Exit(1) from exc
         exported_dirs = [dataset_out]
@@ -175,6 +175,8 @@ def export_cmd(
     session = _guess_session(processed)
     video = _first_video(session) if session else _first_video(processed)
     if video is None:
+        video = _video_from_canonical(canon)
+    if video is None:
         typer.secho(
             "could not find the source video for export next to this run. Re-export from "
             f"the source in one shot:  actuate run <source> --out {out or './dataset'} "
@@ -190,13 +192,42 @@ def export_cmd(
                         profile={"video": video.name, "embodiment": embodiment},
                         _result=result)
     out = out or (processed / format)
-    res = run.export(format, path=out, embodiment=embodiment)
+    try:
+        res = run.export(format, path=out, embodiment=embodiment)
+    except (ValueError, RuntimeError) as exc:
+        typer.secho(f"export failed: {exc}", fg="red")
+        raise typer.Exit(1) from exc
     typer.secho(f"exported {res.n_frames} frames -> {res.path}  ({format})", fg="green")
     if push_hub:
         from actuate.sources import push_to_hub
 
         url = push_to_hub(out, push_hub, private=private)
         typer.secho(f"pushed -> {url}", fg="green")
+
+
+def _video_from_canonical(canonical: Path) -> Path | None:
+    """Resolve a local source-video URI persisted in a completed canonical episode."""
+    import json
+    from urllib.parse import unquote, urlparse
+
+    try:
+        payload = json.loads(canonical.read_text(encoding="utf-8"))
+        frames = payload.get("frames") or []
+        images = frames[0].get("images", {}) if frames else {}
+        uri = next(iter(images.values())).get("uri") if images else None
+        if not uri:
+            return None
+        if uri.startswith("file://"):
+            path = Path(unquote(urlparse(uri).path))
+        elif "://" not in uri:
+            path = Path(uri)
+            if not path.is_absolute():
+                path = canonical.parent / path
+        else:
+            return None
+        return path if path.is_file() else None
+    except (OSError, ValueError, KeyError, StopIteration, TypeError):
+        return None
 
 
 def _guess_session(processed: Path) -> Path | None:
