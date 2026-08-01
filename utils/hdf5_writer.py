@@ -18,6 +18,11 @@ def write_session_h5(
     accel: np.ndarray,
     gyro: np.ndarray,
     metadata_dict: Dict[str, Any],
+    imu_timestamps_raw: Optional[np.ndarray] = None,
+    imu_interpolated_over_dropout: Optional[np.ndarray] = None,
+    imu_outside_range: Optional[np.ndarray] = None,
+    imu_mag: Optional[np.ndarray] = None,
+    imu_temp_c: Optional[np.ndarray] = None,
 ) -> None:
     """
     Write a complete session HDF5 file.
@@ -28,35 +33,72 @@ def write_session_h5(
       │   ├── timestamps       [N_frames] float64, absolute epoch seconds
       │   └── pts_relative     [N_frames] float64, seconds from stream start
       ├── imu/
-      │   ├── timestamps       [N_frames] float64, same axis as video
+      │   ├── timestamps       [N_frames] float64 — the VIDEO FRAME AXIS the IMU
+      │   │                    was resampled onto, NOT sensor sample times
+      │   ├── timestamps_raw   [N_samples] float64, the original sensor sample
+      │   │                    times exactly as recorded — the evidence needed to
+      │   │                    diagnose dropouts/jitter/clock domain survives sync
       │   ├── accel            [N_frames, 3] float32: ax, ay, az (m/s²)
-      │   └── gyro             [N_frames, 3] float32: gx, gy, gz (rad/s)
+      │   ├── gyro             [N_frames, 3] float32: gx, gy, gz (rad/s)
+      │   ├── interpolated_over_dropout  [N_frames] bool — value synthesized by
+      │   │                    interpolating across a raw-sample dropout gap
+      │   └── outside_imu_range [N_frames] bool — frame precedes/follows the raw
+      │                        stream entirely (np.interp clamped to edge value)
       └── metadata             JSON string: session_meta + sync_stats
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    with h5py.File(str(path), "w") as f:
+    # Append-mode with per-dataset ownership (audit 2026-08-01, Group 4). This file
+    # previously opened "w", truncating the whole file — running the legacy sync
+    # after the modern one (actuate.ingest.imu, which writes its own keys under
+    # `imu/`: timestamp_ns, timestamp_ns_raw, mag, temp_c, sample_count, ...)
+    # DESTROYED the modern group. Each writer now deletes and recreates only the
+    # datasets it owns; the modern path is the AUTHORITATIVE one (see
+    # src/actuate/ingest/__init__.py) and its keys must survive this writer.
+    def _replace(group, name, data, **kwargs):
+        if name in group:
+            del group[name]
+        return group.create_dataset(name, data=data, compression="gzip", **kwargs)
+
+    with h5py.File(str(path), "a") as f:
         # Video group
-        video_grp = f.create_group("video")
-        video_grp.create_dataset(
-            "timestamps", data=video_timestamps_abs.astype(np.float64), compression="gzip"
-        )
-        video_grp.create_dataset(
-            "pts_relative", data=pts_relative.astype(np.float64), compression="gzip"
-        )
+        video_grp = f.require_group("video")
+        _replace(video_grp, "timestamps", video_timestamps_abs.astype(np.float64))
+        _replace(video_grp, "pts_relative", pts_relative.astype(np.float64))
 
         # IMU group
-        imu_grp = f.create_group("imu")
-        imu_grp.create_dataset(
-            "timestamps", data=video_timestamps_abs.astype(np.float64), compression="gzip"
+        imu_grp = f.require_group("imu")
+        ts = _replace(imu_grp, "timestamps", video_timestamps_abs.astype(np.float64))
+        ts.attrs["semantics"] = (
+            "video frame axis (== video/timestamps); original sensor sample times "
+            "are in timestamps_raw"
         )
-        imu_grp.create_dataset(
-            "accel", data=accel.astype(np.float32), compression="gzip"
-        )
-        imu_grp.create_dataset(
-            "gyro", data=gyro.astype(np.float32), compression="gzip"
-        )
+        _replace(imu_grp, "accel", accel.astype(np.float32))
+        _replace(imu_grp, "gyro", gyro.astype(np.float32))
+        if imu_timestamps_raw is not None:
+            raw = _replace(
+                imu_grp,
+                "timestamps_raw",
+                np.asarray(imu_timestamps_raw, dtype=np.float64),
+            )
+            raw.attrs["semantics"] = "original sensor sample times, absolute seconds"
+        if imu_interpolated_over_dropout is not None:
+            _replace(
+                imu_grp,
+                "interpolated_over_dropout",
+                np.asarray(imu_interpolated_over_dropout, dtype=bool),
+            )
+        if imu_outside_range is not None:
+            _replace(
+                imu_grp,
+                "outside_imu_range",
+                np.asarray(imu_outside_range, dtype=bool),
+            )
+        if imu_mag is not None:
+            _replace(imu_grp, "mag", np.asarray(imu_mag, dtype=np.float32))
+        if imu_temp_c is not None:
+            _replace(imu_grp, "temp_c", np.asarray(imu_temp_c, dtype=np.float32))
 
         # Metadata as JSON string attribute
         f.attrs["metadata"] = json.dumps(metadata_dict, default=str)
@@ -80,6 +122,15 @@ def read_session_h5(path: Path) -> Dict[str, Any]:
         result["imu_timestamps"] = f["imu"]["timestamps"][:]
         result["accel"] = f["imu"]["accel"][:]
         result["gyro"] = f["imu"]["gyro"][:]
+        for optional in (
+            "timestamps_raw",
+            "interpolated_over_dropout",
+            "outside_imu_range",
+            "mag",
+            "temp_c",
+        ):
+            if optional in f["imu"]:
+                result[f"imu_{optional}"] = f["imu"][optional][:]
 
         # Metadata
         metadata_str = f.attrs.get("metadata", "{}")

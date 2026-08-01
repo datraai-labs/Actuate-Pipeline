@@ -32,45 +32,148 @@ _maybe_delete_raw_video = _ingest_mod2._maybe_delete_raw_video
 
 
 class TestIMUIngest:
-    """Test IMU parsing for JSON and CSV formats."""
+    """Executes the PRODUCTION _parse_imu (the old version of this test copied the
+    parsing logic into the test body — audit 2026-08-01 Group 3/4)."""
 
-    def test_parse_imu_json(self):
+    def _write_json(self, session_dir, with_mag=True):
+        sample_data = []
+        for i in range(150):
+            record = {
+                "timestamp_ns": (1000000000 + i * 5000000),  # 200 Hz
+                "accel": [0.1 * i, 0.2 * i, 0.3 * i],
+                "gyro": [0.01 * i, 0.02 * i, 0.03 * i],
+            }
+            if with_mag:
+                record["mag"] = [1.0, 2.0, 3.0]
+                record["temp_c"] = 40.0
+            sample_data.append(record)
+        path = session_dir / "imu.json"
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(sample_data, f)
+        return path
+
+    def test_parse_imu_json_keeps_all_measured_channels(self):
+        """audit Group 4: the old parse coerced to 7 columns and silently DROPPED
+        magnetometer + temperature — the two ingest paths disagreed about what an
+        IMU is. Confirmed RED against the pre-fix inline parse."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             session_dir = Path(tmp_dir)
-            imu_json_path = session_dir / "imu.json"
-            
-            # Create synthetic JSON data
-            sample_data = []
-            for i in range(150):
-                sample_data.append({
-                    "timestamp_ns": (1000000000 + i * 5000000), # 200 Hz
-                    "accel": [0.1 * i, 0.2 * i, 0.3 * i],
-                    "gyro": [0.01 * i, 0.02 * i, 0.03 * i],
-                    "mag": [1.0, 2.0, 3.0],
-                    "temp_c": 40.0
-                })
-            
-            with open(imu_json_path, "w", encoding="utf-8") as f:
-                json.dump(sample_data, f)
-                
-            expected_cols = ["epoch_ms"] + cfg.ACCEL_COLS + cfg.GYRO_COLS
-            
-            # Test loading logic matching step 01_ingest
-            with open(imu_json_path, "r", encoding="utf-8") as f:
-                imu_data = json.load(f)
-            
-            rows = []
-            for item in imu_data:
-                t_ms = item["timestamp_ns"] / 1e6
-                ax, ay, az = item["accel"][:3]
-                gx, gy, gz = item["gyro"][:3]
-                rows.append([t_ms, ax, ay, az, gx, gy, gz])
-                
-            df = pd.DataFrame(rows, columns=expected_cols)
+            imu_json = self._write_json(session_dir, with_mag=True)
+
+            df = _ingest_mod2._parse_imu(imu_json, session_dir / "imu.csv")
+
             assert len(df) == 150
-            assert list(df.columns) == expected_cols
             assert df["epoch_ms"].iloc[0] == 1000.0
             assert df["ax"].iloc[1] == 0.1
+            assert df["mx"].iloc[0] == 1.0        # kept, not dropped
+            assert df["temp_c"].iloc[0] == 40.0   # kept, not dropped
+
+    def test_absent_optional_channels_are_nan_not_zero(self):
+        """NaN means NOT MEASURED; zeros would claim 'measured, field-free space'."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_dir = Path(tmp_dir)
+            imu_json = self._write_json(session_dir, with_mag=False)
+
+            df = _ingest_mod2._parse_imu(imu_json, session_dir / "imu.csv")
+
+            assert len(df) == 150                  # rows NOT dropped by NaN optionals
+            assert np.isnan(df["mx"]).all()
+            assert np.isnan(df["temp_c"]).all()
+
+
+class TestIMUSidecarAmbiguity:
+    """audit 2026-08-01 Group 1: the legacy single-IMU path silently preferred
+    imu.json when imu.csv also existed, and ignored imu_* extras entirely."""
+
+    def test_both_json_and_csv_fail_loudly_before_any_processing(self, tmp_path):
+        session = tmp_path / "session_x"
+        session.mkdir()
+        (session / "raw.mp4").write_bytes(b"\x00" * 128)
+        (session / "imu.json").write_text("[]")
+        (session / "imu.csv").write_text("epoch_ms,ax,ay,az,gx,gy,gz\n")
+
+        with pytest.raises(ValueError) as excinfo:
+            _ingest_mod2.run(session)
+        message = str(excinfo.value)
+        assert "imu.json" in message and "imu.csv" in message
+        # raised before compression: no processed output may exist
+        assert not (cfg.PROCESSED_DIR / "session_x").exists()
+
+    def test_extra_imu_sidecar_fails_loudly(self, tmp_path):
+        session = tmp_path / "session_y"
+        session.mkdir()
+        (session / "raw.mp4").write_bytes(b"\x00" * 128)
+        (session / "imu.json").write_text("[]")
+        (session / "imu_wrist.json").write_text("[]")
+
+        with pytest.raises(ValueError, match="imu_wrist.json"):
+            _ingest_mod2.run(session)
+
+
+class TestTemporalAnchorAssessment:
+    """audit 2026-08-01 Group 2: the IMU-t0 fallback anchor is tautological and the
+    old code had nothing that could catch a wrong or cross-domain anchor."""
+
+    _NOW_MS = 1_780_000_000_000.0  # ~2026, fixed so tests don't depend on wall clock
+
+    def _assess(self, creation_ms, imu_t0, imu_t1, duration_s=95.0):
+        return _ingest_mod2._assess_temporal_anchor(
+            creation_ms, imu_t0, imu_t1, duration_s, now_epoch_ms=self._NOW_MS
+        )
+
+    def test_fallback_is_marked_unvalidated_not_clean(self):
+        """The real corpus's case: no creation_time, uptime IMU clock."""
+        anchor, fields = self._assess(None, 128_642.7, 223_640.6)
+        assert anchor == 128_642.7
+        assert fields["imu_clock_domain"] == "uptime"
+        assert fields["temporal_alignment_validated"] is False
+        assert "by construction" in fields["temporal_alignment_note"]
+
+    def test_epoch_imu_with_overlapping_creation_time_validates(self):
+        t0 = 1_750_000_000_000.0
+        anchor, fields = self._assess(t0 + 500.0, t0, t0 + 95_000.0)
+        assert anchor == t0 + 500.0
+        assert fields["imu_clock_domain"] == "epoch"
+        assert fields["temporal_alignment_validated"] is True
+
+    def test_creation_time_against_uptime_imu_refuses_to_anchor(self):
+        """A wall-clock video anchor + uptime IMU clock cannot be aligned; the old
+        code would have produced a ~56-year drift instead of an explanation."""
+        with pytest.raises(ValueError, match="[Cc]lock-domain"):
+            self._assess(1_750_000_000_000.0, 128_642.7, 223_640.6)
+
+    def test_disjoint_epoch_ranges_are_a_provably_wrong_anchor(self):
+        t0 = 1_750_000_000_000.0
+        with pytest.raises(ValueError, match="do not overlap"):
+            self._assess(t0 + 10_000_000.0, t0, t0 + 95_000.0)
+
+    def test_implausible_creation_time_is_rejected_to_fallback(self):
+        """A 1970-epoch creation_time (zeroed container clock) must not become the
+        anchor; it falls back, still marked unvalidated, with the rejection noted."""
+        anchor, fields = self._assess(10_000.0, 128_642.7, 223_640.6)
+        assert anchor == 128_642.7
+        assert fields["temporal_alignment_validated"] is False
+        assert "not a plausible wall-clock" in fields["temporal_alignment_note"]
+
+
+class TestTimestampSemantics:
+    def test_defaults_are_none_meaning_unknown_not_zero(self, tmp_path):
+        semantics = _ingest_mod2._read_timestamp_semantics(tmp_path)
+        assert semantics["video_frame_time_meaning"] is None
+        assert semantics["imu_sample_time_meaning"] is None
+        assert semantics["camera_to_imu_latency_ms"] is None
+
+    def test_declared_semantics_are_read_from_session_config(self, tmp_path):
+        (tmp_path / "session_config.json").write_text(json.dumps({
+            "timestamp_semantics": {
+                "video_frame_time_meaning": "start_of_exposure",
+                "camera_to_imu_latency_ms": 18.5,
+            }
+        }))
+        semantics = _ingest_mod2._read_timestamp_semantics(tmp_path)
+        assert semantics["video_frame_time_meaning"] == "start_of_exposure"
+        assert semantics["camera_to_imu_latency_ms"] == 18.5
+        assert semantics["imu_sample_time_meaning"] is None  # still unknown
 
 
 class TestReadConsentStatus:

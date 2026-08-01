@@ -10,7 +10,7 @@ import pytest
 
 from actuate.config import Tier
 from actuate.config.embodiments import EmbodimentSpec, HandSpec
-from actuate.ingest import run_ingest
+from actuate.ingest import RigStreamError, run_ingest
 from actuate.ingest.run import _check_alignment, _session_intrinsics
 
 
@@ -78,6 +78,76 @@ def test_unverifiable_claim_flags_never_passes(session):
 def test_unknown_robot_raises_not_flags(session):
     with pytest.raises(KeyError):
         run_ingest("head_mounted", session, aligned_robot="not_a_robot")
+
+
+# ---------------------------------------------------------------- rig manifest
+# (audit 2026-08-01, Group 1: Layer 1 never read the rig registry, so a session
+# could ingest cleanly while a sensor was silently discarded.)
+
+
+def test_second_imu_sidecar_fails_ingest_loudly(session):
+    """THE regression test for the audit's #1 silent failure: two IMU sidecars
+    must fail ingest naming both files, never ingest one and drop the other."""
+    (session / "imu.json").write_text("[]")
+    (session / "imu_wrist.json").write_text("[]")
+    with pytest.raises(RigStreamError) as excinfo:
+        run_ingest("head_mounted", session)
+    message = str(excinfo.value)
+    assert "imu.json" in message and "imu_wrist.json" in message
+    assert "AMBIGUOUS" in message
+
+
+def test_missing_required_streams_fail_with_absence_reason(tmp_path):
+    """A UMI session without its aperture encoder and wrist IMU is not a UMI
+    session — ingest must say exactly what is absent, not proceed."""
+    (tmp_path / "compressed.mp4").write_bytes(b"\x00" * 512)
+    (tmp_path / "session_meta.json").write_text(json.dumps(
+        {"frame_count": 10, "duration_seconds": 1.0, "fps_nominal": 10.0}))
+    with pytest.raises(RigStreamError) as excinfo:
+        run_ingest("umi_gripper", tmp_path)
+    message = str(excinfo.value)
+    assert "imu_wrist" in message and "aperture" in message
+    assert "MISSING" in message
+
+
+def test_undeclared_sensor_sidecar_fails(session):
+    """A sensor file no declared stream claims would be silently discarded by
+    every downstream stage — that is an ingest failure, not a shrug."""
+    (session / "aperture.csv").write_text("t,mm\n0,42\n")
+    with pytest.raises(RigStreamError, match="not declared"):
+        run_ingest("head_mounted", session)
+
+
+def test_multi_camera_rig_requires_each_declared_camera(tmp_path):
+    (tmp_path / "stereo_left.mp4").write_bytes(b"\x00" * 512)
+    (tmp_path / "session_meta.json").write_text(json.dumps(
+        {"frame_count": 10, "duration_seconds": 1.0, "fps_nominal": 10.0}))
+    with pytest.raises(RigStreamError, match="stereo_right"):
+        run_ingest("stereo", tmp_path)
+    # positive control: both declared cameras present -> ingest proceeds
+    (tmp_path / "stereo_right.mp4").write_bytes(b"\x00" * 512)
+    res = run_ingest("stereo", tmp_path)
+    assert res.tier is Tier.STAGE1_VOLUME
+
+
+def test_fps_metadata_mismatch_is_flagged_not_silently_trusted(tmp_path):
+    """Master Spec §L0 gate on the modern path: a REAL 30 fps container against a
+    meta claiming 120 fps must be flagged."""
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+
+    video = tmp_path / "compressed.mp4"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (32, 32))
+    assert writer.isOpened()
+    for _ in range(10):
+        writer.write(np.zeros((32, 32, 3), dtype=np.uint8))
+    writer.release()
+    (tmp_path / "session_meta.json").write_text(json.dumps(
+        {"frame_count": 10, "duration_seconds": 0.333, "fps_nominal": 120.0}))
+
+    res = run_ingest("head_mounted", tmp_path)
+
+    assert any("fps mismatch" in f for f in res.flags)
 
 
 # ---------------------------------------------------------------- helpers
