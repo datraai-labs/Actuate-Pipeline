@@ -125,50 +125,113 @@ def _check_coverage(video_path: Path) -> dict:
 
 
 def _check_fps_consistency(h5_data: dict) -> dict:
-    """CHECK 3 — FPS consistency from video timestamps in HDF5."""
+    """CHECK 3 — FPS consistency over the FULL session, against its own cadence.
+
+    Audit 2026-08-01 fixes: (1) the old check read only timestamps[:300] — the
+    first 10 s of a 95 s session — so later frame drops were structurally
+    invisible; (2) dropped-frame detection compared against global TARGET_FPS=30,
+    mis-scoring the 120 fps rig already in the corpus. Dropped frames are now
+    judged against the session's own median interval. Also implements the Master
+    Spec §L0 fps-bug gate: measured fps vs the metadata's claimed fps_nominal —
+    a mismatch is CAUGHT, never silently trusted.
+    """
     timestamps = h5_data["video_timestamps"]
 
-    # Use up to first 300 frames
-    ts = timestamps[: min(300, len(timestamps))]
-
-    if len(ts) < 2:
+    if len(timestamps) < 2:
         return {"score": 0.0, "passed": False, "details": {"error": "Not enough frames"}}
 
-    intervals_ms = np.diff(ts) * 1000.0
+    intervals_ms = np.diff(timestamps) * 1000.0
     mean_interval = float(np.mean(intervals_ms))
+    median_interval = float(np.median(intervals_ms))
     std_ms = float(np.std(intervals_ms))
     max_interval = float(np.max(intervals_ms))
 
-    # Estimate dropped frames: intervals > 1.5x nominal
-    nominal_interval = 1000.0 / cfg.TARGET_FPS
-    dropped = int(np.sum(intervals_ms > nominal_interval * 1.5))
+    measured_fps = 1000.0 / median_interval if median_interval > 0 else 0.0
 
-    passed = std_ms <= cfg.FPS_STD_THRESHOLD_MS
+    # Dropped frames: intervals > 1.5x the session's OWN cadence.
+    dropped = int(np.sum(intervals_ms > median_interval * 1.5)) if median_interval > 0 else 0
+
+    # §L0 gate: does the video's measured cadence match what the metadata claims?
+    metadata_fps = h5_data.get("metadata", {}).get("fps_nominal")
+    fps_metadata_mismatch = False
+    if metadata_fps and measured_fps > 0:
+        fps_metadata_mismatch = (
+            abs(measured_fps - float(metadata_fps)) > cfg.FPS_MATCH_RTOL * measured_fps
+        )
+
+    passed = std_ms <= cfg.FPS_STD_THRESHOLD_MS and not fps_metadata_mismatch
 
     return {
         "score": round(std_ms, 4),
         "passed": passed,
         "details": {
             "mean_interval_ms": round(mean_interval, 4),
+            "median_interval_ms": round(median_interval, 4),
             "std_ms": round(std_ms, 4),
             "max_interval_ms": round(max_interval, 4),
             "dropped_frame_estimate": dropped,
+            "measured_fps": round(measured_fps, 3),
+            "metadata_fps": metadata_fps,
+            "fps_metadata_mismatch": fps_metadata_mismatch,
+            "frames_checked": len(timestamps),
         },
     }
 
 
 def _check_sync_drift(h5_data: dict) -> dict:
-    """CHECK 4 — Sync drift from HDF5 metadata."""
+    """CHECK 4 — Sync quality from HDF5 metadata.
+
+    Gates on max_drift_CLEAN_ms (nearest-sample distance over frames NOT spanning a
+    dropout — the alignment signal) plus a raw-stream health budget (missing-sample
+    fraction). The legacy max_drift_ms conflated the two: on the real session it was
+    half of one 7.97 ms dropout gap, i.e. transport jitter (audit 2026-08-01 §3a).
+    Also surfaces whether the epoch anchor was ever actually validated — an
+    IMU-t0-fallback session's alignment holds by construction, and a clean drift
+    score must not be read as evidence for it (§3b).
+    """
     metadata = h5_data.get("metadata", {})
     sync_stats = metadata.get("sync_stats", {})
 
     max_drift_ms = sync_stats.get("max_drift_ms", 999.0)
-    passed = max_drift_ms <= cfg.SYNC_DRIFT_THRESHOLD_MS
+    # Older session.h5 files predate the clean metric; their max_drift_ms is the
+    # only (conflated) number available — fail-open is not an option, so use it.
+    gate_drift_ms = sync_stats.get("max_drift_clean_ms", max_drift_ms)
+    drift_ok = gate_drift_ms <= cfg.SYNC_DRIFT_THRESHOLD_MS
+
+    missing = sync_stats.get("raw_missing_sample_estimate")
+    missing_fraction = None
+    stream_health_ok = True
+    if missing is not None and sync_stats.get("raw_median_dt_ms", 0) > 0:
+        ts = h5_data.get("imu_timestamps_raw")  # absolute seconds, preserved by 02_sync
+        if ts is not None and len(ts) >= 2:
+            duration_ms = (float(ts[-1]) - float(ts[0])) * 1000.0
+            expected = duration_ms / sync_stats["raw_median_dt_ms"] + 1
+            missing_fraction = float(missing) / max(expected, 1.0)
+            stream_health_ok = missing_fraction <= cfg.SYNC_MAX_MISSING_FRACTION
+
+    alignment_validated = bool(sync_stats.get("temporal_alignment_validated", False))
+
+    passed = drift_ok and stream_health_ok
+
+    details = dict(sync_stats)
+    details["gated_on"] = (
+        "max_drift_clean_ms" if "max_drift_clean_ms" in sync_stats else "max_drift_ms (legacy h5)"
+    )
+    details["missing_sample_fraction"] = (
+        round(missing_fraction, 5) if missing_fraction is not None else None
+    )
+    details["stream_health_ok"] = stream_health_ok
+    if not alignment_validated:
+        details["temporal_alignment"] = (
+            "UNVALIDATED — anchor was defined from the IMU stream itself (or predates "
+            "validation); this drift score cannot detect a constant anchor error"
+        )
 
     return {
-        "score": round(max_drift_ms, 4),
+        "score": round(gate_drift_ms, 4),
         "passed": passed,
-        "details": sync_stats,
+        "temporal_alignment_validated": alignment_validated,
+        "details": details,
     }
 
 
@@ -228,10 +291,27 @@ def run(session_id: str) -> dict:
         sync_result["passed"],
     ])
 
+    caveats = []
+    if not sync_result.get("temporal_alignment_validated", False):
+        caveats.append(
+            "temporal alignment UNVALIDATED: the epoch anchor was defined from the "
+            "IMU stream itself, so the sync_drift score cannot detect a constant "
+            "anchor error (see sync_drift.details.temporal_alignment)"
+        )
+
+    if getattr(cfg, "QA_THRESHOLDS_PROVISIONAL", False):
+        caveats.append(
+            "QA thresholds are PROVISIONAL v1 guesses, not calibrated against real "
+            "footage — treat qa_score as an internal consistency signal, not evidence "
+            "(config.py QA THRESHOLDS provenance note)"
+        )
+
     qa_report = {
         "session_id": session_id,
         "overall_passed": overall_passed,
         "qa_score": round(qa_score, 1),
+        "thresholds_provisional": bool(getattr(cfg, "QA_THRESHOLDS_PROVISIONAL", False)),
+        "caveats": caveats,
         "checks": {
             "blur": blur_result,
             "coverage": coverage_result,

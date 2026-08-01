@@ -179,7 +179,23 @@ def run(session_id: str) -> dict:
 
     if not sync_stats:
         missing_data_flags.append("missing_sync_stats")
-    max_drift_ms = sync_stats.get("max_drift_ms", 5.0)  # 5.0 -> sync_score 0 (fail-closed)
+    # Gate on the CLEAN drift (dropout-spanning frames excluded — audit §3a);
+    # legacy h5 without it falls back to the conflated metric. 5.0 -> sync_score 0
+    # (fail-closed).
+    max_drift_ms = sync_stats.get("max_drift_clean_ms", sync_stats.get("max_drift_ms", 5.0))
+
+    # An IMU-t0-fallback anchor makes video/IMU alignment true BY CONSTRUCTION —
+    # a clean drift score is then not evidence of alignment, and the certificate
+    # must say so rather than let the sync component read as validation (§3b).
+    temporal_alignment_validated = bool(
+        sync_stats.get("temporal_alignment_validated", False)
+    )
+    temporal_alignment_note = sync_stats.get(
+        "temporal_alignment_note",
+        "sync_stats predates anchor validation (audit 2026-08-01) — treated as UNVALIDATED",
+    )
+    if not temporal_alignment_validated:
+        missing_data_flags.append("temporal_alignment_unvalidated")
 
     blur_score = qa_report.get("checks", {}).get("blur", {}).get("score", 0.0)
 
@@ -294,6 +310,10 @@ def run(session_id: str) -> dict:
         "session_mean_EIS": session_mean_eis,
         "retargeting_eligible": retargeting_eligible,
         "depth_mode": depth_mode_effective,
+        "temporal_alignment": {
+            "validated": temporal_alignment_validated,
+            "note": temporal_alignment_note,
+        },
         "pipeline_version": cfg.PIPELINE_VERSION,
         "processing_timestamp": datetime.now(timezone.utc).isoformat(),
     }

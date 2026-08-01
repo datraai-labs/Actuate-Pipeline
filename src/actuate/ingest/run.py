@@ -29,11 +29,25 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from actuate.config import RigType, Tier, get_embodiment
+from actuate.config import RigType, Tier, all_sensor_patterns, get_embodiment, get_rig
 from actuate.ingest.content_address import build_manifest, hash_file, write_manifest
 
 #: Relative tolerance for fx/fy match. Beyond this, the cameras are not the same setup.
 _INTRINSICS_RTOL = 0.05
+
+#: Extensions accepted for a declared camera's video file on multi-camera rigs.
+_CAMERA_EXTENSIONS = (".mp4", ".mov", ".avi")
+
+
+class RigStreamError(ValueError):
+    """The session's on-disk streams do not satisfy the declared rig's manifest.
+
+    Raised for: a required stream with no matching file, a stream whose patterns
+    match more than one file (ambiguous — we never pick one silently), a declared
+    camera with no video, or a sensor-shaped file no declared stream claims. All
+    are the same bug class: a session ingesting cleanly while a sensor is missing
+    or discarded.
+    """
 
 
 @dataclass
@@ -83,6 +97,76 @@ def _session_video(src: Path) -> Path:
     raise FileNotFoundError(
         f"{src}: no video (*.mp4). ingest.run handles the processed session layout only -- "
         "see module docstring.")
+
+
+def verify_rig_streams(rig: RigType, src: Path) -> None:
+    """Assert the session's on-disk streams satisfy the declared rig's manifest.
+
+    Master Spec §L0 gives ingest the rig; the registry (config/rigs.py) declares what
+    that rig produces. Before this check, Layer 1 never read the registry — which is
+    how a two-IMU session could ingest cleanly with one sensor silently discarded.
+    Raises :class:`RigStreamError` listing EVERY problem found, or returns None.
+    """
+    spec = get_rig(rig)
+    problems: list[str] = []
+
+    # Cameras. A single-camera rig accepts the processed-session video names
+    # (redacted_compressed/compressed/raw.mp4, or any sole .mp4). A multi-camera
+    # rig requires one video per declared camera name — nothing else expresses
+    # "which camera is which".
+    if len(spec.cameras) <= 1:
+        try:
+            _session_video(src)
+        except FileNotFoundError as exc:
+            problems.append(str(exc))
+    else:
+        for cam in spec.cameras:
+            names = [f"{cam}{ext}" for ext in _CAMERA_EXTENSIONS]
+            names += [f"video_{cam}{ext}" for ext in _CAMERA_EXTENSIONS]
+            if not any((src / n).exists() for n in names):
+                problems.append(
+                    f"declared camera '{cam}' has no video file "
+                    f"(expected one of: {', '.join(names[:2])}, ...)"
+                )
+
+    claimed: set[Path] = set()
+    for stream in spec.sensor_streams:
+        matches = sorted(
+            {p for pattern in stream.patterns for p in src.glob(pattern) if p.is_file()}
+        )
+        claimed.update(matches)
+        if stream.required and not matches:
+            problems.append(
+                f"required stream '{stream.name}' is MISSING: no file matches "
+                f"{list(stream.patterns)} in {src}"
+            )
+        if len(matches) > 1:
+            problems.append(
+                f"stream '{stream.name}' is AMBIGUOUS: {len(matches)} files match "
+                f"{list(stream.patterns)}: {[m.name for m in matches]} — refusing "
+                "to pick one silently"
+            )
+
+    # Anything sensor-shaped that no declared stream claims would be silently
+    # discarded by every downstream stage. The recognizer is the union of every
+    # registered rig's patterns, so registering a new rig protects its sidecars
+    # on all rigs automatically.
+    for pattern in sorted(all_sensor_patterns()):
+        for p in sorted(src.glob(pattern)):
+            if p.is_file() and p not in claimed:
+                problems.append(
+                    f"sensor sidecar '{p.name}' is present but not declared by rig "
+                    f"'{spec.rig.value}' — a session must never ingest while a "
+                    "sensor is discarded"
+                )
+                claimed.add(p)  # report each undeclared file once
+
+    if problems:
+        detail = "\n  - ".join(problems)
+        raise RigStreamError(
+            f"{src}: session does not satisfy rig '{spec.rig.value}' manifest:\n"
+            f"  - {detail}"
+        )
 
 
 def ensure_session_meta(src: Path) -> dict:
@@ -136,6 +220,20 @@ def ensure_session_meta(src: Path) -> dict:
     }
     meta_p.write_text(_json.dumps(meta, indent=2), encoding="utf-8")
     return meta
+
+
+def _probe_video_fps(video: Path) -> float | None:
+    """Container-reported fps, or None when it cannot be probed (then no claim is
+    made either way — an unprobeable video must not manufacture a mismatch)."""
+    try:
+        import cv2
+
+        cap = cv2.VideoCapture(str(video))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        cap.release()
+        return float(fps) if fps and fps > 0 else None
+    except Exception:
+        return None
 
 
 def _session_intrinsics(src: Path) -> tuple[float, float] | None:
@@ -217,6 +315,7 @@ def run(rig: RigType | str, src: Path, store: Path | None = None,
     """
     src = Path(src)
     rig = RigType(rig) if isinstance(rig, str) else rig
+    verify_rig_streams(rig, src)
     video = _session_video(src)
 
     flags: list[str] = []
@@ -226,6 +325,18 @@ def run(rig: RigType | str, src: Path, store: Path | None = None,
     meta_p = src / "session_meta.json"
     if meta_p.exists():
         meta = json.loads(meta_p.read_text(encoding="utf-8"))
+        # Master Spec §L0 fps-bug gate: a pre-existing meta's fps claim is checked
+        # against the container, not silently trusted (the legacy QA stage enforces
+        # the same gate from PTS; this covers sessions that skip legacy QA).
+        claimed_fps = meta.get("fps_nominal") or meta.get("fps")
+        if claimed_fps:
+            probed_fps = _probe_video_fps(video)
+            if probed_fps and abs(probed_fps - float(claimed_fps)) > 0.05 * probed_fps:
+                flags.append(
+                    f"fps mismatch: session_meta claims {claimed_fps} but the video "
+                    f"container reports {probed_fps:.2f} — metadata NOT silently "
+                    "trusted (Master Spec §L0 gate)"
+                )
     else:
         flags.append("no session_meta.json: frame_count/fps unverified")
 
@@ -242,9 +353,14 @@ def run(rig: RigType | str, src: Path, store: Path | None = None,
 
     imu_result = None
     try:
-        from actuate.ingest.imu import sync_imu
+        from actuate.ingest.imu import MultipleIMUSourcesError, sync_imu
 
         imu_result = sync_imu(src, meta) if meta else None
+    except MultipleIMUSourcesError:
+        # Ambiguity is never demoted to a flag: proceeding would ingest one sensor
+        # and silently discard another. (verify_rig_streams should have caught this
+        # already; this is defense in depth for direct callers.)
+        raise
     except Exception as exc:
         # A malformed optional sensor sidecar must be visible, but it must not make a valid
         # video unprocessable. SLAM will honestly fall back to vision-only rotation.

@@ -177,13 +177,72 @@ or this now-confirmed-ambiguous session. See the business-blocker banner at
 the top of this section for the decision this actually needs — do not
 resume building against unverified footage as if this were resolved.
 
+## ⚠️ LAYER-1 AUDIT & FIX WAVE (2026-08-01) — read before trusting any Layer-1 claim below
+
+A read-only audit of 01/02/03 + `src/actuate/ingest/` against the Master Spec found, and a
+same-day fix wave addressed, four groups of defects. Full context in the audit conversation;
+what matters going forward:
+
+**The 3.94 ms "drift anomaly" is RESOLVED: dropouts, not clock divergence.** `np.diff` on the
+real 54,590-sample IMU stream (574.6 Hz): median dt 1.733 ms, but max gap 8.45 ms; ~1,053
+samples (1.9%) missing across ~1,019 gaps; 91.9% of post-gap intervals are catch-up bursts
+(median 0.39 ms), rate flat across the session — i.e. **batched host-side arrival stamping,
+not a diverging clock**. `max_drift_ms = 3.9447` was half of one 7.97 ms dropout gap.
+Consequence: `max_drift_ms` measures transport jitter; the new `max_drift_clean_ms`
+(dropout-spanning frames excluded) measures alignment and reads **1.05 ms** on the real
+session — so `SYNC_DRIFT_THRESHOLD_MS = 2.0` was kept and the METRIC was fixed, not the
+threshold. Stream health is gated separately (`SYNC_MAX_MISSING_FRACTION`, real session 1.9%).
+
+**Fixed (each verified red→green, mutation-checked, and — where marked — run against the real
+session_001 capture):**
+- *Silent sensor loss (G1)*: multiple IMU sidecars now fail loudly naming every file (both
+  paths; `MultipleIMUSourcesError` / 01's guard); `ingest.run` verifies the session against the
+  rig registry's new `sensor_streams` manifest (`verify_rig_streams` — missing required stream,
+  ambiguous match, undeclared sensor, missing declared camera all fail with reasons); frames
+  interpolated across a raw dropout carry a per-frame `imu/interpolated_over_dropout` flag
+  (+ `outside_imu_range`, `sample_count`); raw sensor timestamps are preserved
+  (`imu/timestamps_raw` legacy · `imu/timestamp_ns_raw` modern). **Real-data verified**: both
+  sync paths independently flag the identical 6 frames (554, 641, 1004, 1091, 1841, 2441) on
+  the real stream and reproduce the audit's stats exactly.
+- *Anchor blind spot (G2)*: `_assess_temporal_anchor` classifies the IMU clock domain (real
+  corpus: **uptime**, t0=128.6 s), cross-validates a creation_time anchor at range level,
+  REFUSES provably-wrong anchors (epoch-vs-uptime conflict; disjoint ranges), and marks the
+  IMU-t0 fallback `temporal_alignment_validated: false` — carried through sync_stats →
+  qa_report caveats → `quality_certificate.json`'s `temporal_alignment` + per-episode flag.
+  `timestamp_semantics` (exposure meaning, camera→IMU latency) recorded explicitly, default
+  None = unknown; a declared latency is applied in 02_sync, an undeclared one recorded as an
+  assumption. **Real-data verified** (parse + anchor on the real IMU file).
+- *QA validation (G3)*: `tests/test_qa.py` created (first coverage 03 ever had; fps tests
+  written RED against the pre-fix code); `tests/test_sync.py` rewritten to execute the
+  PRODUCTION `02_sync.run()` / `extract_pts` (the old file re-implemented the math and passed
+  with the production file deleted); `_check_fps_consistency` reads the FULL session and the
+  session's own cadence (was: first 300 frames + global TARGET_FPS — both audit bugs
+  regression-tested); the Master Spec §L0 fps-mismatch gate exists in both paths
+  (`FPS_MATCH_RTOL`); all four QA thresholds marked PROVISIONAL in config + every qa_report
+  (`thresholds_provisional`) — still not calibrated against real footage; `IMU_HZ` corrected
+  200 → 575 (measured).
+- *Path reconciliation (G4)*: `src/actuate/ingest/` declared AUTHORITATIVE (its docstring says
+  so); `write_session_h5` no longer truncates `session.h5` (per-dataset ownership — running
+  legacy after modern no longer destroys the modern IMU group; regression-tested both orders);
+  legacy 01 now parses the full 11-column IMU (mag + temp kept as NaN-when-absent, **real-data
+  verified** on all 54,590 rows) and 02 propagates them to h5, closing the "two definitions of
+  an IMU" split.
+
+**Still true after the fix wave (unchanged claims, stated honestly):** only the head-mounted
+single-camera rig is actually ingestable end-to-end; the other five rigs have registry
+manifests but no adapters (MCAP, multi-clock sync, RigAdapters remain unbuilt — Master Spec
+§L0); blur/coverage checks are validated against synthetic videos only; no real session has
+ever failed each QA check "for the right reason" against labeled real footage; the fallback
+anchor's constant-offset blindness below ~10 ms is now *declared* (unvalidated flag), not
+*removed* — removing it needs a cross-modal sync procedure or hardware timestamps.
+
 ## v1 core pipeline (baseline)
 
 | Stage | Script | Status | Notes |
 |---|---|---|---|
-| 01 | `scripts/01_ingest.py` | ✅ | Compress video, extract PTS, parse IMU, write `session_meta.json`. See §2/§5 — also reads an optional `raw/{session_id}/session_config.json` for `glove_type`/`worker_id` (mirrors the existing `consent.json` pattern). |
-| 02 | `scripts/02_sync.py` | ✅ | Interpolates IMU onto video timestamps, writes `session.h5` |
-| 03 | `scripts/03_qa.py` | ✅ | Blur / coverage / FPS / sync-drift checks (skippable, non-fatal) |
+| 01 | `scripts/01_ingest.py` | ✅ (re-verified 2026-08-01, see audit section) | Compress video, extract PTS, parse IMU (now 11-col: mag/temp kept), write `session_meta.json` incl. anchor validation + `timestamp_semantics`. Multi-sidecar sessions fail loudly. Compression/PTS paths real-data verified historically; new parse + anchor functions real-data verified 2026-08-01; full `run()` not re-executed end-to-end since the fix wave (needs ffmpeg on real raw). See §2/§5 — also reads an optional `raw/{session_id}/session_config.json` for `glove_type`/`worker_id` (mirrors the existing `consent.json` pattern). |
+| 02 | `scripts/02_sync.py` | ✅ **tested-against-real-data 2026-08-01** (first evidenced real run of the production `run()`) | Interpolates IMU onto video timestamps, writes `session.h5` with raw-timestamp preservation, fabrication flags, clean-vs-jitter drift split, anchor/latency provenance. Real session: `max_drift_ms 3.9447` / `max_drift_clean_ms 1.0479` / 6 flagged frames / 1,053 missing-sample estimate. |
+| 03 | `scripts/03_qa.py` | 🚧 **unit-tested (2026-08-01); never run end-to-end against real footage** — was previously marked ✅ with zero test coverage, contradicting this file's own discipline | Blur / coverage / FPS / sync-drift checks (skippable, non-fatal). `tests/test_qa.py` covers all four checks (fps tests written red against the pre-fix bugs); `_check_sync_drift` exercised against the real session's h5. Thresholds remain PROVISIONAL guesses; no `qa_report.json` from a full real run exists anywhere yet. |
 | 03b | `scripts/03b_privacy_redact.py` | ✅ (see §10) | Face + text/badge redaction. Produces `redacted_compressed.mp4` alongside (not replacing) `compressed.mp4` — perception stages below keep reading the unredacted original for tracking fidelity; only `11_package.py` ships the redacted copy. |
 | 04 | `scripts/04_hand_pose.py` | ✅ | MediaPipe Hands. `NoHandsError` is now actually raised below `HAND_PRESENCE_RATE_MIN` — a session with near-zero hand detection fails the pipeline instead of silently producing unusable output. |
 | 05 | `scripts/05_primitives.py` | ✅ | See §1 below — now strategy-routed (vision/wrist/fusion), not hardcoded gyro logic. Also see §9 — every primitive now carries a per-frame confidence float alongside its boolean flag. Also see §2/§5 — grasp/pinch thresholds are now resolved per session (worker calibration > glove-adjusted default > raw default) instead of always using the flat global default. |
