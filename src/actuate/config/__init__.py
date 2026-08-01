@@ -33,7 +33,13 @@ from actuate.config.enums import (
     Tier,
     trust_rank,
 )
-from actuate.config.rigs import RIG_REGISTRY, RigSpec, get_rig
+from actuate.config.rigs import (
+    RIG_REGISTRY,
+    RigSpec,
+    SensorStreamSpec,
+    all_sensor_patterns,
+    get_rig,
+)
 from actuate.config.settings import (
     Bucket,
     Env,
@@ -65,10 +71,12 @@ __all__ = [
     "RIG_REGISTRY",
     "RigSpec",
     "RigType",
+    "SensorStreamSpec",
     "Settings",
     "Side",
     "StorageBackendKind",
     "Tier",
+    "all_sensor_patterns",
     "get_embodiment",
     "get_rig",
     "load_settings",

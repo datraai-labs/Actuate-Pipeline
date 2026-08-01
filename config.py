@@ -25,17 +25,56 @@ TARGET_FPS = 30
 # ═══════════════════════════════════════════════════════════
 # IMU
 # ═══════════════════════════════════════════════════════════
-IMU_HZ = 200
+# Informational only (no code consumes it). Was 200 — stale: the real sensor
+# measures 574.6 Hz over the one real session (54,590 samples / 95.0 s,
+# audit 2026-08-01). Per-session truth lives in session_meta.imu_hz_measured.
+IMU_HZ = 575
+
+# Applied to max_drift_CLEAN_ms (nearest-sample distance over frames NOT
+# spanning a raw dropout — 02_sync Step 3c). The audit showed the conflated
+# metric hit 3.94 ms on the real session purely from one 7.97 ms dropout gap;
+# the clean metric measures 1.05 ms there, so 2.0 ms is kept as the alignment
+# gate and stream health is gated separately (SYNC_MAX_MISSING_FRACTION).
+# PROVISIONAL: reasoned against one real session, not calibrated across rigs.
 SYNC_DRIFT_THRESHOLD_MS = 2.0
 ACCEL_COLS = ["ax", "ay", "az"]
 GYRO_COLS = ["gx", "gy", "gz"]
 
+# A video frame whose enclosing raw-IMU gap exceeds this multiple of the median
+# inter-sample interval gets its interpolated value flagged as fabricated-
+# across-dropout (imu/interpolated_over_dropout in session.h5). 3.0 on the real
+# 574.6 Hz stream (median dt 1.733 ms) flags gaps > 5.2 ms — the 15 genuine
+# dropout gaps (5–8.5 ms) in session_001's stream — while leaving ordinary
+# transport jitter (p99 = 2.86 ms) unflagged.
+IMU_DROPOUT_GAP_FACTOR = 3.0
+
+# QA gate on raw-IMU stream health: fail the sync check when more than this
+# fraction of expected samples is missing (dropout accounting from 02_sync).
+# The drift metric alone can't see stream health — a heavily-dropping sensor
+# can still interpolate to a small nearest-sample distance. PROVISIONAL: the
+# one real session measures 1.9% (1,053 of ~55,643); 5% is a reasoned ceiling,
+# not a value calibrated across sensors.
+SYNC_MAX_MISSING_FRACTION = 0.05
+
 # ═══════════════════════════════════════════════════════════
 # QA THRESHOLDS
+#
+# PROVENANCE (audit 2026-08-01): these four values are the v1 spec's initial
+# reasoned guesses. None has been calibrated against real footage — no real
+# session has ever been confirmed to fail each check for the right reason.
+# QA_THRESHOLDS_PROVISIONAL below is surfaced in every qa_report.json so a
+# qa_score is not read as calibrated evidence. Recalibrate against a labeled
+# real capture set, then record the derivation here and flip the flag.
 # ═══════════════════════════════════════════════════════════
-BLUR_THRESHOLD = 80.0            # Laplacian variance minimum
-COVERAGE_THRESHOLD = 0.5         # optical flow mean minimum
-FPS_STD_THRESHOLD_MS = 5.0       # frame interval stdev maximum
+QA_THRESHOLDS_PROVISIONAL = True
+BLUR_THRESHOLD = 80.0            # Laplacian variance minimum (v1 guess, uncalibrated)
+COVERAGE_THRESHOLD = 0.5         # optical flow mean minimum (v1 guess, uncalibrated)
+FPS_STD_THRESHOLD_MS = 5.0       # frame interval stdev maximum (v1 guess, uncalibrated)
+
+# Master Spec §L0 fps-bug gate: measured video cadence vs metadata's claimed
+# fps_nominal must agree within this relative tolerance; beyond it the metadata
+# is provably wrong and the session fails QA rather than being silently trusted.
+FPS_MATCH_RTOL = 0.05
 HAND_PRESENCE_RATE_MIN = 0.6     # hands visible in >= 60% of active frames
 
 # ═══════════════════════════════════════════════════════════

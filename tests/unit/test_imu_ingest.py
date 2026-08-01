@@ -83,3 +83,99 @@ def test_requires_a_valid_gyroscope_stream(tmp_path):
     )
     with pytest.raises(ValueError, match="gyroscope"):
         sync_imu(tmp_path, meta)
+
+
+# ── Silent-data-loss guards (audit 2026-08-01, Group 1) ──────────────────────
+
+
+def _two_sample_stream():
+    return [
+        {"timestamp_ns": 1_000_000_000, "gyro": [0, 0, 0], "accel": [0, 0, 9.8]},
+        {"timestamp_ns": 1_200_000_000, "gyro": [2, 4, 6], "accel": [0, 0, 9.8]},
+    ]
+
+
+def test_multiple_imu_sidecars_fail_loudly_naming_every_file(tmp_path):
+    """A session must NEVER ingest cleanly while a sensor stream is discarded.
+
+    The old _find_source returned files[0]: a two-IMU session ingested one stream
+    and silently dropped the other, producing a well-formed, confident, wrong
+    session.h5.
+    """
+    meta = _meta(tmp_path, frame_count=3, fps=10.0)
+    (tmp_path / "imu.json").write_text(json.dumps(_two_sample_stream()))
+    (tmp_path / "imu_wrist.csv").write_text("timestamp_ns,gyro_x,gyro_y,gyro_z\n1,0,0,0\n")
+
+    with pytest.raises(ValueError) as excinfo:
+        sync_imu(tmp_path, meta)
+    message = str(excinfo.value)
+    assert "imu.json" in message
+    assert "imu_wrist.csv" in message
+    assert (tmp_path / "session.h5").exists() is False  # nothing half-written
+
+
+def test_explicit_source_selects_among_multiple(tmp_path):
+    """source= is the sanctioned way to disambiguate — explicit, never implicit."""
+    meta = _meta(tmp_path, frame_count=3, fps=10.0)
+    (tmp_path / "imu.json").write_text(json.dumps(_two_sample_stream()))
+    (tmp_path / "imu_wrist.csv").write_text("not,even,parsed\n")
+
+    result = sync_imu(tmp_path, meta, source=tmp_path / "imu.json")
+
+    assert result is not None
+    assert result.source_path.name == "imu.json"
+
+
+def test_dropout_frames_are_flagged_and_raw_timestamps_preserved(tmp_path):
+    """Frames synthesized across a raw-sample dropout must be distinguishable from
+    measured ones at point of use, and the original sensor clock must survive sync."""
+    meta = _meta(tmp_path, frame_count=10, fps=10.0)
+    # 10 ms sample spacing over 0–990 ms, with 300–400 ms missing: a 120 ms gap
+    # (12x median). Frames land every 100 ms; frames 3 (300 ms) and 4 (400 ms)
+    # fall inside the gap, every other frame sits exactly on a sample.
+    ts = [t * 10_000_000 for t in range(100) if not (29 < t < 41)]
+    records = [
+        {"timestamp_ns": t, "gyro": [1.0, 2.0, 3.0], "accel": [0, 0, 9.8]} for t in ts
+    ]
+    (tmp_path / "imu.json").write_text(json.dumps(records))
+
+    result = sync_imu(tmp_path, meta)
+
+    assert result is not None
+    with h5py.File(result.session_h5, "r") as h5:
+        flags = h5["imu/interpolated_over_dropout"][:]
+        assert flags.dtype == np.bool_
+        assert list(np.nonzero(flags)[0]) == [3, 4]
+        assert not h5["imu/outside_source_range"][:].any()
+        # the un-resampled sensor clock, exactly as recorded
+        assert list(h5["imu/timestamp_ns_raw"][:]) == ts
+        grp = h5["imu"]
+        assert grp.attrs["raw_median_dt_ns"] == 10_000_000
+        assert grp.attrs["raw_max_gap_ns"] == 120_000_000
+        assert grp.attrs["raw_missing_sample_estimate"] == 11
+
+
+def test_frame_mode_flags_frames_with_zero_samples(tmp_path):
+    """nearest_video_frame mode: a frame no sample was assigned to got its value
+    from interpolation, and sample_count is the per-frame evidence."""
+    meta = _meta(tmp_path, frame_count=4)
+    records = []
+    for frame in (1, 2, 4, 5):  # frame 3 has NO samples; 5 is the boundary record
+        records.append(
+            {
+                "timestamp_ns": frame * 1_000_000,
+                "nearest_video_frame": frame,
+                "gyro": [frame, 0, 0],
+                "accel": [0, 0, 9.8],
+            }
+        )
+    (tmp_path / "imu.json").write_text(json.dumps(records))
+
+    result = sync_imu(tmp_path, meta)
+
+    assert result is not None
+    with h5py.File(result.session_h5, "r") as h5:
+        counts = h5["imu/sample_count"][:]
+        assert list(counts) == [1, 1, 0, 1]
+        flags = h5["imu/interpolated_over_dropout"][:]
+        assert list(np.nonzero(flags)[0]) == [2]

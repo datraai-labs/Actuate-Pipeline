@@ -34,6 +34,32 @@ from typing import Any
 import numpy as np
 
 
+#: An enclosing raw-sample gap must exceed this multiple of the median inter-sample
+#: interval before frames interpolated inside it are flagged as fabricated. On the real
+#: 574.6 Hz stream (median dt 1.733 ms) this flags gaps > 5.2 ms — the 15 genuine
+#: dropout gaps (5–8.5 ms) — while leaving ordinary transport jitter (p99 = 2.86 ms)
+#: unflagged.
+DROPOUT_GAP_FACTOR = 3.0
+
+
+class MultipleIMUSourcesError(ValueError):
+    """More than one IMU sidecar matched and none was explicitly selected.
+
+    Never silently pick one: a session must not ingest cleanly while a sensor
+    stream is discarded. Callers that genuinely want a specific file pass
+    ``source=`` to :func:`sync_imu`.
+    """
+
+    def __init__(self, session_dir: Path, sources: list[Path]):
+        self.sources = tuple(sources)
+        names = ", ".join(p.name for p in sources)
+        super().__init__(
+            f"{session_dir}: {len(sources)} IMU sidecars found ({names}). "
+            "Refusing to pick one silently — pass source=<path> to select "
+            "explicitly, or remove the extras."
+        )
+
+
 @dataclass(frozen=True)
 class IMUSyncResult:
     source_path: Path
@@ -59,12 +85,11 @@ def _source_hash(path: Path) -> str:
     return h.hexdigest()
 
 
-def _find_source(session_dir: Path) -> Path | None:
+def _find_sources(session_dir: Path) -> list[Path]:
     candidates = []
     for pattern in ("imu*.json", "imu*.csv"):
         candidates.extend(session_dir.glob(pattern))
-    files = sorted(p for p in candidates if p.is_file())
-    return files[0] if files else None
+    return sorted(p for p in candidates if p.is_file())
 
 
 def _vector(value: Any) -> tuple[float, float, float] | None:
@@ -229,6 +254,7 @@ def _aggregate_by_frame(
     valid_frame &= (frame_idx >= 0) & (frame_idx < frame_count)
 
     aligned: dict[str, np.ndarray] = {}
+    gyro_counts: np.ndarray | None = None
     for key in ("gyro", "accel", "mag", "temp_c"):
         source = columns[key]
         source_2d = source[:, None] if source.ndim == 1 else source
@@ -243,6 +269,15 @@ def _aggregate_by_frame(
         )
         values = _fill_missing(values)
         aligned[key] = values[:, 0] if source.ndim == 1 else values
+        if key == "gyro":
+            gyro_counts = counts[:, 0].astype(np.int32)
+
+    # A frame with zero assigned samples got its value from _fill_missing — an
+    # interpolation, not a measurement. Persist that distinction per frame; the
+    # sample count itself is the evidence.
+    if gyro_counts is not None:
+        aligned["sample_count"] = gyro_counts
+        aligned["interpolated_over_dropout"] = gyro_counts == 0
 
     sample_ts = np.full(frame_count, np.nan, dtype=np.float64)
     raw_sample_ts = columns["timestamp_ns"]
@@ -298,7 +333,49 @@ def _aggregate_by_timestamp(
                     frame_t, sample_t[valid], source_2d[valid, axis]
                 )
         aligned[key] = values[:, 0] if source.ndim == 1 else values
+
+    # Fabrication accounting. np.interp spans raw-sample gaps without complaint;
+    # a frame inside a genuine dropout carries a synthesized value that must stay
+    # distinguishable from a measured one at point of use. A frame is flagged when
+    # its enclosing raw gap exceeds DROPOUT_GAP_FACTOR x the median interval AND it
+    # doesn't sit essentially on a real sample (within a quarter-median, the interp
+    # weight is dominated by that sample). Frames beyond the raw range are a separate
+    # honesty problem — np.interp clamps them to the edge value.
+    outside = (frame_t < sample_t[0]) | (frame_t > sample_t[-1])
+    dropout = np.zeros(frame_count, dtype=bool)
+    median_dt = float(np.median(np.diff(sample_t)))
+    if median_dt > 0:
+        right = np.clip(np.searchsorted(sample_t, frame_t), 1, len(sample_t) - 1)
+        left = right - 1
+        gap = sample_t[right] - sample_t[left]
+        nearest = np.minimum(
+            np.abs(frame_t - sample_t[left]), np.abs(frame_t - sample_t[right])
+        )
+        dropout = (
+            ~outside
+            & (gap > DROPOUT_GAP_FACTOR * median_dt)
+            & (nearest > 0.25 * median_dt)
+        )
+    aligned["interpolated_over_dropout"] = dropout
+    aligned["outside_source_range"] = outside
     return aligned, "timestamp_interpolation"
+
+
+#: Storage dtypes for aligned datasets. Everything absent here is a float32 signal
+#: channel. Timestamps stay int64 (float32 at ~1e11 ns quantizes to ~4 µs — enough
+#: to corrupt the very evidence the raw axis exists to preserve).
+_H5_DTYPES = {
+    "timestamp_ns": np.int64,
+    "video_timestamp_ns": np.int64,
+    "sample_count": np.int32,
+    "interpolated_over_dropout": np.bool_,
+    "outside_source_range": np.bool_,
+}
+
+#: Bumped 2 -> 3: adds timestamp_ns_raw (the un-resampled sensor clock),
+#: interpolated_over_dropout / sample_count fabrication flags, and raw-gap stats.
+#: v2 caches lack the evidence datasets, so they must be rebuilt, not reused.
+_H5_SCHEMA_VERSION = 3
 
 
 def _write_h5(
@@ -309,41 +386,84 @@ def _write_h5(
     source_hash: str,
     raw_samples: int,
     sync_method: str,
+    raw_timestamp_ns: np.ndarray | None = None,
 ) -> None:
     import h5py
 
     with h5py.File(path, "a") as h5:
         group = h5.require_group("imu")
         for key, values in aligned.items():
-            if not np.isfinite(values).any():
+            if values.dtype.kind == "f" and not np.isfinite(values).any():
                 continue
             if key in group:
                 del group[key]
             group.create_dataset(
                 key,
-                data=values.astype(np.int64 if key == "timestamp_ns" else np.float32),
+                data=values.astype(_H5_DTYPES.get(key, np.float32)),
                 compression="gzip",
                 shuffle=True,
             )
+        # The original sensor clock, exactly as recorded. The aligned datasets above
+        # are RESAMPLED onto the video frame axis; without this, the evidence needed
+        # to diagnose sync problems (dropouts, jitter, clock domain) is destroyed by
+        # the very pipeline that creates them.
+        if raw_timestamp_ns is not None and raw_timestamp_ns.size:
+            if "timestamp_ns_raw" in group:
+                del group["timestamp_ns_raw"]
+            group.create_dataset(
+                "timestamp_ns_raw",
+                data=np.rint(raw_timestamp_ns).astype(np.int64),
+                compression="gzip",
+                shuffle=True,
+            )
+            if raw_timestamp_ns.size >= 2:
+                dt = np.diff(np.sort(raw_timestamp_ns))
+                median_dt = float(np.median(dt))
+                group.attrs["raw_median_dt_ns"] = median_dt
+                group.attrs["raw_max_gap_ns"] = float(dt.max())
+                if median_dt > 0:
+                    group.attrs["raw_missing_sample_estimate"] = int(
+                        np.clip(np.rint(dt / median_dt) - 1, 0, None).sum()
+                    )
         group.attrs["source_file"] = source_path.name
         group.attrs["source_sha256"] = source_hash
         group.attrs["raw_samples"] = raw_samples
         group.attrs["sync_method"] = sync_method
-        group.attrs["schema_version"] = 2
+        group.attrs["dropout_gap_factor"] = DROPOUT_GAP_FACTOR
+        group.attrs["schema_version"] = _H5_SCHEMA_VERSION
         group.attrs["gyro_units"] = "source_units"
         group.attrs["accel_units"] = "source_units"
+        # No source declares what a sample timestamp MEANS (sensor-side sample time
+        # vs host-side arrival time) — "unknown" is the honest value, not an
+        # implicit assumption of sensor-side. The real corpus's catch-up bursts
+        # after gaps look like host-side arrival stamping (audit §3a).
+        group.attrs["sample_time_meaning"] = "unknown"
 
 
-def sync_imu(session_dir: Path, meta: dict[str, Any] | None = None) -> IMUSyncResult | None:
+def sync_imu(
+    session_dir: Path,
+    meta: dict[str, Any] | None = None,
+    source: Path | None = None,
+) -> IMUSyncResult | None:
     """Synchronize a raw IMU sidecar to video frames and persist ``session.h5``.
 
-    Returns ``None`` when no raw IMU sidecar exists. Existing output is reused only when it
-    matches both the source SHA-256 and current video frame count.
+    Returns ``None`` when no raw IMU sidecar exists. If MORE than one sidecar matches
+    and ``source`` was not given, raises :class:`MultipleIMUSourcesError` naming every
+    file — never silently picks one. Existing output is reused only when it matches
+    both the source SHA-256 and current video frame count.
     """
     session_dir = Path(session_dir)
-    source = _find_source(session_dir)
-    if source is None:
-        return None
+    if source is not None:
+        source = Path(source)
+        if not source.is_file():
+            raise FileNotFoundError(f"explicit IMU source does not exist: {source}")
+    else:
+        sources = _find_sources(session_dir)
+        if not sources:
+            return None
+        if len(sources) > 1:
+            raise MultipleIMUSourcesError(session_dir, sources)
+        source = sources[0]
     if meta is None:
         meta = json.loads((session_dir / "session_meta.json").read_text(encoding="utf-8"))
     frame_count = int(meta.get("frame_count") or 0)
@@ -364,7 +484,7 @@ def sync_imu(session_dir: Path, meta: dict[str, Any] | None = None) -> IMUSyncRe
                     and "gyro" in group
                     and len(group["gyro"]) == frame_count
                     and group.attrs.get("source_sha256") == source_hash
-                    and int(group.attrs.get("schema_version", 0)) == 2
+                    and int(group.attrs.get("schema_version", 0)) == _H5_SCHEMA_VERSION
                 ):
                     return IMUSyncResult(
                         source,
@@ -383,6 +503,8 @@ def sync_imu(session_dir: Path, meta: dict[str, Any] | None = None) -> IMUSyncRe
         aligned, method = _aggregate_by_frame(columns, frame_count, fps)
     else:
         aligned, method = _aggregate_by_timestamp(columns, frame_count, fps)
+    raw_ts = columns["timestamp_ns"]
+    raw_ts = np.sort(raw_ts[np.isfinite(raw_ts)])
     _write_h5(
         h5_path,
         aligned,
@@ -390,6 +512,7 @@ def sync_imu(session_dir: Path, meta: dict[str, Any] | None = None) -> IMUSyncRe
         source_hash=source_hash,
         raw_samples=len(columns["gyro"]),
         sync_method=method,
+        raw_timestamp_ns=raw_ts,
     )
 
     meta_path = session_dir / "session_meta.json"
@@ -409,4 +532,4 @@ def sync_imu(session_dir: Path, meta: dict[str, Any] | None = None) -> IMUSyncRe
     )
 
 
-__all__ = ["IMUSyncResult", "sync_imu"]
+__all__ = ["IMUSyncResult", "MultipleIMUSourcesError", "sync_imu"]
