@@ -194,7 +194,18 @@ def build_from_perception(
         if K is None:
             K = depth.intrinsics
 
-    frame_ids = sorted(hands.frames)
+    # The canonical clock describes the measured capture, not only the instants where a
+    # hand detector happened to fire.  WiLoR intentionally stores entries only for frames
+    # containing detections, while UniDepth stores every processed source frame.  Using the
+    # hand-result keys here silently dropped all no-hand frames (999/1770 on a real A100
+    # validation run), made otherwise-contiguous footage look sparse, and disabled action
+    # annotation.  Preserve every frame measured by any dense perception channel; an empty
+    # ``hands`` mapping is the honest representation of "no hand detected".
+    frame_ids = sorted(
+        set(hands.frames)
+        | (set(depth.frames) if depth is not None else set())
+        | (set(objects.frames) if objects is not None else set())
+    )
     if max_frames is not None:
         frame_ids = frame_ids[:max_frames]
     depth_refs: dict[int, DepthRef] = {}
@@ -224,7 +235,6 @@ def build_from_perception(
         sm = smooth_root_depth(raw)
         root_z = {i: float(sm[i]) for i in frame_ids if np.isfinite(sm[i])}
 
-    states = fusion.states if fusion is not None else None
     notes: dict[str, str] = {
         "source": "Phase 3 perception (WiLoR MANO + UniDepth + SLAM + L2 fusion), schema v3.",
         "wrist_placement": (
@@ -334,14 +344,15 @@ def build_from_perception(
                     Provenance.APPROXIMATED if synthesized else Provenance.VISION_FALLBACK
                 )
 
-        istate = None
-        if states is not None and k < len(states):
-            istate = states[k]
+        # Fusion is keyed by the original source-frame ID.  Positional indexing becomes
+        # incorrect as soon as the canonical clock includes frames without hand detections.
+        fused = fusion.frames.get(i) if fusion is not None else None
+        istate = fused.interaction_state if fused is not None else None
+        if istate is not None:
             provenance["interaction_state"] = Provenance.VISION_FALLBACK
 
         # Grasp is a real L2-derived state signal, not a default. It lives in the confidence
         # map for schema-v5 compatibility; the vector builder refuses frames where it is absent.
-        fused = fusion.frames.get(i) if fusion is not None else None
         if fused is not None:
             grasp_values = [float(v) for v in fused.grasp.values() if np.isfinite(v)]
             if grasp_values:
