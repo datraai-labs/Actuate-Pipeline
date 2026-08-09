@@ -67,6 +67,24 @@ def test_lineage_is_machine_readable_and_profile_bound():
     assert "git_sha" in first and "dependencies" in first
 
 
+def test_lineage_uses_validated_build_sha_when_git_metadata_is_absent(monkeypatch):
+    import subprocess
+
+    from actuate import lineage
+
+    def unavailable(*_args, **_kwargs):
+        raise subprocess.SubprocessError("source archive has no .git directory")
+
+    commit = "a1" * 20
+    monkeypatch.setattr(lineage.subprocess, "run", unavailable)
+    monkeypatch.setenv("ACTUATE_BUILD_GIT_SHA", commit)
+    monkeypatch.setenv("ACTUATE_BUILD_GIT_DIRTY", "false")
+    assert lineage._git_state() == (commit, False)
+
+    monkeypatch.setenv("ACTUATE_BUILD_GIT_SHA", "not-a-commit")
+    assert lineage._git_state() == (None, None)
+
+
 def test_run_readme_ships_frozen_schema_and_correct_copy(tmp_path):
     from actuate.package.delivery_docs import write_run_readme
     from actuate.schema import SCHEMA_VERSION

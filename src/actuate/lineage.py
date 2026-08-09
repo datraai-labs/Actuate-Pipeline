@@ -4,7 +4,9 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+import os
 import platform
+import re
 import subprocess
 from pathlib import Path
 
@@ -29,7 +31,15 @@ def _git_state() -> tuple[str | None, bool | None]:
         ).stdout.strip())
         return sha, dirty
     except (OSError, subprocess.SubprocessError):
-        return None, None
+        # Wheels, source archives, and managed GPU uploads normally omit `.git`.  The build
+        # harness can still provide immutable provenance explicitly; never accept an
+        # arbitrary label in a field that claims to be a Git object ID.
+        sha = os.getenv("ACTUATE_BUILD_GIT_SHA", "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", sha):
+            return None, None
+        dirty_value = os.getenv("ACTUATE_BUILD_GIT_DIRTY", "").strip().lower()
+        dirty = {"true": True, "1": True, "false": False, "0": False}.get(dirty_value)
+        return sha, dirty
 
 
 def build_lineage(profile: dict | None = None) -> dict:
