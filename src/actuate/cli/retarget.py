@@ -6,7 +6,6 @@ remain separate because their inputs and target embodiments are different.
 """
 
 # Typer's supported declaration style uses Option calls as defaults.
-# ruff: noqa: B008
 
 from __future__ import annotations
 

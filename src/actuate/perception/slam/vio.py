@@ -61,8 +61,8 @@ from actuate.schema import SE3
 _TRACK_WIDTH = 640
 
 #: Lucas-Kanade pyramidal optical flow.
-_LK = dict(winSize=(21, 21), maxLevel=3,
-           criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01))
+_LK = {"winSize": (21, 21), "maxLevel": 3,
+           "criteria": (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)}
 
 _MIN_TRACKS = 40  # below this, the visual estimate is not trustworthy
 

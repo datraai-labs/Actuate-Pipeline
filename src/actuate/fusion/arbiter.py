@@ -24,8 +24,9 @@ confidence measures how sure a source is of itself, not how much we trust the so
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from actuate.config import Provenance
 

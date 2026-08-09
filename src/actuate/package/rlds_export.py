@@ -42,8 +42,8 @@ from actuate.package.lerobot_export import (
     ExportRefused,
     _assert_export_consent,
     _decode_frames,
-    _episode_tier,
     _degenerate_dimensions,
+    _episode_tier,
     _robot_action_rows,
     _tier_filter,
 )

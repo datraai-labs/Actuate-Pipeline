@@ -358,7 +358,7 @@ def _log_episode_annotations(episode, frame_ids: list[int]) -> int:
 
     m = episode.episode_meta
     c = m.components
-    fmt = lambda v: "not measured" if v is None else f"{v:.2f}"  # noqa: E731
+    fmt = lambda v: "not measured" if v is None else f"{v:.2f}"
     doc = [f"# {episode.episode_id}",
            f"task: {episode.task or '(none)'}",
            f"paraphrases: {len(episode.task_paraphrases)}",

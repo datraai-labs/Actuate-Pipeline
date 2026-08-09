@@ -30,6 +30,7 @@ from actuate.catalog import (
 )
 from actuate.config import ConsentStatus, PiiStatus, RigType, Tier
 
+
 @pytest.fixture(scope="module")
 def engine():
     """A REAL Postgres. Two ways to get one, in order of preference:

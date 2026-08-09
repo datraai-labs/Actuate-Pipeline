@@ -7,6 +7,8 @@ nothing (Master Spec §0).
 
 from __future__ import annotations
 
+import itertools
+
 import numpy as np
 import pytest
 
@@ -72,7 +74,7 @@ def test_flexion_magnitude_is_monotonic_within_the_canonical_range():
 
     mags = np.linspace(0.0, mano_calib.FIST_THETA, 5)
     d = [mean_tip(m) for m in mags]
-    assert all(b < a for a, b in zip(d, d[1:])), f"curl not monotonic over [0, FIST_THETA]: {d}"
+    assert all(b < a for a, b in itertools.pairwise(d)), f"curl not monotonic over [0, FIST_THETA]: {d}"
     # and the documented reversal beyond it is real, not folklore
     assert mean_tip(1.6) > mean_tip(mano_calib.FIST_THETA)
 

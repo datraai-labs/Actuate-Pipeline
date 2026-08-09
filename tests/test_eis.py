@@ -12,11 +12,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import config as cfg
-from utils.hdf5_writer import write_session_h5
-
 # Import compute_eis from 10_eis.py via importlib
 import importlib.util
+
+import config as cfg
+from utils.hdf5_writer import write_session_h5
 
 _spec = importlib.util.spec_from_file_location(
     "eis",
@@ -154,7 +154,7 @@ class TestEISComponentWeights:
             + 0.6 * 0.15  # label
             + 1.0 * 0.15  # causal
         )
-        expected_eis = int(round(expected_raw * 100))
+        expected_eis = round(expected_raw * 100)
 
         assert result["eis"] == expected_eis, (
             f"Expected EIS={expected_eis}, got {result['eis']}. "
@@ -286,7 +286,7 @@ class TestRunPerEpisodeOrchestration:
         # Episode 0: hands detected on every frame in [0,49].
         # Episode 1: hands detected on NONE of the frames in [100,149].
         hand_pose = (
-            [{"frame_idx": i, "hands_detected": True} for i in range(0, 50)]
+            [{"frame_idx": i, "hands_detected": True} for i in range(50)]
             + [{"frame_idx": i, "hands_detected": False} for i in range(100, 150)]
         )
 

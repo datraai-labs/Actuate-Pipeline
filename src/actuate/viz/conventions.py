@@ -7,6 +7,8 @@ rerun.
 
 from __future__ import annotations
 
+import math
+
 from actuate.config import InteractionState, Side
 
 #: MediaPipe/MANO 21-keypoint kinematic chain, as (parent, child) index pairs. Five fingers,
@@ -71,7 +73,7 @@ def contact_color(confidence: float) -> tuple[int, int, int]:
     Maps to a green ramp: a confident contact is bright green, an uncertain one is dim. Kept
     linear and clamped so a NaN-free confidence always yields a valid colour.
     """
-    c = 0.0 if confidence != confidence else max(0.0, min(1.0, float(confidence)))
+    c = 0.0 if math.isnan(confidence) else max(0.0, min(1.0, float(confidence)))
     v = int(40 + 215 * c)
     return (30, v, 30)
 

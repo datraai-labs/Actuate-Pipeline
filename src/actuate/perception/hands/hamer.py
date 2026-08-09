@@ -80,9 +80,9 @@ class HaMeREstimator:
         self._model = self._model.to(self._device).eval()
 
         # detectron2 ViTDet person detector (HaMeR demo's default front-end)
+        import hamer
         from detectron2.config import LazyConfig
         from hamer.utils.utils_detectron2 import cascade_mask_rcnn_vitdet_h  # noqa: F401
-        import hamer
 
         cfg_path = (
             __import__("pathlib").Path(hamer.__file__).parent

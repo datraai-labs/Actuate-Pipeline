@@ -18,7 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config as cfg
 from utils.video_utils import resolve_perception_source
 
-
 SESSION_ID = "session_toggle_test"
 
 

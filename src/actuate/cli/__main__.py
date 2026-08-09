@@ -6,6 +6,5 @@ console-script shim from whichever environment launched the processing pipeline.
 
 from actuate.cli import app
 
-
 if __name__ == "__main__":
     app()

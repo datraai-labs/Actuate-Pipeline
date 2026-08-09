@@ -24,10 +24,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
-
-from typing import TYPE_CHECKING
 
 from actuate.canonical.reproject import action_is_ego_contaminated, reproject_future_pose
 
@@ -171,7 +170,7 @@ def build_episode(
     consent: ConsentStatus = ConsentStatus.PENDING,
     pii_status: PiiStatus = PiiStatus.PENDING,
     video_uri: str | None = None,
-    slam: "SlamResult | None" = None,
+    slam: SlamResult | None = None,
     rig: RigType | str | None = None,
 ) -> CanonicalEpisode:
     """Build one CanonicalEpisode from a v1 processed session.

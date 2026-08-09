@@ -265,8 +265,8 @@ def test_a_schema_valid_but_UNTRAINABLE_export_is_caught_by_the_gate(exported):
     The training step is what catches it. That is the whole argument for having this gate
     rather than a schema test.
     """
-    import pyarrow.parquet as pq
     import pyarrow as pa
+    import pyarrow.parquet as pq
 
     root = exported.root
     parquet = next(root.glob("data/chunk-*/file-*.parquet"))

@@ -14,18 +14,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config as cfg
 from utils.imu_source_router import (
-    WristPrimaryStrategy,
-    VisionPrimaryStrategy,
-    FusionStrategy,
-    get_primitive_strategy,
-    detect_wrist_pronate,
-    detect_contact_onset,
-    check_imu_mount_plausibility,
     ALL_PRIMITIVES,
+    FusionStrategy,
+    VisionPrimaryStrategy,
+    WristPrimaryStrategy,
+    check_imu_mount_plausibility,
+    detect_contact_onset,
+    detect_wrist_pronate,
+    get_primitive_strategy,
 )
 from utils.video_utils import (
-    compute_wrist_rotation_from_landmarks,
     compute_wrist_flexion_from_landmarks,
+    compute_wrist_rotation_from_landmarks,
 )
 
 

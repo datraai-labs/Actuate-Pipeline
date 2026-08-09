@@ -13,8 +13,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import config as cfg
 import importlib.util
+
+import config as cfg
 
 _spec = importlib.util.spec_from_file_location(
     "language_ground",
@@ -229,7 +230,6 @@ class _FakeAnthropicClient:
     vlm_language functions that would consume it are monkeypatched in
     every test below; exists only so `anthropic.Anthropic()` doesn't
     require real credentials during the test run."""
-    pass
 
 
 def _write_two_episode_session(tmp_path, monkeypatch, session_id, task_a="bolt_tightening", task_b="material_transfer"):

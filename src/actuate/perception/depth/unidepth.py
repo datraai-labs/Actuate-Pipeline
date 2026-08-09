@@ -82,7 +82,6 @@ class UniDepthEstimator:
 
     def __init__(self, variant: str = "auto", device: str = "auto") -> None:
         import torch
-
         from unidepth.models import UniDepthV2
 
         if device == "auto":
@@ -154,7 +153,7 @@ def sample_depth(
     Returns (depth_m, confidence).
     """
     h, w = depth.shape
-    x, y = int(round(float(xy[0]))), int(round(float(xy[1])))
+    x, y = round(float(xy[0])), round(float(xy[1]))
     r = patch // 2
     x0, x1 = max(0, x - r), min(w, x + r + 1)
     y0, y1 = max(0, y - r), min(h, y + r + 1)

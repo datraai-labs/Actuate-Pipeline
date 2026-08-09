@@ -64,8 +64,8 @@ def verify_consent_boundary(
     (`io.consent.DeliveryWriter`) is covered by tests that confirm data leaks when the
     guard is removed -- both halves exist because either alone is a single point of failure.
     """
-    import botocore.exceptions
     import boto3
+    import botocore.exceptions
 
     settings = load_settings(env=env, storage_backend=StorageBackendKind.S3)
     if profile:

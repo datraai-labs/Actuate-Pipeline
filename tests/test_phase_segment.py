@@ -88,7 +88,7 @@ class TestRunMeanConfidencePropagation:
 
         primitives = []
         # Frames 0-14: idle (filler, keeps segments apart and above min duration)
-        for i in range(0, 15):
+        for i in range(15):
             flags = dict(_ZERO_FLAGS); flags["idle"] = True
             conf = dict(_ZERO_CONF); conf["idle"] = 0.9
             primitives.append(_prim_frame(i, flags, conf))
@@ -127,7 +127,7 @@ class TestRunMeanConfidencePropagation:
         proc_dir.mkdir(parents=True)
 
         primitives = []
-        for i in range(0, 20):
+        for i in range(20):
             flags = dict(_ZERO_FLAGS); flags["idle"] = True
             conf = dict(_ZERO_CONF); conf["idle"] = 0.5
             primitives.append(_prim_frame(i, flags, conf))
@@ -145,7 +145,7 @@ class TestRunMeanConfidencePropagation:
         proc_dir.mkdir(parents=True)
 
         primitives = []
-        for i in range(0, 20):
+        for i in range(20):
             flags = dict(_ZERO_FLAGS); flags["idle"] = True
             primitives.append({
                 "frame_idx": i,

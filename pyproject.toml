@@ -88,6 +88,10 @@ dev = [
     "ruff>=0.5",
     "import-linter>=2.0",
     "testcontainers[postgres]>=4.5",
+    # The unit suite imports lightweight geometry and image helpers at collection time.
+    # Keep the documented CI/dev install self-contained without pulling the GPU stack.
+    "scipy>=1.11",
+    "opencv-python-headless>=4.8",
 ]
 # Everything needed to process real data. Export writers stay in [export]/[rlds]
 # environments because their native/dependency stacks conflict with perception.
@@ -142,3 +146,19 @@ src = ["src"]
 # Numbered script filenames (01_ingest.py, etc.) aren't valid Python module names —
 # that's intentional (see note above), not a lint violation to fix.
 exclude = ["scripts", "infra/cdk.out"]
+
+[tool.ruff.lint.per-file-ignores]
+# Typer intentionally declares CLI metadata through Argument/Option calls in defaults.
+"src/actuate/cli/*.py" = ["B008"]
+# These files are explicit degradation/isolation boundaries around optional SDKs,
+# native model runtimes, remote stores, or best-effort caches.
+"src/actuate/cli/viz.py" = ["B008", "BLE001"]
+"src/actuate/cloud.py" = ["BLE001", "S110"]
+"src/actuate/ingest/run.py" = ["BLE001"]
+"src/actuate/perception/depth/benchmark.py" = ["BLE001"]
+"src/actuate/pipeline/cache.py" = ["BLE001", "S110"]
+"src/actuate/pipeline/run.py" = ["BLE001"]
+"src/actuate/sdk.py" = ["BLE001"]
+"src/actuate/sources/adapters/egocentric_rgbd.py" = ["BLE001"]
+"src/actuate/sources/resolvers.py" = ["BLE001"]
+"tests/unit/test_retarget_arm.py" = ["BLE001"]

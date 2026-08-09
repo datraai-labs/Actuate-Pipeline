@@ -11,7 +11,7 @@ from actuate.config import auth
 
 
 def test_process_and_export_requires_the_isolated_writer_before_processing(monkeypatch):
-    import actuate.sdk as sdk
+    from actuate import sdk
 
     monkeypatch.delenv("ACTUATE_LEROBOT_PYTHON", raising=False)
     with pytest.raises(RuntimeError, match="ACTUATE_LEROBOT_PYTHON"):

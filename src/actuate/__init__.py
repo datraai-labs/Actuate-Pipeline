@@ -39,10 +39,10 @@ def __getattr__(name: str):
 
 __all__ = [
     "SCHEMA_VERSION",
+    "ExportResult",
+    "ProcessingRun",
     "__version__",
     "login",
     "process",
     "process_and_export",
-    "ProcessingRun",
-    "ExportResult",
 ]

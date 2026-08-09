@@ -93,8 +93,8 @@ class IngestResult:
     imu_frames: int = 0
 
     def summary(self) -> str:
-        lines = [f"{self.session_dir.name}: capture {self.capture_id[:16]}… | "
-                 f"rig {self.rig.value} | tier {self.tier.value}"]
+        lines = [(f"{self.session_dir.name}: capture {self.capture_id[:16]}… | "
+                 f"rig {self.rig.value} | tier {self.tier.value}")]
         if self.aligned_robot:
             v = {True: "VERIFIED", False: "MISMATCH", None: "UNVERIFIABLE"}[
                 self.intrinsics_match]

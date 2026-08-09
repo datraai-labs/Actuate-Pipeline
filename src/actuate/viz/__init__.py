@@ -27,13 +27,13 @@ from actuate.viz.rerun_log import (
 )
 
 __all__ = [
+    "HAND_COLORS",
+    "HAND_EDGES",
+    "STATE_COLORS",
+    "contact_color",
     "log_episode",
     "log_hand",
     "log_objects",
     "log_state",
-    "HAND_EDGES",
-    "HAND_COLORS",
-    "STATE_COLORS",
-    "contact_color",
     "skeleton_strips",
 ]

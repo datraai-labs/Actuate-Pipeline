@@ -4,7 +4,6 @@ from __future__ import annotations
 import logging
 import os
 
-
 _NOISY_LOGGERS = (
     "PIL",
     "urllib3",

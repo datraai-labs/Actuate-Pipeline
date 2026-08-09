@@ -300,7 +300,7 @@ def _stage_perceive(ctx: _Ctx) -> dict:
         return {}
     configured_limit = cfg.get("max_frames")
     n = int(configured_limit) if configured_limit is not None else None
-    warn = lambda m: ctx.flag(stage, m)  # noqa: E731
+    warn = lambda m: ctx.flag(stage, m)
 
     results: dict = {}
     try:
@@ -448,8 +448,9 @@ def _stage_canonical(ctx: _Ctx, perception: dict) -> None:
     # canonical already point at) and record PASSED. Without this flag pii_status stays
     # PENDING and the delivery gate keeps blocking -- the boundary is unchanged.
     if ctx.profile.get("redact_pii"):
-        from actuate.io import redact
         import shutil
+
+        from actuate.io import redact
 
         report = redact.redact_session(ctx.session)
         privacy_artifact = ctx.out / "artifacts" / "privacy_report.json"

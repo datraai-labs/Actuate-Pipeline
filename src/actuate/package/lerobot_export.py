@@ -120,7 +120,7 @@ def _decode_frames(video: Path, indices: np.ndarray) -> dict[int, np.ndarray]:
     if not cap.isOpened():
         raise ExportRefused(f"cannot open video {video}")
 
-    wanted = set(int(i) for i in indices)
+    wanted = {int(i) for i in indices}
     out: dict[int, np.ndarray] = {}
     idx = 0
     while True:

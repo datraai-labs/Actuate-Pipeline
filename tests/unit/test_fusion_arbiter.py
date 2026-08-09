@@ -13,17 +13,16 @@ import pytest
 
 from actuate.config import Finger, InteractionState, Provenance, Side
 from actuate.fusion import (
+    TRUST_RANK,
     Candidate,
     HardwareSources,
     SchmittTrigger,
-    TRUST_RANK,
     arbitrate,
     enforce_min_dwell,
     finger_curl,
     grasp_signal,
 )
 from actuate.fusion import run as fusion_run
-
 
 # --------------------------------------------------------------------------------------
 # The arbiter
@@ -188,8 +187,8 @@ def test_run_vision_only_is_vision_fallback_and_contact_is_populated():
     assert rep.provenance["contact"] is Provenance.VISION_FALLBACK
     # contact populated, non-NaN, and capped low (vision cannot feel contact)
     for ff in rep.frames.values():
-        for side, fingers in ff.contact.items():
-            for finger, cp in fingers.items():
+        for fingers in ff.contact.values():
+            for cp in fingers.values():
                 assert np.isfinite(cp.confidence)
                 assert 0.0 <= cp.confidence <= 0.40
                 assert cp.source is Provenance.VISION_FALLBACK

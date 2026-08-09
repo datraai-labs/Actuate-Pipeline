@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 
 import numpy as np
-import pytest
 
 from actuate.canonical import (
     build_from_perception,

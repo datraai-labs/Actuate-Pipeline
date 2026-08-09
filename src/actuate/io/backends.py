@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import shutil
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from pathlib import Path
-from typing import BinaryIO, Iterator
+from typing import BinaryIO
 
 from actuate.config import Bucket, Settings, StorageBackendKind
 
@@ -124,7 +125,7 @@ class S3Backend(StorageBackend):
 
     def __init__(self, settings: Settings) -> None:
         try:
-            import boto3  # noqa: F401
+            import boto3
         except ImportError as exc:  # pragma: no cover
             raise StorageError(
                 "S3Backend needs the aws extra: pip install -e '.[aws]'"

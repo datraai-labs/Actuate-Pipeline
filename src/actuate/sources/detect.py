@@ -19,6 +19,14 @@ from pathlib import Path
 
 from actuate.config import ConsentStatus
 from actuate.ingest.layout import detect_layout, detect_rig
+
+__all__ = [
+    "detect_layout",
+    "detect_rig",
+    "local_consent_default",
+    "normalize_filenames",
+]
+
 #: filename characters the perception path trips on -> replaced with '_'.
 _UNSAFE = ' ()[]{}&,;'
 

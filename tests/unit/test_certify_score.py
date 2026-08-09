@@ -132,11 +132,11 @@ def test_score_attaches_l5_results_when_given():
     class _Sim:
         eligible = False
         ik_convergence_rate = 0.84
-        reasons = ["IK convergence 84% < 90%"]
+        reasons = ("IK convergence 84% < 90%",)
 
     class _Rec:
         ok = False
-        reasons = ["3 arm teleport(s)"]
+        reasons = ("3 arm teleport(s)",)
 
     ep = _episode([_frame(i, {"hands": 0.8}) for i in range(10)])
     r = certify_score(ep, "franka_panda", sim_result=_Sim(), reconcile_result=_Rec())

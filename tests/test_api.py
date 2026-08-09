@@ -3,10 +3,8 @@ DatraAI Pipeline — Tests for service/api.py
 Uses FastAPI's TestClient to verify the wrapper REST endpoints.
 """
 
-import os
-import sys
 import shutil
-import tempfile
+import sys
 from pathlib import Path
 
 # Add project root to sys.path
@@ -15,7 +13,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import pytest
 from fastapi.testclient import TestClient
-from service.api import app, FRONTEND_STAGES, session_jobs
+from service.api import FRONTEND_STAGES, app, session_jobs
 
 
 class TestPipelineAPI:

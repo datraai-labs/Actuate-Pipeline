@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 
 from actuate.schema.episode import (
+    ActionInterval,
     CanonicalEpisode,
     Diversity,
     EpisodeMeta,
@@ -22,7 +23,6 @@ from actuate.schema.episode import (
     RobotAction,
     StrategyAlignment,
     SubgoalFrame,
-    ActionInterval,
     Subtask,
 )
 from actuate.schema.frame import (
@@ -43,6 +43,7 @@ __all__ = [
     "PROVENANCE_REQUIRED_FIELDS",
     "SCHEMA_VERSION",
     "SE3",
+    "ActionInterval",
     "CanonicalEpisode",
     "CanonicalFrame",
     "ContactReading",
@@ -61,7 +62,6 @@ __all__ = [
     "RobotAction",
     "StrategyAlignment",
     "SubgoalFrame",
-    "ActionInterval",
     "Subtask",
     "dump_json_schema",
     "frozen_schema_path",

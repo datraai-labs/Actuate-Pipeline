@@ -124,13 +124,13 @@ def run(
         per_frame_hands[fid] = by_side
         objf = objects.frames.get(fid) if objects is not None else None
 
-        def sig(side):
-            h = by_side.get(side)
+        def sig(side, hands_by_side=by_side):
+            h = hands_by_side.get(side)
             return grasp_signal(h.keypoints_3d) if h is not None else None
 
-        def near(side):
-            h = by_side.get(side)
-            return _near_object(h.bbox, objf) if h is not None else False
+        def near(side, hands_by_side=by_side, object_frame=objf):
+            h = hands_by_side.get(side)
+            return _near_object(h.bbox, object_frame) if h is not None else False
 
         left_sig.append(sig(Side.LEFT))
         right_sig.append(sig(Side.RIGHT))

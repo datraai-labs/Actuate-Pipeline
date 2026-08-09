@@ -7,13 +7,13 @@ import numpy as np
 import pytest
 
 from actuate.config import ConsentStatus, RigType
+from actuate.ingest import RigDeclarationError, validate_declared_rig
 from actuate.sources.detect import (
     detect_layout,
     detect_rig,
     local_consent_default,
     normalize_filenames,
 )
-from actuate.ingest import RigDeclarationError, validate_declared_rig
 
 cv2 = pytest.importorskip("cv2")
 

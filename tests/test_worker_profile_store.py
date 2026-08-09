@@ -11,7 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config as cfg
-from utils.worker_profile_store import save_profile, load_profile, delete_profile, profile_path
+from utils.worker_profile_store import delete_profile, load_profile, profile_path, save_profile
 
 
 class TestSaveProfileConsentGate:

@@ -140,7 +140,7 @@ def patch_smplx() -> None:
 
     real_load = pickle.load
 
-    def _load(fh, **kwargs):  # noqa: ANN001, ANN202
+    def _load(fh, **kwargs):
         obj = real_load(fh, **kwargs)
         return {k: _materialise(v) for k, v in obj.items()} if isinstance(obj, dict) else obj
 

@@ -8,4 +8,4 @@ from __future__ import annotations
 from actuate.pipeline.cache import stage_cached
 from actuate.pipeline.run import PipelineResult, run_pipeline
 
-__all__ = ["run_pipeline", "PipelineResult", "stage_cached"]
+__all__ = ["PipelineResult", "run_pipeline", "stage_cached"]

@@ -27,9 +27,9 @@ and the quality of the guarantee is exactly the quality of the detector you give
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
-import json
 from pathlib import Path
 
 from actuate.config import PiiStatus
@@ -101,7 +101,7 @@ def _downscaled(frame, detect: Detector, detect_width: int) -> list[Region]:
     if detect_width <= 0 or w <= detect_width:
         return detect(frame)
     s = w / detect_width
-    small = cv2.resize(frame, (detect_width, int(round(h / s))))
+    small = cv2.resize(frame, (detect_width, round(h / s)))
     return [(int(x * s), int(y * s), int(bw * s), int(bh * s))
             for (x, y, bw, bh) in detect(small)]
 

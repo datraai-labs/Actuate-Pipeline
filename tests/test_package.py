@@ -51,7 +51,7 @@ def _make_one_episode_session(proc_dir, session_id, task="bolt_tightening", conf
         ],
     })
     _write_json(proc_dir / "primitives.json", [
-        {"frame_idx": i, "active_primitives": ["power_grasp"]} for i in range(0, 50)
+        {"frame_idx": i, "active_primitives": ["power_grasp"]} for i in range(50)
     ])
     _write_json(proc_dir / "validation_report.json", {"overall_valid": True})
     _write_json(proc_dir / "quality_certificate.json", {
@@ -167,7 +167,7 @@ class TestConfidenceTree:
         # Overwrite primitives.json with entries that DO carry primitive_confidences (as 05_primitives.py now writes).
         _write_json(proc_dir / "primitives.json", [
             {"frame_idx": i, "active_primitives": ["power_grasp"], "primitive_confidences": {"power_grasp": 0.5}}
-            for i in range(0, 50)
+            for i in range(50)
         ])
 
         result = _assemble_action_labels(proc_dir, session_id)

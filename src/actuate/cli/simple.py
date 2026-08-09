@@ -274,7 +274,7 @@ def report_cmd(
     ep = CanonicalEpisode.model_validate_json(canon.read_text(encoding="utf-8"))
     m = ep.episode_meta
     c = m.components
-    fmt = lambda v: "not measured" if v is None else f"{v:.2f}"  # noqa: E731
+    fmt = lambda v: "not measured" if v is None else f"{v:.2f}"
     typer.secho(f"quality {m.quality}/5   speed {m.speed}   task {ep.task!r}", bold=True)
     for name in ("sync_integrity", "calibration_completeness", "perception_confidence",
                  "contact_consistency", "ik_convergence_rate"):

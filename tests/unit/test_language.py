@@ -6,21 +6,20 @@ missing key skips instead of failing."""
 
 from __future__ import annotations
 
+import importlib
 import json
 from types import SimpleNamespace
 
 import pytest
 
-import importlib
-
 # the package re-exports the `annotate` FUNCTION under the same name as the module, so an
 # `import ... as` would bind the function; importlib reaches the module itself
 lang_annotate = importlib.import_module("actuate.language.annotate")
 
-from actuate.config import RigType                      # noqa: E402
-from actuate.language import vlm                        # noqa: E402
-from actuate.language.annotate import ConsistencyScore  # noqa: E402
-from actuate.schema import CanonicalEpisode  # noqa: E402
+from actuate.config import RigType
+from actuate.language import vlm
+from actuate.language.annotate import ConsistencyScore
+from actuate.schema import CanonicalEpisode
 
 
 class _FakeClient:

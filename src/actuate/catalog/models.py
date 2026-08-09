@@ -32,7 +32,6 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
-    Enum as SAEnum,
     Float,
     ForeignKey,
     Index,
@@ -40,6 +39,9 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+)
+from sqlalchemy import (
+    Enum as SAEnum,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -140,8 +142,8 @@ class Capture(Base, TimestampMixin):
     duration_sec: Mapped[float | None] = mapped_column(Float)
     frame_count: Mapped[int | None] = mapped_column(Integer)
 
-    consent: Mapped["Consent"] = relationship(back_populates="capture", uselist=False)
-    episodes: Mapped[list["Episode"]] = relationship(back_populates="capture")
+    consent: Mapped[Consent] = relationship(back_populates="capture", uselist=False)
+    episodes: Mapped[list[Episode]] = relationship(back_populates="capture")
 
 
 class Consent(Base, TimestampMixin):
@@ -246,7 +248,7 @@ class Episode(Base, TimestampMixin):
     frame_count: Mapped[int | None] = mapped_column(Integer)
 
     capture: Mapped[Capture] = relationship(back_populates="episodes")
-    certification: Mapped["Certification"] = relationship(back_populates="episode", uselist=False)
+    certification: Mapped[Certification] = relationship(back_populates="episode", uselist=False)
 
     __table_args__ = (
         Index("ix_episodes_task_tier", "task_id", "tier"),

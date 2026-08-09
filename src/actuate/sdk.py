@@ -154,7 +154,7 @@ def process(
     prompts: list[str] | None = None,
     reporter=None,
     **kwargs,
-) -> "ProcessingRun":
+) -> ProcessingRun:
     """Process any source into a certified canonical episode + a Rerun recording.
 
     `source`: local video / session dir, or hf:// s3:// https:// openx:// (when
@@ -169,7 +169,7 @@ def process(
 
     src_kwargs = {k: kwargs[k] for k in ("files", "split", "max_episodes") if k in kwargs}
     session = _resolve_source(source, work_root, **src_kwargs)
-    meta = ensure_session_meta(session)
+    ensure_session_meta(session)
     rig = _detect_rig(session, rig)
     from actuate.config import product_capabilities
 
@@ -220,7 +220,7 @@ def process_and_export(
     export_format: str = "lerobot_v3",
     out: str | Path = "./output/",
     **kwargs,
-) -> "ExportResult":
+) -> ExportResult:
     """Process, then invoke the requested writer in its isolated interpreter.
 
     This preserves the convenience API without loading WiLoR/UniDepth and LeRobot or
@@ -434,7 +434,7 @@ class ProcessingRun:
         }
 
     def certificate(self) -> dict:
-        from actuate.certify.score import THRESHOLDS_PROVISIONAL, THRESHOLD_SET_VERSION
+        from actuate.certify.score import THRESHOLD_SET_VERSION, THRESHOLDS_PROVISIONAL
 
         m = self._ep().episode_meta
         c = m.components

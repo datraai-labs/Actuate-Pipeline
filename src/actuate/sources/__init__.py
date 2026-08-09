@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-__all__ = ["resolve", "push_to_hub"]
+__all__ = ["push_to_hub", "resolve"]
 
 
 def resolve(source: str, work_root: Path, **kwargs) -> Path:

@@ -75,7 +75,7 @@ class CertificationReport:
 
     def summary(self) -> str:
         c = self.components
-        fmt = lambda v: "not measured" if v is None else f"{v:.2f}"  # noqa: E731
+        fmt = lambda v: "not measured" if v is None else f"{v:.2f}"
         lines = [
             f"episode {self.episode_id}",
             f"  sync_integrity           : {fmt(c.sync_integrity)}",
@@ -307,7 +307,7 @@ def score(
         strategy_alignment=strategy, retarget_eligibility=eligibility,
         episode=updated,
         notes=notes + [
-            f"thresholds_provisional={THRESHOLDS_PROVISIONAL} "
-            f"threshold_set={THRESHOLD_SET_VERSION}"
+            (f"thresholds_provisional={THRESHOLDS_PROVISIONAL} "
+            f"threshold_set={THRESHOLD_SET_VERSION}")
         ],
     )

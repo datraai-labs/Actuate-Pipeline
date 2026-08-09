@@ -20,6 +20,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import importlib
+
 import config as cfg
 from utils.dataset_qc import (
     compute_diversity_summary,
@@ -30,7 +32,6 @@ from utils.dataset_qc import (
     stratified_split,
 )
 
-import importlib
 dataset_qc_script = importlib.import_module("scripts.11b_dataset_qc")
 
 
