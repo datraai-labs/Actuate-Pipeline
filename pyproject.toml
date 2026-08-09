@@ -45,7 +45,8 @@ perception = [
     # WiLoR-mini 1.1 declares torch<=2.5. Keep the model worker on that tested line;
     # LeRobot's newer torchvision floor lives in the isolated [export] environment.
     "torch>=2.2,<=2.5", "torchvision>=0.17,<0.21",
-    "transformers>=4.40,<5", "opencv-python>=4.8", "mediapipe==0.10.14",
+    "transformers>=4.40,<5", "opencv-python>=4.8,<5",
+    "opencv-contrib-python>=4.8,<5", "mediapipe==0.10.14",
 ]
 # Arm retargeting (L5). MuJoCo for kinematics/IK/replay + robot_descriptions for URDFs/MJCF.
 # NOTE: not Pinocchio -- `pin` has no Windows wheels and fails to build; MuJoCo covers FK,
@@ -60,7 +61,7 @@ humanoid-retarget = [
 ]
 sim = ["mujoco>=3.1"]
 # Rerun visualization (`actuate viz`). Viewer-free import; only needed to log/open recordings.
-viz = ["rerun-sdk>=0.20", "opencv-python>=4.8", "av>=12"]
+viz = ["rerun-sdk>=0.20", "opencv-python>=4.8,<5", "av>=12"]
 service = ["fastapi>=0.111", "uvicorn>=0.30"]
 # SDK source resolvers (Phase 6): pull data from HuggingFace / URLs / Open-X. s3fs+fsspec
 # are already in [aws]; huggingface_hub + datasets add the HF read/write path.
@@ -82,7 +83,7 @@ rlds = [
     "tensorflow-datasets>=4.9",
     "tensorflow-metadata>=1.17",
     "protobuf>=6.31,<7",
-    "opencv-python-headless>=4.8",
+    "opencv-python-headless>=4.8,<5",
     "importlib-resources>=6.4",
 ]
 dev = [
@@ -94,7 +95,7 @@ dev = [
     # The regression suite imports these CPU-only helpers at collection time. Keep the
     # documented CI/dev install self-contained without pulling the GPU/model stack.
     "scipy>=1.11",
-    "opencv-python-headless>=4.8",
+    "opencv-python-headless>=4.8,<5",
     "httpx2>=2.0",
     "h5py>=3.11",
     "pandas>=2.2",
@@ -104,7 +105,8 @@ dev = [
 # environments because their native/dependency stacks conflict with perception.
 all = [
     "torch>=2.2,<=2.5", "torchvision>=0.17,<0.21",
-    "transformers>=4.40,<5", "opencv-python>=4.8", "mediapipe==0.10.14",
+    "transformers>=4.40,<5", "opencv-python>=4.8,<5",
+    "opencv-contrib-python>=4.8,<5", "mediapipe==0.10.14",
     "mujoco>=3.1", "robot_descriptions>=1.9", "scipy>=1.11",
     "general-motion-retargeting @ git+https://github.com/YanjieZe/GMR.git@bb1bbe40774794fceb2a7c579a3464a28e68c844",
     "daqp>=0.7", "certifi>=2024.7",

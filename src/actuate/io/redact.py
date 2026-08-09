@@ -60,8 +60,15 @@ def haar_face_detector() -> Detector:
     """OpenCV frontal-face Haar cascade -> face boxes. CPU-only, no extra dependency."""
     import cv2
 
-    cascade = cv2.CascadeClassifier(
-        cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    cascade_path = Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml"
+    if not cascade_path.is_file():
+        raise RuntimeError(
+            "OpenCV's frontal-face cascade is missing; install an Actuate-supported "
+            "opencv-python/opencv-contrib-python 4.x build before enabling redaction"
+        )
+    cascade = cv2.CascadeClassifier(str(cascade_path))
+    if cascade.empty():
+        raise RuntimeError(f"OpenCV could not load the face cascade at {cascade_path}")
 
     def detect(frame_bgr) -> list[Region]:
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
