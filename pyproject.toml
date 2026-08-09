@@ -85,7 +85,8 @@ rlds = [
 ]
 dev = [
     "pytest>=7.4",
-    "ruff>=0.5",
+    # CI is a customer-facing contract; avoid silently enabling new rule sets.
+    "ruff==0.16.0",
     "import-linter>=2.0",
     "testcontainers[postgres]>=4.5",
     # The unit suite imports lightweight geometry and image helpers at collection time.
