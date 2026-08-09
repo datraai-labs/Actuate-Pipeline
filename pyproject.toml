@@ -29,9 +29,11 @@ dependencies = [
 # the LocalBackend has no AWS dependency at all, which is what lets the storage
 # abstraction be proven before any bucket exists.
 aws = [
-    "boto3>=1.34",
-    "s3fs>=2024.6,<2026.3",
-    "fsspec>=2024.6,<2026.3",
+    # Keep boto3/botocore inside aiobotocore 3.9's compatible window. Unbounded
+    # boto3 currently resolves past it and makes a clean [aws] install impossible.
+    "boto3==1.43.56",
+    "s3fs==2026.2.0",
+    "fsspec==2026.2.0",
     "pyarrow>=16.0",
     "zarr>=2.18",
     "sqlalchemy>=2.0",
@@ -64,7 +66,7 @@ service = ["fastapi>=0.111", "uvicorn>=0.30"]
 # are already in [aws]; huggingface_hub + datasets add the HF read/write path.
 sources = [
     "huggingface_hub>=0.34,<1.0", "datasets>=2.19,<5", "requests>=2.31",
-    "fsspec>=2024.6,<2026.3",
+    "fsspec==2026.2.0",
 ]
 # LeRobot is compatible with the perception environment. RLDS/TFDS is deliberately
 # isolated in the [rlds] extra below because its protobuf requirements conflict with
@@ -89,10 +91,14 @@ dev = [
     "ruff==0.16.0",
     "import-linter>=2.0",
     "testcontainers[postgres]>=4.5",
-    # The unit suite imports lightweight geometry and image helpers at collection time.
-    # Keep the documented CI/dev install self-contained without pulling the GPU stack.
+    # The regression suite imports these CPU-only helpers at collection time. Keep the
+    # documented CI/dev install self-contained without pulling the GPU/model stack.
     "scipy>=1.11",
     "opencv-python-headless>=4.8",
+    "httpx2>=2.0",
+    "h5py>=3.11",
+    "pandas>=2.2",
+    "anthropic>=0.40",
 ]
 # Everything needed to process real data. Export writers stay in [export]/[rlds]
 # environments because their native/dependency stacks conflict with perception.
@@ -104,7 +110,7 @@ all = [
     "daqp>=0.7", "certifi>=2024.7",
     "rerun-sdk>=0.20", "av>=12",
     "huggingface_hub>=0.34,<1.0", "datasets>=2.19", "requests>=2.31",
-    "boto3>=1.34", "s3fs>=2024.6,<2026.3", "fsspec>=2024.6,<2026.3", "pyarrow>=16.0",
+    "boto3==1.43.56", "s3fs==2026.2.0", "fsspec==2026.2.0", "pyarrow>=16.0",
     "anthropic>=0.40", "pyyaml>=6.0",
     # MediaPipe 0.10.14 requires protobuf<5. RLDS/TFDS requires protobuf>=6.31 and is
     # therefore installed only through the isolated [rlds] extra.

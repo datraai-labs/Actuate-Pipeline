@@ -281,12 +281,18 @@ def run(
     """
     import json
 
-    import torch
-
     if device == "auto":
-        # MPS currently reaches a non-contiguous-view failure inside WiLoR. CPU fp32 is
-        # slower but is the verified portable path on Apple silicon.
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        try:
+            import torch
+        except ImportError:
+            # Keep orchestration and dependency-isolation tests usable from the light
+            # install. A real estimator will still raise its actionable perception-extra
+            # error when constructed below.
+            device = "cpu"
+        else:
+            # MPS currently reaches a non-contiguous-view failure inside WiLoR. CPU fp32 is
+            # slower but is the verified portable path on Apple silicon.
+            device = "cuda" if torch.cuda.is_available() else "cpu"
 
     session_dir = Path(session_dir)
     meta = json.loads((session_dir / "session_meta.json").read_text())

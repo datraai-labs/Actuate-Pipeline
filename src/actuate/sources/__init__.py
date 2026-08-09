@@ -44,12 +44,12 @@ def push_to_hub(local_dir: Path, repo_id: str, *, private: bool = True,
     """
     import os
 
-    from huggingface_hub import HfApi, create_repo
-
     token = token or os.environ.get("HF_TOKEN")
     local_dir = Path(local_dir)
     if not local_dir.is_dir():
         raise FileNotFoundError(f"nothing to push: {local_dir} is not a directory")
+
+    from huggingface_hub import HfApi, create_repo
 
     create_repo(repo_id, repo_type="dataset", private=private, exist_ok=True, token=token)
     HfApi().upload_folder(folder_path=str(local_dir), repo_id=repo_id,

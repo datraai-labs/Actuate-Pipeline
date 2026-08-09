@@ -141,6 +141,8 @@ def test_sim_validate_finger_traj_requires_a_hand_model():
 @pytest.mark.slow
 def test_sim_validate_on_the_real_franka_model():
     """Same gates against the actual MuJoCo Franka, not the stand-in."""
+    pytest.importorskip("mujoco")
+    pytest.importorskip("robot_descriptions")
     from actuate.retarget.arm.robot import franka_panda
 
     fr = franka_panda()

@@ -1,10 +1,11 @@
 import numpy as np
+import pytest
 
 from actuate.viz.preview import _write_browser_video
 
 
 def test_portable_preview_is_browser_decodable_h264(tmp_path):
-    import av
+    av = pytest.importorskip("av")
 
     output = tmp_path / "preview.mp4"
     frames = [
