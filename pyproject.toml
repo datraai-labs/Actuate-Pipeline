@@ -75,7 +75,7 @@ sources = [
 # LeRobot 0.4.x requires torchvision>=0.21 (and therefore a newer Torch than WiLoR allows).
 # Install this extra in its own interpreter and point the dashboard at it with
 # ACTUATE_LEROBOT_PYTHON. The CLI can be invoked directly from that environment.
-export = ["lerobot>=0.4,<0.5"]
+export = ["lerobot>=0.4,<0.5", "av>=12"]
 # RLDS needs a separate environment from perception: TensorFlow Metadata requires protobuf
 # >=6.31 while MediaPipe/UniDepth's dependency chain is pinned below 6 in [all].
 rlds = [

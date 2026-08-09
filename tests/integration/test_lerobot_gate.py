@@ -128,6 +128,9 @@ def _load(root: Path, horizon: int = HORIZON):
         "actuate/gate",
         root=root,
         delta_timestamps={"action": [i / 30 for i in range(horizon)]},
+        # TorchCodec requires matching system FFmpeg shared libraries.  PyAV is an official
+        # LeRobot backend and its wheel is portable across clean customer/GPU hosts.
+        video_backend="pyav",
     )
 
 
