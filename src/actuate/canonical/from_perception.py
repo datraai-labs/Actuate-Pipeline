@@ -170,7 +170,12 @@ def build_from_perception(
     meta = json.loads((session_dir / "session_meta.json").read_text())
     fps = float(meta.get("fps_nominal", meta.get("fps", 30.0)))
     eid = episode_id or f"{capture_hash[:16]}_ep00"
-    cam = "head" if rig is RigType.HEAD_MOUNTED else "wrist"
+    from actuate.config import get_rig
+
+    camera_names = get_rig(rig).cameras
+    if not camera_names:
+        raise ValueError(f"rig {rig.value!r} declares no camera names")
+    cam = camera_names[0]
     if video_uri is None:
         try:
             from actuate.ingest.run import _session_video
@@ -233,10 +238,40 @@ def build_from_perception(
             "vision-inferred contact from masquerading as one. Fusion's soft contact is viz-only."
         ),
     }
+    hand_model = str(getattr(hands, "notes", {}).get("hand_model") or "wilor").lower()
+    if hand_model == "wilor":
+        hand_constraint = (
+            "WiLoR models are CC-BY-NC-ND-4.0; MANO's standard grant is "
+            "non-commercial; the WiLoR detector also uses Ultralytics."
+        )
+    else:
+        hand_constraint = (
+            f"{hand_model} produced MANO output; MANO's standard grant is non-commercial, "
+            "and every downloaded checkpoint/front-end asset requires separate review."
+        )
+    # State the active models' current terms directly rather than trusting cache-era notes.
+    # A cached result may predate a wording correction; its legal provenance does not change
+    # when it is deserialised.
+    usage_constraints = [hand_constraint]
+    if depth is not None:
+        usage_constraints.append(
+            "UniDepth software and published weights are CC-BY-NC-4.0."
+        )
+    if usage_constraints:
+        notes["usage_constraints"] = (
+            " ".join(usage_constraints)
+            + " INTERNAL RESEARCH ONLY unless separate commercial rights for the complete "
+            "runtime chain have been signed."
+        )
     if depth_artifact is not None:
         notes["depth_artifact"] = (
             f"Dense metric depth and UniDepth relative confidence are stored in "
             f"{depth_artifact}; DepthRef.frame_index indexes its first array dimension."
+        )
+        notes["depth_confidence"] = (
+            "The real UniDepthV2 relative-confidence raster is preserved in the depth NPZ. "
+            "It is not a calibrated probability and is therefore withheld from the unit-"
+            "interval certificate score until a labeled calibration set exists."
         )
     if objects_artifact is not None:
         notes["objects_artifact"] = (
@@ -270,29 +305,47 @@ def build_from_perception(
             )
         if hand_states:
             provenance["hands"] = Provenance.VISION_PRIMARY
-            confidence["hands"] = float(np.clip(np.mean(
-                [getattr(h, "detection_confidence", 1.0) for h in hs]
-            ), 0.0, 1.0))
+            hand_scores = [
+                float(h.detection_confidence)
+                for h in hs
+                if getattr(h, "detection_confidence", None) is not None
+                and np.isfinite(h.detection_confidence)
+            ]
+            if hand_scores:
+                confidence["hands"] = float(np.clip(np.mean(hand_scores), 0.0, 1.0))
 
         frame_depth = {}
         df = depth.frames.get(i) if depth is not None else None
         if i in depth_refs and df is not None:
             frame_depth[cam] = depth_refs[i]
             provenance["depth"] = Provenance.VISION_PRIMARY
-            d = np.asarray(df.depth_m)
-            confidence["depth"] = float(np.mean(np.isfinite(d) & (d > 0)))
 
         cam_pose = None
         if slam is not None and getattr(slam, "poses", None) and i < len(slam.poses):
             cam_pose = slam.poses[i]
             if cam_pose is not None:
-                # only as good as the weakest component; translation is not metric
-                provenance["camera_pose"] = Provenance.VISION_FALLBACK
+                dropout = getattr(slam, "interpolated_over_dropout", None)
+                synthesized = (
+                    dropout is not None and i < len(dropout) and bool(dropout[i])
+                )
+                # A pose spanning a sensor dropout is synthesized, not measured. Otherwise
+                # it remains vision_fallback because translation is not metric.
+                provenance["camera_pose"] = (
+                    Provenance.APPROXIMATED if synthesized else Provenance.VISION_FALLBACK
+                )
 
         istate = None
         if states is not None and k < len(states):
             istate = states[k]
             provenance["interaction_state"] = Provenance.VISION_FALLBACK
+
+        # Grasp is a real L2-derived state signal, not a default. It lives in the confidence
+        # map for schema-v5 compatibility; the vector builder refuses frames where it is absent.
+        fused = fusion.frames.get(i) if fusion is not None else None
+        if fused is not None:
+            grasp_values = [float(v) for v in fused.grasp.values() if np.isfinite(v)]
+            if grasp_values:
+                confidence["grasp"] = float(np.clip(np.mean(grasp_values), 0.0, 1.0))
 
         # Objects: carry the SAM2 MASK per tracked object. Pose stays None -- 6-DoF needs
         # FoundationPose (a mesh + a bigger GPU), which is stubbed; a position-only pose would
@@ -317,7 +370,10 @@ def build_from_perception(
                 rig=rig,
                 episode_id=eid,
                 frame_idx=i,
-                images={cam: ImageRef(uri=video_uri, frame_index=i)},
+                images={
+                    name: ImageRef(uri=video_uri, frame_index=i)
+                    for name in camera_names
+                },
                 camera_pose=cam_pose,
                 hands=hand_states,
                 objects=obj_states,

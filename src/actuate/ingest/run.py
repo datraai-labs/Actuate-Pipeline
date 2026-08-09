@@ -50,6 +50,34 @@ class RigStreamError(ValueError):
     """
 
 
+class RigDeclarationError(ValueError):
+    """The declared capture rig contradicts the source pixels/layout."""
+
+
+def validate_declared_rig(src: Path, rig: RigType) -> str:
+    """Validate active-rig declarations against source geometry.
+
+    This check is deliberately fatal: processing a stereo composite as one monocular image
+    produces plausible-looking but physically meaningless depth and duplicate hands.
+    """
+    from actuate.ingest.layout import detect_layout
+
+    layout = detect_layout(src)
+    if rig is RigType.HEAD_MOUNTED and layout in {"stereo_video", "multi_camera"}:
+        raise RigDeclarationError(
+            f"declared rig=head_mounted but the source layout is {layout}. A side-by-side "
+            "stereo composite must not be processed as one monocular image. Declare "
+            "rig=stereo and use a validated stereo adapter."
+        )
+    if rig is RigType.STEREO and layout not in {"stereo_video", "multi_camera"}:
+        raise RigDeclarationError(
+            f"declared rig=stereo but the source layout is {layout}; expected one "
+            "side-by-side stereo video or both declared camera files. Refusing to invent "
+            "the missing second view."
+        )
+    return layout
+
+
 @dataclass
 class IngestResult:
     session_dir: Path
@@ -317,6 +345,7 @@ def run(rig: RigType | str, src: Path, store: Path | None = None,
     rig = RigType(rig) if isinstance(rig, str) else rig
     verify_rig_streams(rig, src)
     video = _session_video(src)
+    layout = validate_declared_rig(src, rig)
 
     flags: list[str] = []
     capture_id = hash_file(video)
@@ -337,6 +366,11 @@ def run(rig: RigType | str, src: Path, store: Path | None = None,
                     f"container reports {probed_fps:.2f} — metadata NOT silently "
                     "trusted (Master Spec §L0 gate)"
                 )
+        # Persist the validated per-session fact. Canonical assembly must never infer a rig
+        # from a process-global IMU setting.
+        if meta.get("rig") != rig.value or meta.get("source_layout") != layout:
+            meta = {**meta, "rig": rig.value, "source_layout": layout}
+            meta_p.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     else:
         flags.append("no session_meta.json: frame_count/fps unverified")
 

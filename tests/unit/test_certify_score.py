@@ -66,8 +66,14 @@ def test_contact_consistency_is_none_on_a_contactless_rig():
 
 
 def test_perception_confidence_aggregates_frame_confidence():
-    ep = _episode([_frame(0, {"hands": 0.8, "depth": 0.4}), _frame(1, {"hands": 0.6})])
+    ep = _episode([_frame(0, {"hands_calibrated": 0.8, "depth_calibrated": 0.4}),
+                   _frame(1, {"hands_calibrated": 0.6})])
     assert perception_confidence(ep) == pytest.approx((0.6 + 0.6) / 2)
+
+
+def test_uncalibrated_model_scores_do_not_become_certificate_confidence():
+    ep = _episode([_frame(0, {"hands": 0.99, "depth": 0.95, "grasp": 0.5})])
+    assert perception_confidence(ep) is None
 
 
 def test_speed_uses_timestamps_not_frame_count():
@@ -82,8 +88,8 @@ def test_speed_uses_timestamps_not_frame_count():
 def test_mistakes_flag_low_confidence_segments_and_not_good_ones():
     """BROKEN-VARIANT CHECK built in: confident frames must NOT be flagged, so a scorer
     that flags everything (or nothing) fails this test."""
-    good = [_frame(i, {"hands": 0.9}) for i in range(30)]              # 0-1 s: fine
-    bad = [_frame(30 + i, {"hands": 0.1}) for i in range(30)]          # 1-2 s: collapsed
+    good = [_frame(i, {"hands_calibrated": 0.9}) for i in range(30)]   # 0-1 s: fine
+    bad = [_frame(30 + i, {"hands_calibrated": 0.1}) for i in range(30)]
     flags = find_mistakes(_episode(good + bad))
     assert len(flags) == 1
     assert "low_confidence@1s-2s" in flags[0]

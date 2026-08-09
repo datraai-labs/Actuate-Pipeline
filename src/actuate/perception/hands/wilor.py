@@ -7,11 +7,11 @@ intermediate the whole retargeting path (§L5) is built on, and MediaPipe cannot
 --------------------------------------------------------------------------------------
 LICENCE -- INTERNAL RESEARCH ONLY
 --------------------------------------------------------------------------------------
-WiLoR is **CC-BY-NC-4.0**. MANO is a Max Planck body model, licensed for **non-commercial**
-use. Actuate sells datasets. Nothing derived from this module may be shipped to a customer
-without a commercial licence from MPI -- and that includes the Stage-I retargeted
-reference-hand action, which the Master Spec makes the *delivered* pretraining target.
-Tracked as a launch blocker in STATUS.md.
+WiLoR's published models are **CC-BY-NC-ND-4.0**. MANO is a Max Planck body model whose
+standard grant is **non-commercial**. Actuate cannot use this path for a commercial customer
+without separate rights from both relevant licensors; WiLoR also depends on Ultralytics,
+whose closed-source commercial terms must be cleared separately. Tracked in
+docs/COMMERCIAL_LICENSE_READINESS.md.
 
 --------------------------------------------------------------------------------------
 WHAT THIS MODEL IS GOOD AT, AND WHAT IT IS NOT -- measured on the real capture
@@ -43,6 +43,7 @@ absolute placement of the hand depends entirely on a focal length we do not have
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -78,7 +79,9 @@ class HandFrame:
     root_translation_virtual: np.ndarray  # (3,)
     virtual_focal: float
     bbox: np.ndarray                # (4,) xyxy
-    detection_confidence: float
+    # Detector score in [0,1]. None means the backend did not expose a score; absence must
+    # never be upgraded to certainty by a downstream default.
+    detection_confidence: float | None
 
     def root_translation(self, real_focal_px: float) -> np.ndarray:
         """Rescale the root out of the virtual camera into a real one.
@@ -107,7 +110,10 @@ class WiLoREstimator:
         from actuate.perception.hands.mano_compat import patch_smplx
 
         patch_smplx()
-        logging.getLogger("WiLorHandPose3dEstimationPipeline").setLevel(logging.ERROR)
+        wilor_logger = logging.getLogger("WiLorHandPose3dEstimationPipeline")
+        quiet = os.getenv("ACTUATE_VERBOSE", "0") != "1"
+        wilor_logger.setLevel(logging.ERROR if quiet else logging.INFO)
+        wilor_logger.disabled = quiet
 
         from wilor_mini.pipelines.wilor_hand_pose3d_estimation_pipeline import (
             WiLorHandPose3dEstimationPipeline,
@@ -117,11 +123,31 @@ class WiLoREstimator:
         if device == "cuda" and not torch.cuda.is_available():
             raise RuntimeError("cuda requested but unavailable")
 
-        # Measured on an RTX 2050 (4.29 GB): 1.50 GB weights, 2.44 GB peak, 1.85 GB spare.
-        # fp32 would not fit.
-        self._pipe = WiLorHandPose3dEstimationPipeline(
-            device=torch.device(device), dtype=td
-        )
+        # Ultralytics 8.1 checkpoints contain a serialized PoseModel. Starting with
+        # PyTorch 2.6, torch.load defaults to weights_only=True and rejects that trusted
+        # legacy checkpoint before WiLoR can initialize. Restrict the compatibility
+        # override to this constructor: these files are downloaded by the pinned WiLoR
+        # package, while every unrelated torch.load call keeps PyTorch's safe default.
+        original_torch_load = torch.load
+
+        def _load_trusted_wilor_checkpoint(*args, **kwargs):
+            kwargs.setdefault("weights_only", False)
+            return original_torch_load(*args, **kwargs)
+
+        try:
+            torch.load = _load_trusted_wilor_checkpoint
+            # Measured on an RTX 2050 (4.29 GB): 1.50 GB weights, 2.44 GB peak,
+            # 1.85 GB spare. fp32 would not fit.
+            self._pipe = WiLorHandPose3dEstimationPipeline(
+                device=torch.device(device), dtype=td
+            )
+            # The third-party constructor resets its logger. Re-apply the customer-facing
+            # setting after initialization so per-frame INFO/WARNING output stays behind
+            # ``--verbose``.
+            wilor_logger.setLevel(logging.ERROR if quiet else logging.INFO)
+            wilor_logger.disabled = quiet
+        finally:
+            torch.load = original_torch_load
 
     def predict(self, frame_bgr: np.ndarray) -> list[HandFrame]:
         out = []
@@ -140,7 +166,11 @@ class WiLoREstimator:
                     ),
                     virtual_focal=float(wp["scaled_focal_length"]),
                     bbox=np.asarray(h["hand_bbox"], dtype=np.float64),
-                    detection_confidence=float(h.get("hand_processed_conf", 1.0)),
+                    detection_confidence=(
+                        float(h["hand_processed_conf"])
+                        if h.get("hand_processed_conf") is not None
+                        else None
+                    ),
                 )
             )
         return out
@@ -286,8 +316,9 @@ def run(
     }
     result.notes = {
         "licence": (
-            "WiLoR is CC-BY-NC-4.0 and MANO is MPI non-commercial. INTERNAL RESEARCH ONLY. "
-            "Not deliverable without an MPI commercial licence."
+            "WiLoR models are CC-BY-NC-ND-4.0; MANO's standard grant is non-commercial; "
+            "the WiLoR detector also uses Ultralytics. INTERNAL RESEARCH ONLY unless "
+            "separate commercial rights for the complete chain have been signed."
         ),
         "root_depth": (
             "WiLoR solves a weak-perspective camera against the hand bbox, so depth ~ "

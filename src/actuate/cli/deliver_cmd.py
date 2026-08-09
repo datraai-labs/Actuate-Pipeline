@@ -18,8 +18,8 @@ def _parse_expires(s: str) -> int:
 
 def deliver_cmd(
     dataset: Path = typer.Argument(..., help="Packaged dataset directory (lerobot/rlds)."),
-    customer: str = typer.Option(..., help="Customer name (becomes the key prefix)."),
-    episodes: Path = typer.Option(..., help="Canonical episode JSON the dataset was "
+    customer: str | None = typer.Option(None, help="Customer name (becomes the key prefix)."),
+    episodes: Path | None = typer.Option(None, help="Canonical episode JSON the dataset was "
                                             "packaged from (consent+quality are read "
                                             "from it)."),
     expires: str = typer.Option("7d", help="Presigned URL lifetime (e.g. 7d, 12h)."),
@@ -37,6 +37,13 @@ def deliver_cmd(
     from actuate.package.deliver import DeliveryRefused, deliver
     from actuate.schema import CanonicalEpisode
 
+    missing = [name for name, value in (("--customer", customer), ("--episodes", episodes))
+               if value is None]
+    if missing:
+        typer.secho("missing required options: " + ", ".join(missing), fg="red")
+        raise typer.Exit(2)
+
+    assert customer is not None and episodes is not None
     ep = CanonicalEpisode.model_validate_json(episodes.read_text(encoding="utf-8"))
     backend = LocalBackend(local_root) if local_root else None
     try:

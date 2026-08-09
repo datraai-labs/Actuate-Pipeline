@@ -1,12 +1,54 @@
-"""L8 — Feedback.
+"""Minimum L8 review routing and version-aware reprocessing signals.
 
-Spec: docs/architecture/MASTER_IMPLEMENTATION_SPEC.md §L8
-
-Dataset versioning + QC hooks. Reframe: honestly-graded failure/low-quality episodes
-route to delivery as pi0.7 metadata-labeled ROBUSTNESS data, not landfill.
-Consent/PII failures stay hard-blocked.
-
-NOT IMPLEMENTED. Increment 1 builds the foundation only (schema, io, catalog, infra).
-This package is a placeholder so the import-linter contract has the full layer graph to
-check against, and so nothing is quietly built out of order.
+This is intentionally small: model retraining is still future work, but quality/privacy flags
+now produce a queryable route instead of dying as unread JSON fields.
 """
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+
+from actuate.config import ConsentStatus, PiiStatus
+
+
+@dataclass(frozen=True)
+class ReviewRoute:
+    queue: str
+    reasons: tuple[str, ...]
+    may_export: bool
+    needs_human_review: bool
+
+    def model_dump(self) -> dict:
+        return asdict(self)
+
+
+def route_episode(episode) -> ReviewRoute:
+    reasons: list[str] = []
+    if episode.consent is not ConsentStatus.GRANTED:
+        reasons.append(f"consent={episode.consent.value}")
+    if episode.pii_status is not PiiStatus.PASSED:
+        reasons.append(f"pii_status={episode.pii_status.value}")
+    if reasons:
+        return ReviewRoute("privacy_block", tuple(reasons), False, True)
+
+    if episode.episode_meta.quality is None:
+        reasons.append("quality not measured")
+    elif episode.episode_meta.quality < 3:
+        reasons.append(f"provisional quality={episode.episode_meta.quality}/5")
+    reasons.extend(episode.episode_meta.mistakes)
+    reasons.extend(
+        f"retarget[{name}]=ineligible"
+        for name, eligible in episode.retarget_eligibility.items()
+        if eligible is False
+    )
+    disagreement = any(
+        "disagree" in str(note).lower() for note in episode.derivation_notes.values()
+    )
+    if disagreement:
+        reasons.append("task classification disagreement")
+    if reasons:
+        queue = "robustness_review" if episode.episode_meta.quality in (1, 2) else "human_review"
+        return ReviewRoute(queue, tuple(dict.fromkeys(reasons)), True, True)
+    return ReviewRoute("delivery_candidate", (), True, False)
+
+
+__all__ = ["ReviewRoute", "route_episode"]

@@ -1,96 +1,105 @@
-# Quickstart: process your first dataset
+# Quickstart: process and inspect a capture
 
-From an install to a training-ready LeRobot v3 dataset in under 5 minutes and under 10 lines.
+This path produces a certified canonical episode, then exports it only if the dataset gates
+are satisfied. Runtime depends on video length and GPU hardware; Actuate does not promise a
+fixed five-minute conversion.
 
-## 1. Install
-
-```bash
-pip install -e ".[all]"      # from a checkout; `pip install actuate` once published
-```
-
-## 2. Set up (one-time)
+## 1. Install the isolated environments
 
 ```bash
-actuate login --local        # local mode: runs on your machine, no API key needed
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[perception,retarget,sim,sources]"
+
+python -m venv .venv-lerobot
+.venv-lerobot/bin/python -m pip install -e ".[export]"
 ```
 
-## 3. Process a video
+LeRobot's Torch/TorchVision requirements conflict with WiLoR's tested Torch ceiling. Keeping
+the writer separate also prevents native model/export libraries from sharing one process.
+
+## 2. Process the full video
 
 ```bash
-actuate process ./my_video.mp4 --task "pick up cup" --export lerobot_v3 --dataset-out ./dataset/
+.venv/bin/actuate login --local
+.venv/bin/actuate process ./my_video.mp4 \
+  --rig head_mounted \
+  --task "pick up the cup" \
+  --consent-granted \
+  --redact-pii \
+  --out ./actuate_runs
 ```
 
-`--rig auto` detects the rig from the video (side-by-side → stereo, otherwise head-mounted).
-Drop `--task` and Actuate auto-detects it from a keyframe (needs an API key) or prompts you.
+`--consent-granted` is an operator attestation for every recorded subject; local ownership is
+not consent. The default evaluates the full source. Use `--max-frames N` only as an explicit
+sample—the manifest records both the source count and resulting coverage. Stereo is detected
+but currently rejected until calibrated real-data validation is complete.
 
-## 4. Check quality
+## 3. Inspect before export
 
 ```bash
-actuate report ./actuate_runs/my_video_out
+.venv/bin/actuate report ./actuate_runs/my_video_out
+.venv/bin/actuate viz preview ./actuate_runs/my_video_out
 ```
 
-## 5. View the pipeline
+The report uses `not measured` for absent signals and states why delivery or robot retargeting
+is blocked. A missing trained embodiment model produces human-space data, not a fabricated
+robot trajectory.
+
+## 4. Export with the isolated writer
 
 ```bash
-actuate viz ./actuate_runs/my_video_out
+.venv-lerobot/bin/actuate export ./actuate_runs/my_video_out \
+  --format lerobot_v3 \
+  --out ./dataset
 ```
 
-## 6. Load in Python
+Export rechecks consent, PII status, task presence, successor integrity, grasp availability,
+and any requested embodiment's physics-eligibility verdict.
+
+## 5. Load with LeRobot
 
 ```python
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-dataset = LeRobotDataset("actuate/dev", root="./dataset/")
+
+dataset = LeRobotDataset(
+    "actuate/local",
+    root="./dataset",
+    video_backend="pyav",  # portable when system TorchCodec/FFmpeg libraries are absent
+)
+print(len(dataset), dataset[0]["observation.state"].shape)
 ```
 
-That's it — your data is training-ready.
+## Python SDK
 
----
-
-## The Python SDK (10 lines)
+Use the SDK for processing inside the perception environment:
 
 ```python
 import actuate
 
-actuate.login()                              # local, one-time
 run = actuate.process(
-    source="./my_video.mp4",                 # or hf:// s3:// https:// openx://
-    rig="auto",
-    task="pick up cup",
+    "./my_video.mp4",
+    rig="head_mounted",
+    task="pick up the cup",
+    consent="granted",
+    redact_pii=True,
 )
 print(run.status, run.quality, run.num_frames)
-run.export("lerobot_v3", path="./dataset/")
 ```
 
-Or the one-liner:
-
-```python
-actuate.process_and_export("./my_video.mp4", export_format="lerobot_v3",
-                           out="./dataset/", task="pick up cup")
-```
+Run export from `.venv-lerobot` against the durable `canonical.json`, as shown above. The
+dashboard performs the same boundary with `ACTUATE_LEROBOT_PYTHON`.
 
 ## Sources
 
 | Prefix | Reads from | Example |
 |---|---|---|
-| *(none)* | local file / session dir | `./data/capture.mp4` |
-| `hf://` | HuggingFace Hub | `hf://lerobot/pusht` |
-| `s3://` | S3 (configured AWS creds) | `s3://bucket/session_001/` |
-| `http(s)://` | direct URL / Google Drive | `https://drive.google.com/file/d/…` |
-| `openx://` | Open-X-Embodiment (tfds) | `openx://fractal20220817_data` |
+| *(none)* | local file/session | `./data/capture.mp4` |
+| `hf://` | Hugging Face Hub | `hf://lerobot/pusht` |
+| `s3://` | customer-configured S3 | `s3://bucket/session_001/` |
+| `http(s)://` | direct URL | `https://example.org/capture.mp4` |
+| `openx://` | Open X / TFDS slice | `openx://fractal20220817_data` |
 
-## What you get
-
-Every processed episode is a **certified canonical episode**: MANO hands, metric depth,
-object tracks, L2 fusion, fine-grained action intervals, a language task + paraphrases +
-subtasks, and an L4 quality certificate (1–5) with per-component scores. Export to
-**LeRobot v3** or **RLDS/Open-X**, both dual-space (human + retargeted robot).
-
-The consent boundary is **fail-closed at delivery**: local processing marks your own data
-`consent=granted`, but `pii_status` stays `pending`, so nothing ships to a customer bucket
-until PII review passes — `actuate report` shows this.
-
-## Honest limits
-
-Perception is GPU-heavy; on a 4 GB card cap with `--max-frames 45`. Retargeting needs a
-trained arm model (Kaggle GPU) — without it the retarget stage skips and you get human-space
-data. See `STATUS.md` for the full what-works-vs-what's-a-demo ledger.
+Every output includes the frozen schema, a run README, code/dependency lineage, structured
+frame coverage, explicit omissions, stage skip reasons, and a recall-bounded privacy report
+when redaction was requested. See `STATUS.md` for real-data validation limits.

@@ -436,9 +436,8 @@ async def run_pipeline_endpoint(
                 shutil.copy2(s_imu_csv, raw_imu_path)
             elif s_imu_json.exists():
                 shutil.copy2(s_imu_json, raw_dir / "imu.json")
-            s_consent = staged_dir / "consent.json"
-            if s_consent.exists():
-                shutil.copy2(s_consent, raw_dir / "consent.json")
+            # Consent is server state written only by PATCH /consent. A caller-controlled
+            # staging directory must never be able to smuggle in a granted record.
         else:
             # Try to resolve relative to workspace
             resolved_staged = PROJECT_ROOT / staged_path
@@ -453,9 +452,7 @@ async def run_pipeline_endpoint(
                     shutil.copy2(s_imu_csv, raw_imu_path)
                 elif s_imu_json.exists():
                     shutil.copy2(s_imu_json, raw_dir / "imu.json")
-                s_consent = resolved_staged / "consent.json"
-                if s_consent.exists():
-                    shutil.copy2(s_consent, raw_dir / "consent.json")
+                # Deliberately do not copy consent.json from staged input; see above.
             else:
                 raise HTTPException(status_code=400, detail=f"Staged path not found: {staged_path}")
                 
@@ -463,10 +460,10 @@ async def run_pipeline_endpoint(
     has_video = raw_video_path.exists()
     has_imu = raw_imu_path.exists() or (raw_dir / "imu.json").exists()
     
-    if not has_video or not has_imu:
+    if not has_video:
         raise HTTPException(
             status_code=400,
-            detail=f"Incomplete raw data in session folder raw/{session_id}. Video exists: {has_video}, IMU exists: {has_imu}"
+            detail=f"Incomplete raw data in session folder raw/{session_id}. Video exists: {has_video}. IMU is optional (present: {has_imu})."
         )
         
     # 4. Check consent status

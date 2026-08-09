@@ -115,10 +115,10 @@ def _grasp_scale(hand_pose: list[dict]) -> tuple[float, float]:
     return (0.0, 1.0) if open_ - closed < 1e-6 else (float(closed), float(open_))
 
 
-def _grasp(rec: dict | None, closed: float, open_: float) -> float:
+def _grasp(rec: dict | None, closed: float, open_: float) -> float | None:
     d = ((rec or {}).get("derived") or {}).get("thumb_index_dist")
     if d is None:
-        return 0.0
+        return None
     return float(np.clip((open_ - float(d)) / (open_ - closed), 0.0, 1.0))
 
 
@@ -131,22 +131,34 @@ def _wrist_pose(landmarks: list[list[float]]) -> SE3 | None:
     return SE3(position_m=(float(p[0]), float(p[1]), float(p[2])), quaternion_wxyz=q)
 
 
-def _interaction(prim: dict | None, hand: dict | None) -> tuple[InteractionState, float]:
+def _interaction(
+    prim: dict | None, hand: dict | None
+) -> tuple[InteractionState | None, float | None]:
     if prim is None:
-        return InteractionState.STATIC, 0.0
+        return None, None
     flags = prim.get("raw_flags", {})
     confs = prim.get("primitive_confidences", {})
     if any(flags.get(p) for p in _GRASP_PRIMITIVES):
-        c = max(float(confs.get(p, 0.0)) for p in _GRASP_PRIMITIVES)
+        measured = [
+            float(confs[p])
+            for p in _GRASP_PRIMITIVES
+            if confs.get(p) is not None
+        ]
+        c = max(measured) if measured else None
         side = (hand or {}).get("dominant_hand")
         state = (
             InteractionState.GRASPED_L if side == "left" else InteractionState.GRASPED_R
         )
-        return state, min(max(c, 0.0), 1.0)
-    speed = float(((hand or {}).get("derived") or {}).get("wrist_velocity_magnitude", 0.0))
+        return state, None if c is None else min(max(c, 0.0), 1.0)
+    speed_raw = ((hand or {}).get("derived") or {}).get("wrist_velocity_magnitude")
+    if speed_raw is None:
+        return None, None
+    speed = float(speed_raw)
     if speed > _MOVING_SPEED:
-        return InteractionState.MOVING, float(confs.get("transport", 0.0))
-    return InteractionState.STATIC, float(confs.get("idle", 0.0))
+        c = confs.get("transport")
+        return InteractionState.MOVING, None if c is None else float(c)
+    c = confs.get("idle")
+    return InteractionState.STATIC, None if c is None else float(c)
 
 
 def build_episode(
@@ -160,6 +172,7 @@ def build_episode(
     pii_status: PiiStatus = PiiStatus.PENDING,
     video_uri: str | None = None,
     slam: "SlamResult | None" = None,
+    rig: RigType | str | None = None,
 ) -> CanonicalEpisode:
     """Build one CanonicalEpisode from a v1 processed session.
 
@@ -190,21 +203,32 @@ def build_episode(
 
     notes: dict[str, str] = {}
 
-    rig = (
-        RigType.GLOVE
-        if meta.get("glove_type", "none") not in (None, "none")
-        else RigType.UMI_GRIPPER
-        if meta.get("imu_source_mode") == "wrist_mounted"
-        else RigType.HEAD_MOUNTED
-    )
-    notes["rig_type"] = (
-        f"INFERRED from imu_source_mode={meta.get('imu_source_mode')!r}. v1 never recorded "
-        "rig type; imu_source_mode is a global config constant, not a per-session fact."
-    )
+    declared_rig = rig or meta.get("rig")
+    if declared_rig is not None:
+        rig = RigType(declared_rig)
+        notes["rig_type"] = "Validated per-session rig declaration from ingestion."
+    else:
+        # Compatibility for already-produced legacy artifacts only. New processing always
+        # supplies a validated per-session declaration above.
+        rig = (
+            RigType.GLOVE
+            if meta.get("glove_type", "none") not in (None, "none")
+            else RigType.UMI_GRIPPER
+            if meta.get("imu_source_mode") == "wrist_mounted"
+            else RigType.HEAD_MOUNTED
+        )
+        notes["rig_type"] = (
+            f"LEGACY INFERENCE from imu_source_mode={meta.get('imu_source_mode')!r}; "
+            "not a validated per-session rig declaration."
+        )
 
     eid = episode_id or f"{capture_hash[:16]}_ep00"
     fps = float(meta.get("fps_nominal", 30.0))
-    cam = "head" if rig is RigType.HEAD_MOUNTED else "wrist"
+    from actuate.config import get_rig
+
+    camera_names = get_rig(rig).cameras
+    if not camera_names:
+        raise CanonicalBuildError(f"rig {rig.value!r} declares no camera names")
     video = video_uri or f"processed/{meta['session_id']}/redacted_compressed.mp4"
 
     closed, open_ = _grasp_scale(hp2)
@@ -270,15 +294,19 @@ def build_episode(
             # MediaPipe keypoints lifted by a monocular metric depth model. That model IS
             # the primary source available on this rig -- vision_primary, honestly.
             provenance["hands"] = Provenance.VISION_PRIMARY
-            confidence["hands.wrist_pose"] = float(
-                (byd.get(i) or {}).get("depth_confidence", 0.0)
-            )
+            # The legacy depth output did not carry a calibrated probability. Preserve an
+            # explicitly calibrated score only; otherwise absence means "not measured".
+            depth_score = (byd.get(i) or {}).get("depth_confidence_calibrated")
+            if depth_score is not None:
+                confidence["hands.wrist_pose"] = float(depth_score)
             # Continuous grasp scalar: 1.0 == pinched shut, 0.0 == open. Derived from the
             # thumb-index distance against this session's own 5th/95th percentiles. It is
             # an inference from vision, not an aperture encoder, and is not a `contact`
             # reading -- this rig measures no contact at all and the schema forbids it from
             # claiming one.
-            confidence["grasp"] = _grasp(h2, closed, open_)
+            grasp = _grasp(h2, closed, open_)
+            if grasp is not None:
+                confidence["grasp"] = grasp
 
         if i in cam_poses:
             # Rotation is a real gyro measurement; the pose as a whole is only as good as
@@ -287,8 +315,10 @@ def build_episode(
 
         prim = byp.get(i)
         istate, iconf = _interaction(prim, h2)
-        provenance["interaction_state"] = Provenance.VISION_FALLBACK
-        confidence["interaction_state"] = iconf
+        if istate is not None:
+            provenance["interaction_state"] = Provenance.VISION_FALLBACK
+        if iconf is not None:
+            confidence["interaction_state"] = iconf
 
         frames.append(
             CanonicalFrame(
@@ -296,7 +326,10 @@ def build_episode(
                 rig=rig,
                 episode_id=eid,
                 frame_idx=i,
-                images={cam: ImageRef(uri=video, frame_index=i)},
+                images={
+                    name: ImageRef(uri=video, frame_index=i)
+                    for name in camera_names
+                },
                 camera_pose=cam_poses.get(i),
                 hands=hands,
                 interaction_state=istate,
@@ -373,7 +406,9 @@ def state_and_action_vectors(
         if hand.wrist_pose is None:
             continue
         p = hand.wrist_pose
-        grasp = f.confidence.get("grasp", 0.0)
+        grasp = f.confidence.get("grasp")
+        if grasp is None:
+            continue
         row = [*p.position_m, *p.quaternion_wxyz, grasp]
         # MANO cols 8-52 (schema v3), only on a MANO-bearing episode. NaN here == this frame
         # has a wrist but no articulation; the exporter drops it rather than fabricating a pose.
@@ -409,10 +444,14 @@ def state_and_action_vectors(
         if cam_now is not None and cam_future is not None:
             wrist_future = reproject_future_pose(wrist_future, cam_now, cam_future)
 
+        next_grasp = nxt.confidence.get("grasp")
+        if next_grasp is None:
+            action_valid[i] = False
+            continue
         row = [
             *wrist_future.position_m,
             *wrist_future.quaternion_wxyz,
-            nxt.confidence.get("grasp", 0.0),
+            next_grasp,
         ]
         # MANO articulation is root-relative -> frame-independent -> not reprojected.
         if with_mano:

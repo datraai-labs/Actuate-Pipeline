@@ -3,7 +3,8 @@
 Everything downstream of L3 (certify, retarget, language, package, the service) compiles
 against this and nothing else. Import from here, not from the submodules.
 
-`schema_version = 1`. See version.py for the freeze mechanism.
+The current frozen version is exported as ``SCHEMA_VERSION``. See version.py for the
+freeze mechanism; never duplicate a numeric version in documentation.
 """
 
 from __future__ import annotations

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import json
 from pathlib import Path
 
 from actuate.config import PiiStatus
@@ -163,4 +164,19 @@ def redact_session(session_dir: Path, *, detector: Detector | None = None) -> Re
         if not cands:
             raise FileNotFoundError(f"no source video to redact in {session_dir}")
         src = cands[0]
-    return redact_video(src, session_dir / "redacted_compressed.mp4", detector=detector)
+    report = redact_video(src, session_dir / "redacted_compressed.mp4", detector=detector)
+    (session_dir / "privacy_report.json").write_text(
+        json.dumps({
+            "status": report.status.value,
+            "method": report.method,
+            "frames_scanned": report.frames_scanned,
+            "regions_blurred": report.regions_blurred,
+            "scope": "face regions detected by the configured detector",
+            "limitation": (
+                "Recall-bounded: PASSED means the redaction pass completed and detected "
+                "regions were blurred; it is not proof that zero PII remains."
+            ),
+        }, indent=2),
+        encoding="utf-8",
+    )
+    return report

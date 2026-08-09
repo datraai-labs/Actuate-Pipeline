@@ -1,4 +1,4 @@
-"""`actuate viz <session>` -- see the pipeline. Master Spec §F.
+"""`actuate viz <session>` -- see the pipeline. Master Spec section F.
 
 Runs the perception stages on a session and logs every modality to Rerun on one scrubable
 timeline. Default writes a self-contained `.rrd` (openable later, no GPU); `--live` streams to a
@@ -23,7 +23,7 @@ import typer
 
 from actuate.pipeline.cache import stage_cached
 
-viz_app = typer.Typer(help="F -- Rerun visualization: see the pipeline (Master Spec §F).")
+viz_app = typer.Typer(help="F -- Rerun visualization: see the pipeline (Master Spec section F).")
 
 _STAGES = ("depth", "hands", "objects", "fusion", "slam")
 

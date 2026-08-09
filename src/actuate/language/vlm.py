@@ -74,8 +74,11 @@ CAPTION_SCHEMA = {
         "scene": {"type": "string", "description": "The overall scene/workspace context."},
         "instruction": {"type": "string", "description": "One imperative instruction a "
                         "robot could follow for this segment, grounded in the frames."},
+        "task_guess": {"type": "string", "description": "An independent short read of the "
+                       "overall task visible in these frames. Do not copy the supplied task "
+                       "when the pixels disagree."},
     },
-    "required": ["hand", "object", "action", "scene", "instruction"],
+    "required": ["hand", "object", "action", "scene", "instruction", "task_guess"],
     "additionalProperties": False,
 }
 
@@ -250,6 +253,16 @@ def call_caption(client, frames_b64: list[str], facts: dict) -> tuple[dict, dict
         output_config={"format": {"type": "json_schema", "schema": CAPTION_SCHEMA}},
     )
     return _json_response(response)
+
+
+def task_disagreement(vlm_task_guess: str | None, classifier_task: str | None) -> bool:
+    """Heuristic independent-task disagreement check ported from the legacy live path."""
+    def normalise(value: str | None) -> str:
+        return (value or "").strip().lower().replace(" ", "_").replace("-", "_")
+
+    guess = normalise(vlm_task_guess)
+    classified = normalise(classifier_task)
+    return bool(guess) and classified not in {"", "unknown"} and guess != classified
 
 
 def call_judge(client, caption: dict, frames_b64: list[str], facts: dict) -> tuple[dict, dict]:

@@ -88,6 +88,10 @@ class SlamResult:
     #: Is the translation metric, or scale-guessed? False until dense depth exists (Part C).
     translation_is_metric: bool
 
+    #: True where the frame-aligned IMU value was synthesized across a physical sensor gap.
+    #: Downstream provenance must not label those frames measured_human.
+    interpolated_over_dropout: np.ndarray | None = None
+
     #: Full rotation VECTORS (not magnitudes), per frame, both in the CAMERA frame. The gate
     #: compares these as rotations; magnitudes alone are frame-invariant and cannot fail on
     #: an axis error -- which is exactly how the old gate passed while the code was broken.

@@ -58,6 +58,17 @@ def test_confidence_breaks_ties_within_a_tier():
     assert arbitrate([a, b]).value == 2
 
 
+def test_missing_confidence_is_unknown_not_perfect():
+    unknown = Candidate("c", 1, Provenance.VISION_PRIMARY, confidence=None)
+    measured = Candidate("c", 2, Provenance.VISION_PRIMARY, confidence=0.01)
+    assert arbitrate([unknown, measured]).value == 2
+
+
+def test_candidate_requires_explicit_confidence():
+    with pytest.raises(TypeError):
+        Candidate("c", 1, Provenance.VISION_PRIMARY)  # type: ignore[call-arg]
+
+
 def test_hardware_overrides_vision_AND_broken_priority_fails():
     """Synthetic glove (measured_human) vs vision (vision_primary) for the same channel.
 

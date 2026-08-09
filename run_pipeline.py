@@ -97,10 +97,8 @@ PIPELINE_STEPS = [
         "outputs": ["hand_pose.json"],
     },
     {
-        # STUB — see scripts/04c_object_track.py module docstring. Produces
-        # a placeholder object_tracks.json (not real detection) so 04d and
-        # 05_primitives' object-track-based contact detection have a
-        # realistically-shaped input to run against.
+        # Legacy DAG implementation. This stage runs real Grounding DINO + SAM2; the
+        # modern SDK path lives under src/actuate/perception/objects.
         "name": "04c_object_track",
         "outputs": ["object_tracks.json"],
     },

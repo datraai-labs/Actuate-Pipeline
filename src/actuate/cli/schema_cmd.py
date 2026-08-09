@@ -1,4 +1,4 @@
-"""`actuate schema` — freeze and verify the canonical contract."""
+"""`actuate schema` -- freeze and verify the canonical contract."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import typer
 
 from actuate.schema import SCHEMA_VERSION, dump_json_schema, frozen_schema_path
 
-schema_app = typer.Typer(help="Canonical schema (Master Spec §3) — the freeze point.")
+schema_app = typer.Typer(help="Canonical schema (Master Spec section 3) -- the freeze point.")
 
 
 @schema_app.command("freeze")

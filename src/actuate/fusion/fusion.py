@@ -168,7 +168,11 @@ def run(
                 # derive a hardware grasp scalar from measured joint angles (mean, normalised
                 # to [0,1] against a ~90deg full-flex assumption) so value and provenance agree.
                 hw_val = float(np.clip(np.mean(np.abs(hw_grasp)) / (np.pi / 2), 0.0, 1.0))
-                cands.append(Candidate("grasp", hw_val, hardware.provenance, confidence=1.0))
+                cands.append(
+                    Candidate(
+                        "grasp", hw_val, hardware.provenance, confidence=None
+                    )
+                )
             win = resolve_channel("grasp", cands)
             grasp[side] = float(win.value)
             grasp_prov = win.provenance
@@ -176,7 +180,7 @@ def run(
             # FINGER_JOINTS channel: glove/dexumi override vision when present.
             fj_cands = [Candidate("fj", None, Provenance.VISION_PRIMARY, 0.6)]
             if hardware and side in hardware.finger_joints.get(fid, {}):
-                fj_cands.append(Candidate("fj", None, hardware.provenance, 1.0))
+                fj_cands.append(Candidate("fj", None, hardware.provenance, None))
             fj_win = resolve_channel("fj", fj_cands)
             fj_prov[side] = fj_win.provenance if fj_win else Provenance.VISION_PRIMARY
 
@@ -189,13 +193,19 @@ def run(
                 # scaled by proximity, capped LOW because vision cannot feel contact.
                 cname = {Finger.THUMB: "index", Finger.INDEX: "index", Finger.MIDDLE: "middle",
                          Finger.RING: "ring", Finger.PINKY: "pinky"}[finger]
-                v = curls.get(cname, 0.0) * (1.0 if near else 0.5)
+                # ``finger_curl`` promises all four names. Missing output is a broken
+                # perception contract, not evidence for a perfectly straight finger.
+                v = curls[cname] * (1.0 if near else 0.5)
                 v = float(min(_CONTACT_VISION_CAP, max(0.0, v)))
                 c_cands = [Candidate("contact", v, Provenance.VISION_FALLBACK, confidence=v)]
                 if hw_c and finger in hw_c:
                     c_cands.append(
-                        Candidate("contact", float(hw_c[finger]), hardware.provenance,
-                                  confidence=1.0)
+                        Candidate(
+                            "contact",
+                            float(hw_c[finger]),
+                            hardware.provenance,
+                            confidence=None,
+                        )
                     )
                 cw = resolve_channel("contact", c_cands)
                 contact[side][finger] = ContactPoint(

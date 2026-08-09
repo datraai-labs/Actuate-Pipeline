@@ -82,6 +82,9 @@ def run(session_id: str) -> list:
     accel = h5_data["accel"]      # [N, 3]
     gyro = h5_data["gyro"]        # [N, 3]
     timestamps = h5_data["video_timestamps"]  # [N]
+    interpolated_over_dropout = h5_data.get(
+        "interpolated_over_dropout", np.zeros(len(gyro), dtype=bool)
+    )
 
     with open(pose_path) as f:
         pose_data = json.load(f)
@@ -282,6 +285,7 @@ def run(session_id: str) -> list:
             "raw_flags": flags_dict,
             "primitive_confidences": confidences_dict,
             "primitive_source": primitive_source,
+            "interpolated_over_dropout": bool(interpolated_over_dropout[i]),
             "imu_snapshot": {
                 "accel_mag": round(accel_mag, 4),
                 "gyro_z_deg_s": round(gyro_z_deg, 2),

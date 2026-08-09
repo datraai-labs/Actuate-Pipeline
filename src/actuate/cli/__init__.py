@@ -1,12 +1,13 @@
-"""The `actuate` Typer CLI — Master Spec §2.2.
+"""The `actuate` Typer CLI -- Master Spec section 2.2.
 
 **Thin.** Every command is a wrapper over a library call. Nothing here contains logic that
-cannot be reached by importing `actuate` — that is the CLI/API-first rule, and the
+cannot be reached by importing `actuate` -- that is the CLI/API-first rule, and the
 import-linter contract in `.importlinter` enforces the direction (no layer may import
 `actuate.cli`).
 
-Command groups mirror the layers. Most print "not implemented" this increment: Increment 1
-builds only the foundation (schema, io, catalog, infra) and stops for review.
+The supported customer path is ``status -> process -> report -> export -> deliver``.
+Layer commands remain for operators; only the standalone ``perceive`` and ``fuse``
+commands are placeholders because those stages run through ``actuate process``.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ from actuate.cli.storage import storage_app
 from actuate.cli.viz import viz_app
 
 app = typer.Typer(
-    help="Actuate — multimodal capture to VLA-training-ready robot data.",
+    help="Actuate - multimodal capture to certified robot-learning data.",
     no_args_is_help=True,
 )
 
@@ -52,14 +53,14 @@ def _todo(group: str, spec: str) -> typer.Typer:
     Registering the full surface now means the shape of the CLI is reviewable before the
     layers land, and `--help` never advertises a capability that does not exist.
     """
-    sub = typer.Typer(help=f"[NOT IMPLEMENTED — {spec}]", no_args_is_help=True)
+    sub = typer.Typer(help=f"[STANDALONE COMMAND NOT IMPLEMENTED - {spec}]", no_args_is_help=True)
 
     @sub.callback(invoke_without_command=True)
     def _cb(ctx: typer.Context) -> None:
         if ctx.invoked_subcommand is None:
             typer.secho(
-                f"`actuate {group}` is not implemented. {spec}\n"
-                "Increment 1 builds the foundation only (schema, io, catalog, infra).",
+                f"`actuate {group}` is not a standalone command. {spec}\n"
+                "Use `actuate process <source>`; it runs perception and fusion in the live pipeline.",
                 fg="yellow",
             )
             raise typer.Exit(1)
@@ -68,8 +69,8 @@ def _todo(group: str, spec: str) -> typer.Typer:
 
 
 app.add_typer(ingest_app, name="ingest")
-app.add_typer(_todo("perceive", "L1 — Master Spec §L1; GPU"), name="perceive")
-app.add_typer(_todo("fuse", "L2 — Master Spec §L2; net-new"), name="fuse")
+app.add_typer(_todo("perceive", "L1 -- Master Spec section L1; GPU"), name="perceive")
+app.add_typer(_todo("fuse", "L2 -- Master Spec section L2; net-new"), name="fuse")
 app.add_typer(certify_app, name="certify")
 app.add_typer(retarget_app, name="retarget")
 app.add_typer(language_app, name="language")

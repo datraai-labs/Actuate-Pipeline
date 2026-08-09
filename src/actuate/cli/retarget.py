@@ -14,7 +14,7 @@ from pathlib import Path
 
 import typer
 
-retarget_app = typer.Typer(help="L5 -- cross-embodiment retargeting (Master Spec §L5).")
+retarget_app = typer.Typer(help="L5 -- cross-embodiment retargeting (Master Spec section L5).")
 
 
 @retarget_app.command("setup-humanoid")

@@ -40,6 +40,7 @@ from actuate.config.rigs import (
     all_sensor_patterns,
     get_rig,
 )
+from actuate.config.capabilities import product_capabilities
 from actuate.config.settings import (
     Bucket,
     Env,
@@ -80,6 +81,7 @@ __all__ = [
     "get_embodiment",
     "get_rig",
     "load_settings",
+    "product_capabilities",
     "retarget_ready_embodiments",
     "trust_rank",
 ]

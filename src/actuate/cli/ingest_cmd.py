@@ -6,7 +6,7 @@ from pathlib import Path
 
 import typer
 
-ingest_app = typer.Typer(help="L0 — minimal ingest for processed sessions (Master Spec §L0).")
+ingest_app = typer.Typer(help="L0 -- minimal ingest for processed sessions (Master Spec section L0).")
 
 
 @ingest_app.command("run")
@@ -15,7 +15,7 @@ def run_cmd(
     rig: str = typer.Option(..., help="Rig type (e.g. head_mounted)."),
     aligned_robot: str = typer.Option(
         None, help="Claim this capture shares the robot's camera config. The claim is "
-        "VERIFIED against registered calibration — unverifiable or mismatching claims "
+        "VERIFIED against registered calibration -- unverifiable or mismatching claims "
         "FLAG and stay stage1_volume."),
     store: Path = typer.Option(None, help="Where the capture manifest goes "
                                           "(default: the session dir)."),
@@ -32,5 +32,5 @@ def run_cmd(
     color = "green" if not res.flags else "yellow"
     typer.secho(res.summary(), fg=color, bold=True)
     typer.echo(f"  manifest: {res.manifest_path}")
-    typer.echo("  catalog registration: WRITTEN-ONLY (no Postgres on this machine — "
+    typer.echo("  catalog registration: WRITTEN-ONLY (no Postgres on this machine -- "
                "the tier travels on the manifest and the canonical episode)")

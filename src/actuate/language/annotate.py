@@ -56,6 +56,8 @@ class AnnotationReport:
     flagged_for_review: int = 0
     cost_usd: float = 0.0
     episode: CanonicalEpisode | None = None    # updated copy, when not skipped
+    task_disagreement: bool = False
+    vlm_task_guesses: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         if self.skipped:
@@ -227,8 +229,6 @@ def annotate(
             paraphrases=paras, episode=updated)
     if video is None or not Path(video).exists():
         return _skip(f"no video at {video}; captions and the judge need frames")
-    if video is None or not Path(video).exists():
-        return _skip(f"no video at {video}; captions and the judge need frames")
 
     total_cost = 0.0
 
@@ -247,6 +247,7 @@ def annotate(
     subtasks: list[Subtask] = []
     subgoals: list[SubgoalFrame] = []
     scores: list[ConsistencyScore] = []
+    task_guesses: list[str] = []
 
     for seg in segments:
         start = max(int(seg["start_frame"]), lo)
@@ -260,6 +261,8 @@ def annotate(
         facts["phase"] = seg.get("phase")
         caption, usage = vlm.call_caption(client, frames_b64, facts)
         total_cost += vlm.cost_usd(usage)
+        if caption.get("task_guess"):
+            task_guesses.append(str(caption["task_guess"]))
 
         parsed, usage = vlm.call_judge(client, caption, frames_b64, facts)
         total_cost += vlm.cost_usd(usage)
@@ -278,15 +281,27 @@ def annotate(
         # the segment boundary is the subgoal anchor (π0.7 subgoal image)
         subgoals.append(SubgoalFrame(frame_idx=end, label=seg.get("phase")))
 
-    flagged = sum(1 for s in scores if s.flagged)
+    disagreements = [
+        guess for guess in task_guesses if vlm.task_disagreement(guess, episode.task)
+    ]
+    task_disagrees = bool(disagreements)
+    flagged = sum(1 for s in scores if s.flagged) + int(task_disagrees)
+    derivation_notes = dict(episode.derivation_notes)
+    if task_disagrees:
+        derivation_notes["task_classification_disagreement"] = (
+            f"VLM independent task read disagreed with {episode.task!r}: "
+            f"{sorted(set(disagreements))}. Routed to human review; not silently resolved."
+        )
     updated = episode.model_copy(update={
         "task_paraphrases": tuple(paras),
         "subtasks": tuple(subtasks),
         "subgoal_frames": tuple(subgoals),
+        "derivation_notes": derivation_notes,
     })
     return AnnotationReport(
         episode_id=episode.episode_id, skipped=False, skip_reason=None,
         paraphrases=paras, subtasks=subtasks, subgoal_frames=subgoals,
         judge_scores=scores, flagged_for_review=flagged,
         cost_usd=round(total_cost, 4), episode=updated,
+        task_disagreement=task_disagrees, vlm_task_guesses=task_guesses,
     )

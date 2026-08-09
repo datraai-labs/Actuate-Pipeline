@@ -37,7 +37,13 @@ from actuate.ingest.content_address import (
     write_manifest,
 )
 from actuate.ingest.imu import IMUSyncResult, MultipleIMUSourcesError, sync_imu
-from actuate.ingest.run import IngestResult, RigStreamError, verify_rig_streams
+from actuate.ingest.run import (
+    IngestResult,
+    RigDeclarationError,
+    RigStreamError,
+    validate_declared_rig,
+    verify_rig_streams,
+)
 from actuate.ingest.run import run as run_ingest
 
 __all__ = [
@@ -47,6 +53,7 @@ __all__ = [
     "IntegrityError",
     "MultipleIMUSourcesError",
     "RigStreamError",
+    "RigDeclarationError",
     "build_manifest",
     "check_legacy_claims",
     "hash_file",
@@ -54,5 +61,6 @@ __all__ = [
     "run_ingest",
     "sync_imu",
     "verify_rig_streams",
+    "validate_declared_rig",
     "write_manifest",
 ]

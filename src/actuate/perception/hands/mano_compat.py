@@ -22,12 +22,13 @@ This is a shim to read a file. Nothing computes with chumpy semantics; we only r
 --------------------------------------------------------------------------------------
 LICENCE -- READ BEFORE SHIPPING ANYTHING DERIVED FROM THIS
 --------------------------------------------------------------------------------------
-MANO is a Max Planck (MPI) body model. WiLoR is CC-BY-NC-4.0. **Both are NON-COMMERCIAL.**
-Actuate sells datasets. This code path is cleared for INTERNAL RESEARCH ONLY.
+MANO is a Max Planck (MPI) body model whose standard grant is non-commercial. WiLoR's
+published models are CC-BY-NC-ND-4.0. This combined path is cleared for INTERNAL RESEARCH
+ONLY unless separate commercial agreements have been signed.
 
 Shipping MANO parameters -- or anything derived from them, which includes the Stage-I
 retargeted-reference-hand action the Master Spec makes the delivered pretraining target --
-requires a commercial licence from MPI. Tracked as a launch blocker in STATUS.md.
+requires commercial-rights review with MPI. Tracked in docs/COMMERCIAL_LICENSE_READINESS.md.
 """
 
 from __future__ import annotations

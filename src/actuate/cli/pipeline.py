@@ -1,4 +1,4 @@
-"""`actuate canonical build` and `actuate package lerobot` — Master Spec §2.2.
+"""`actuate canonical build` and `actuate package lerobot` -- Master Spec section 2.2.
 
 Thin wrappers over the library. Nothing here contains logic unreachable by importing
 `actuate`.
@@ -13,8 +13,8 @@ import typer
 from actuate.canonical import build_episode
 from actuate.package import ExportRefused, export_lerobot_v3
 
-canonical_app = typer.Typer(help="L3 — canonical build (Master Spec §L3).")
-package_app = typer.Typer(help="L7 — packaging & delivery (Master Spec §L7).")
+canonical_app = typer.Typer(help="L3 -- canonical build (Master Spec section L3).")
+package_app = typer.Typer(help="L7 -- packaging & delivery (Master Spec section L7).")
 
 
 @canonical_app.command("build")
@@ -73,7 +73,7 @@ def lerobot(
 ) -> None:
     """Export to LeRobot v3, through LeRobot's own writer.
 
-    Not 'done' because it ran — done when LeRobot's own loader reads it and a real
+    Not 'done' because it ran -- done when LeRobot's own loader reads it and a real
     training step runs. See tests/integration/test_lerobot_gate.py.
     """
     ep = build_episode(processed, capture_hash, task=task)
@@ -83,7 +83,7 @@ def lerobot(
             ep, out, repo_id=repo_id, fps=fps, tier=tier, overwrite=overwrite, video=video,
             embodiment=embodiment, transforms=tuple(transform), intrinsics=intrinsics,
         )
-    except ExportRefused as exc:
+    except (ExportRefused, ImportError) as exc:
         typer.secho(f"EXPORT REFUSED\n\n{exc}", fg="red")
         raise typer.Exit(1) from exc
 
@@ -102,13 +102,6 @@ def lerobot(
             "  The warning ships with the dataset in meta/actuate_provenance.json.",
             fg="yellow",
             bold=True,
-        )
-    if not ep.is_deliverable:
-        typer.secho(
-            f"\n  This episode is NOT DELIVERABLE ({ep.delivery_block_reason()}).\n"
-            "  Export is legal — consent gates DELIVERY, not internal processing — but\n"
-            "  nothing here may be shipped to a customer.",
-            fg="yellow",
         )
 
 

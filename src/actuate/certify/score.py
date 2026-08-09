@@ -48,6 +48,11 @@ QUALITY_WEIGHTS = {
     "ik_convergence_rate": 0.15,
 }
 
+# These weights/bands are engineering priors, not calibrated against downstream policy
+# success. The flag is carried into every certificate until such a calibration exists.
+THRESHOLDS_PROVISIONAL = True
+THRESHOLD_SET_VERSION = "eis-v1-uncalibrated"
+
 #: Speed bins over the episode's real duration (length in steps at nominal fps).
 #: 1=fast (<15 s), 2=normal (15-60 s), 3=slow (>60 s).
 SPEED_FAST_S, SPEED_SLOW_S = 15.0, 60.0
@@ -148,9 +153,21 @@ def calibration_completeness(episode: CanonicalEpisode, *,
 
 
 def perception_confidence(episode: CanonicalEpisode) -> float | None:
-    """Mean of the per-frame confidence aggregates L1/L2 already attached."""
-    per_frame = [float(np.mean(list(f.confidence.values())))
-                 for f in episode.frames if f.confidence]
+    """Mean of explicitly calibrated perception probabilities only.
+
+    Detector scores and UniDepth relative weights are useful signals, but calibration
+    research shows they cannot be interpreted as likelihoods of correctness without a
+    labeled calibration set. Raw channels remain on the frame/artifact; only keys ending in
+    ``_calibrated`` may influence this customer-facing certificate component.
+    """
+    per_frame = []
+    for frame in episode.frames:
+        values = [
+            value for key, value in frame.confidence.items()
+            if key.endswith("_calibrated")
+        ]
+        if values:
+            per_frame.append(float(np.mean(values)))
     return float(np.mean(per_frame)) if per_frame else None
 
 
@@ -206,8 +223,14 @@ def find_mistakes(episode: CanonicalEpisode, *, window_s: float = 1.0) -> tuple[
     1-second windows over the timestamp axis; a window whose mean confidence is below the
     floor is flagged with its time span, so a human reviewer can seek straight to it.
     """
-    stamped = [(f.t, float(np.mean(list(f.confidence.values()))))
-               for f in episode.frames if f.confidence]
+    stamped = []
+    for frame in episode.frames:
+        values = [
+            value for key, value in frame.confidence.items()
+            if key.endswith("_calibrated")
+        ]
+        if values:
+            stamped.append((frame.t, float(np.mean(values))))
     if not stamped:
         return ()
     flags = []
@@ -266,15 +289,25 @@ def score(
                 mistakes += tuple(f"sim_validate[{embodiment}]: {r}"
                                   for r in sim_result.reasons)
 
+    derivation_notes = dict(episode.derivation_notes)
+    derivation_notes["certificate_thresholds"] = (
+        f"PROVISIONAL ({THRESHOLD_SET_VERSION}). Component weights and 1-5 quality bands "
+        "have not been calibrated against downstream policy performance."
+    )
     updated = episode.model_copy(update={
         "episode_meta": EpisodeMeta(quality=quality, speed=speed, mistakes=mistakes,
                                     components=components),
         "strategy_alignment": strategy,
         "retarget_eligibility": eligibility,
+        "derivation_notes": derivation_notes,
     })
     return CertificationReport(
         episode_id=episode.episode_id, components=components, quality=quality,
         speed=speed if speed is not None else 0, mistakes=mistakes,
         strategy_alignment=strategy, retarget_eligibility=eligibility,
-        episode=updated, notes=notes,
+        episode=updated,
+        notes=notes + [
+            f"thresholds_provisional={THRESHOLDS_PROVISIONAL} "
+            f"threshold_set={THRESHOLD_SET_VERSION}"
+        ],
     )

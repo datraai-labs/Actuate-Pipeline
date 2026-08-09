@@ -13,6 +13,10 @@ This is the load-bearing model of Phase 3. Everything else was blocked on it:
 UniDepthV2 supplies all three missing pieces from the image alone: metric depth (not
 relative), the camera intrinsics, and a per-pixel confidence that feeds certification.
 
+The published UniDepth software and weights are CC-BY-NC-4.0. This implementation is valid
+for research evaluation, not a commercially licensed customer path, unless separate rights
+are obtained from its authors.
+
 ### The intrinsics were the hidden bug
 
 On the real capture UniDepthV2 estimates **fx~=660** (median over frames; a single frame
@@ -339,6 +343,10 @@ def run(
         "camera.intrinsics": Provenance.VISION_PRIMARY,
     }
     res.notes = {
+        "licence": (
+            "UniDepth software and published weights are CC-BY-NC-4.0. INTERNAL RESEARCH "
+            "ONLY unless separate commercial rights have been signed."
+        ),
         "intrinsics": (
             "ESTIMATED from the image by UniDepthV2, not read from a calibration file. On "
             "the real capture the per-frame median is fx~660 for a 1920-wide frame = ~111 "

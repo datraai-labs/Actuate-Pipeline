@@ -37,7 +37,6 @@ from actuate.config import (
     load_settings,
 )
 from actuate.ingest import CaptureManifest, build_manifest, check_legacy_claims
-from actuate.io import get_backend
 
 migrate_app = typer.Typer(help="Migrate the local v1 corpus into S3 + the catalog.")
 
@@ -104,6 +103,10 @@ def build_plan(raw: Path, processed: Path) -> Plan:
     """Hash every raw video, group by content, cross-check the legacy metadata. Reads only."""
     plan = Plan()
     by_hash: dict[str, PlannedCapture] = {}
+
+    if not raw.is_dir():
+        plan.refused.append((str(raw), "raw directory does not exist; nothing to migrate"))
+        return plan
 
     for session_dir in sorted(d for d in raw.iterdir() if d.is_dir()):
         sid = session_dir.name
@@ -250,17 +253,6 @@ def apply_cmd(
     capture lands in the identical place, so a second run is a no-op rather than a
     duplicate.
     """
-    from actuate.catalog import (
-        Capture,
-        Certification,
-        Episode,
-        make_engine,
-        make_session_factory,
-        reconcile_consent,
-        session_scope,
-    )
-    from actuate.schema import SCHEMA_VERSION
-
     overrides = {"aws_profile": profile} if backend is StorageBackendKind.S3 else {}
     settings = load_settings(env=env, storage_backend=backend, **overrides)
 
@@ -270,6 +262,26 @@ def apply_cmd(
     if not yes:
         typer.secho("DRY RUN. Re-run with --yes to execute.", fg="yellow", bold=True)
         raise typer.Exit(0)
+
+    try:
+        from actuate.catalog import (
+            Capture,
+            Certification,
+            Episode,
+            make_engine,
+            make_session_factory,
+            reconcile_consent,
+            session_scope,
+        )
+        from actuate.io import get_backend
+        from actuate.schema import SCHEMA_VERSION
+    except ImportError as exc:
+        typer.secho(
+            "migration apply needs the storage/catalog dependencies; install `actuate[aws]` "
+            f"({exc})",
+            fg="red",
+        )
+        raise typer.Exit(1) from exc
 
     if backend is StorageBackendKind.S3:
         import boto3

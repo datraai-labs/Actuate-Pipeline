@@ -25,7 +25,19 @@ from actuate.io.consent import (
     check_episode_deliverable,
 )
 from actuate.io.geometry import hand_frame_quaternion
-from actuate.io.store import canonical_prefix, read_episode, write_episode
+
+
+def __getattr__(name: str):
+    """Load the Parquet/Zarr store only when one of its entry points is used.
+
+    ``pyarrow`` belongs to the storage extra. Importing ``actuate.io.geometry`` (and thus
+    running ``actuate --help``) must not make it a core dependency.
+    """
+    if name in {"canonical_prefix", "read_episode", "write_episode"}:
+        from actuate.io import store
+
+        return getattr(store, name)
+    raise AttributeError(name)
 
 __all__ = [
     "ConsentViolation",

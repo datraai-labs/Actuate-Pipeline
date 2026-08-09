@@ -51,6 +51,7 @@ def test_syncs_one_based_nearest_frame_records_and_ignores_trailing_frame(tmp_pa
         assert h5["imu/accel"].shape == (4, 3)
         assert h5["imu/timestamp_ns"].shape == (4,)
         assert h5["imu/video_timestamp_ns"].shape == (4,)
+        assert not h5["imu/interpolated_over_dropout"][:].any()
 
     updated = json.loads((tmp_path / "session_meta.json").read_text())
     assert updated["modalities"]["imu"] is True
@@ -179,3 +180,22 @@ def test_frame_mode_flags_frames_with_zero_samples(tmp_path):
         assert list(counts) == [1, 1, 0, 1]
         flags = h5["imu/interpolated_over_dropout"][:]
         assert list(np.nonzero(flags)[0]) == [2]
+
+
+def test_material_timestamp_gap_is_carried_as_dropout_provenance(tmp_path):
+    """Sparse timestamp streams retain a per-frame record of interpolated dropouts."""
+    meta = _meta(tmp_path, frame_count=10, fps=10.0)
+    records = [
+        {"timestamp_ns": 1_000_000_000 + offset, "gyro": [i, 0, 0], "accel": [0, 0, 9.8]}
+        for i, offset in enumerate((0, 100_000_000, 200_000_000, 900_000_000))
+    ]
+    (tmp_path / "imu.json").write_text(json.dumps(records))
+
+    result = sync_imu(tmp_path, meta)
+
+    assert result is not None
+    with h5py.File(result.session_h5, "r") as h5:
+        dropout = h5["imu/interpolated_over_dropout"][:]
+        assert dropout[3:9].all()
+        assert not dropout[:3].any()
+        assert not dropout[9]

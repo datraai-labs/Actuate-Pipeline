@@ -18,6 +18,7 @@ library call never spends API money without an explicit confirmer).
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -105,6 +106,11 @@ def run_pipeline(session: Path, out: Path, profile: dict, *, resume: bool = True
     cp = out / "checkpoint.json"
     if resume and cp.exists():
         ctx.checkpoint = json.loads(cp.read_text(encoding="utf-8"))
+    if "_lineage" not in ctx.checkpoint:
+        from actuate.lineage import build_lineage
+
+        ctx.checkpoint["_lineage"] = build_lineage(profile)
+        ctx.save()
     ctx.canonical_path = out / "canonical.json"
 
     t0 = time.time()
@@ -115,9 +121,13 @@ def run_pipeline(session: Path, out: Path, profile: dict, *, resume: bool = True
     _stage_retarget(ctx)
     _stage_certify(ctx)
     _stage_language(ctx)
+    _write_review_route(ctx)
     _stage_package(ctx)
     _stage_viz(ctx, perception)
     _write_run_manifest(ctx)
+    from actuate.package.delivery_docs import write_run_readme
+
+    write_run_readme(ctx.out)
     return PipelineResult(out=out, canonical_path=ctx.canonical_path,
                           checkpoint=ctx.checkpoint, seconds=time.time() - t0)
 
@@ -131,6 +141,35 @@ def _write_run_manifest(ctx: _Ctx) -> None:
     meta_p = ctx.session / "session_meta.json"
     meta = json.loads(meta_p.read_text(encoding="utf-8")) if meta_p.exists() else {}
     video = ctx.session / ctx.profile.get("video", _session_video(ctx.session).name)
+    source_frames = int(meta.get("frame_count") or 0)
+    coverage = dict(ctx.checkpoint.get("_frame_coverage") or {})
+    perception_frames = coverage.get("perception_frames")
+    if perception_frames is None:
+        # Backfill structured coverage when resuming a run produced before the field was
+        # introduced. The stage note has always used the stable ``processed/total`` form.
+        note = str(ctx.checkpoint.get("perceive", {}).get("note") or "")
+        match = re.match(r"^(\d+)/(\d+) frames", note)
+        if match:
+            perception_frames = int(match.group(1))
+            coverage["perception_frames"] = perception_frames
+    configured_limit = (ctx.profile.get("perception") or {}).get("max_frames")
+    coverage.update({
+        "source_frames": source_frames or None,
+        "canonical_frames": len(ep.frames),
+        "sampling_mode": "full_source" if configured_limit is None else "explicit_cap",
+        "configured_max_frames": configured_limit,
+        "source_evaluated_fraction": (
+            round(min(float(perception_frames) / source_frames, 1.0), 6)
+            if perception_frames is not None and source_frames > 0 else None
+        ),
+        "canonical_retained_fraction": (
+            round(len(ep.frames) / source_frames, 6) if source_frames > 0 else None
+        ),
+        "canonical_retention_note": (
+            "Canonical frames require usable hand state; this retention fraction is not "
+            "the source-processing coverage."
+        ),
+    })
 
     def rel_files(pattern: str) -> list[str]:
         return [
@@ -144,6 +183,7 @@ def _write_run_manifest(ctx: _Ctx) -> None:
         "episode_id": ep.episode_id,
         "capture_id": ep.capture_id,
         "task": ep.task,
+        "lineage": ctx.checkpoint.get("_lineage", {}),
         "source": {
             "session": ctx.session.resolve().as_uri(),
             "video": video.resolve().as_uri(),
@@ -162,6 +202,7 @@ def _write_run_manifest(ctx: _Ctx) -> None:
             ),
         },
         "result": {
+            "frame_coverage": coverage,
             "sampled_source_frames": [f.frame_idx for f in ep.frames],
             "quality": ep.episode_meta.quality,
             "robot_actions": sorted(ep.action_robot),
@@ -172,6 +213,11 @@ def _write_run_manifest(ctx: _Ctx) -> None:
             "visualization": "pipeline.rrd" if (ctx.out / "pipeline.rrd").exists() else None,
             "depth": rel_files("artifacts/depth/*"),
             "perception": rel_files("artifacts/perception/*"),
+            "privacy_report": (
+                "artifacts/privacy_report.json"
+                if (ctx.out / "artifacts" / "privacy_report.json").exists() else None
+            ),
+            "review_route": "review_route.json",
             "exports": [],
         },
         "not_produced": {
@@ -186,14 +232,32 @@ def _write_run_manifest(ctx: _Ctx) -> None:
                 "without inventing an orientation."
             ),
             "full_body_humanoid_motion": (
-                "The egocentric source has no observed full-body skeleton; Franka arm "
-                "retargeting is produced from the visible wrist trajectory."
+                "The egocentric source has no observed full-body skeleton; arm retargeting "
+                "is limited to a visible wrist trajectory when simulation-eligible."
+            ),
+            "robot_trajectory": (
+                None if ep.action_robot else
+                ctx.checkpoint.get("retarget", {}).get(
+                    "note", "No embodiment-specific trajectory was produced."
+                )
             ),
         },
     }
     (ctx.out / "run_manifest.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8"
     )
+
+
+def _write_review_route(ctx: _Ctx) -> None:
+    from actuate.feedback import route_episode
+
+    route = route_episode(_load_canonical(ctx))
+    payload = route.model_dump()
+    (ctx.out / "review_route.json").write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
+    ctx.checkpoint["_review"] = payload
+    ctx.save()
 
 
 def _stage_ingest(ctx: _Ctx) -> None:
@@ -221,15 +285,26 @@ def _stage_ingest(ctx: _Ctx) -> None:
 def _stage_perceive(ctx: _Ctx) -> dict:
     """GPU stages via the shared sha256-keyed cache spine."""
     stage = "perceive"
+    # A fully assembled canonical episode no longer needs in-memory perception objects.
+    # Resume should not reload models/recompute depth merely to reach already-completed
+    # downstream stages. If canonical failed, fall through and rehydrate from the stage cache.
+    if (
+        ctx.checkpoint.get(stage, {}).get("status") == "done"
+        and ctx.checkpoint.get("canonical", {}).get("status") == "done"
+    ):
+        ctx.reporter(stage, "info", "resume: already done")
+        return {}
     cfg = ctx.profile.get("perception", {})
     if not cfg.get("enabled", True):
         ctx.skip(stage, "disabled in profile")
         return {}
-    n = int(cfg.get("max_frames", 45))
+    configured_limit = cfg.get("max_frames")
+    n = int(configured_limit) if configured_limit is not None else None
     warn = lambda m: ctx.flag(stage, m)  # noqa: E731
 
     results: dict = {}
     try:
+        from actuate.config import RigType
         from actuate.perception import depth as depthmod
         from actuate.perception import hands as handsmod
 
@@ -238,7 +313,11 @@ def _stage_perceive(ctx: _Ctx) -> dict:
             run_fn=lambda: handsmod.run(ctx.session, max_frames=n, prefilter=False))
         results["depth"], src_d = stage_cached(
             ctx.session, "depth", f"n={n}", use_cache=True, force=False, warn=warn,
-            run_fn=lambda: depthmod.run(ctx.session, max_frames=n))
+            run_fn=lambda: depthmod.run(
+                ctx.session,
+                rig=RigType(ctx.profile.get("rig", "head_mounted")),
+                max_frames=n,
+            ))
         try:
             from actuate.perception.slam import runner as slam_runner
 
@@ -263,7 +342,7 @@ def _stage_perceive(ctx: _Ctx) -> dict:
         except Exception as exc:
             ctx.flag(stage, f"slam unavailable: {exc}")
             results["slam"] = None
-        prompts = cfg.get("prompts", ["stapler", "paper"])
+        prompts = cfg.get("prompts")
         try:
             from actuate.ingest.run import load_camera_matrix
             from actuate.perception import objects as objmod
@@ -272,11 +351,14 @@ def _stage_perceive(ctx: _Ctx) -> dict:
             if object_K is None:
                 object_K = results["depth"].intrinsics
             results["objects"], _ = stage_cached(
-                ctx.session, "objects", f"v2|n={n}|{','.join(prompts)}",
+                ctx.session,
+                "objects",
+                f"v3|n={n}|{','.join(prompts or [])}|task={ctx.profile.get('task') or ''}",
                 use_cache=True, force=False, warn=warn,
                 run_fn=lambda: objmod.run(ctx.session, prompts=prompts,
                                           task=ctx.profile.get("task"),
-                                          max_frames=n, chunk=n,
+                                          max_frames=n,
+                                          chunk=int(cfg.get("object_chunk", 30)),
                                           depth=results["depth"],
                                           intrinsics=object_K))
         except Exception as exc:
@@ -284,12 +366,24 @@ def _stage_perceive(ctx: _Ctx) -> dict:
             results["objects"] = None
 
         from actuate import fusion as fusionmod
-        from actuate.config import RigType
-
         results["fusion"] = fusionmod.run(
             results["hands"], rig=RigType(ctx.profile.get("rig", "head_mounted")),
             objects=results["objects"])
-        ctx.done(stage, f"{n} frames (hands {src_h}, depth {src_d})")
+        processed = max(
+            int(getattr(results["hands"], "n_scanned", 0)),
+            len(getattr(results["depth"], "frames", {})),
+        )
+        meta = json.loads((ctx.session / "session_meta.json").read_text(encoding="utf-8"))
+        total = int(meta.get("frame_count") or processed)
+        coverage = "full source" if processed >= total else f"explicit sample of {total}"
+        ctx.checkpoint["_frame_coverage"] = {
+            "source_frames": total,
+            "perception_frames": processed,
+            "sampling_mode": "full_source" if configured_limit is None else "explicit_cap",
+            "configured_max_frames": configured_limit,
+        }
+        ctx.save()
+        ctx.done(stage, f"{processed}/{total} frames ({coverage}; hands {src_h}, depth {src_d})")
     except Exception as exc:
         ctx.skip(stage, f"GPU stages failed: {type(exc).__name__}: {exc}")
         return {}
@@ -319,7 +413,12 @@ def _stage_canonical(ctx: _Ctx, perception: dict) -> None:
         # demo). A fresh source has none, so never guess this path for it.
         from actuate.canonical import build_episode
 
-        ep = build_episode(ctx.session, capture_id, task=task)
+        ep = build_episode(
+            ctx.session,
+            capture_id,
+            task=task,
+            rig=ctx.profile.get("rig", "head_mounted"),
+        )
         note = "from v1-legacy outputs (perception unavailable)"
     else:
         # Perception failed AND there's nothing precomputed to fall back to. Surface the
@@ -337,10 +436,8 @@ def _stage_canonical(ctx: _Ctx, perception: dict) -> None:
     tier = ctx.checkpoint.get("_tier")
     if tier:
         updates["tier"] = Tier(tier)
-    # local/self-hosted processing may mark consent GRANTED (your own data). pii_status is
-    # deliberately NOT touched here -- it stays PENDING, so is_deliverable() and the
-    # DeliveryWriter gate still block. The consent boundary is unchanged; this only spares a
-    # developer a PENDING-consent block on data they own.
+    # Consent is accepted only when the caller supplied an explicit decision. Execution
+    # mode, filesystem ownership, and local processing are not evidence of subject consent.
     consent = ctx.profile.get("consent")
     if consent:
         from actuate.config import ConsentStatus
@@ -352,8 +449,12 @@ def _stage_canonical(ctx: _Ctx, perception: dict) -> None:
     # PENDING and the delivery gate keeps blocking -- the boundary is unchanged.
     if ctx.profile.get("redact_pii"):
         from actuate.io import redact
+        import shutil
 
         report = redact.redact_session(ctx.session)
+        privacy_artifact = ctx.out / "artifacts" / "privacy_report.json"
+        privacy_artifact.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ctx.session / "privacy_report.json", privacy_artifact)
         ctx.profile["video"] = report.output.name
         # The episode was assembled before the redaction pass. Repoint its image refs to the
         # file that actually passed the PII step; exporters read the same updated profile.
@@ -372,6 +473,10 @@ def _stage_canonical(ctx: _Ctx, perception: dict) -> None:
     if updates:
         ep = ep.model_copy(update=updates)
     _write_canonical(ctx, ep)
+    frame_coverage = dict(ctx.checkpoint.get("_frame_coverage") or {})
+    frame_coverage["canonical_frames"] = len(ep.frames)
+    ctx.checkpoint["_frame_coverage"] = frame_coverage
+    ctx.save()
     ctx.done(stage, f"{note}, {len(ep.frames)} frames")
 
 
@@ -437,7 +542,6 @@ def _stage_retarget(ctx: _Ctx) -> None:
 
         ep = _load_canonical(ctx)
         result = armmod.run(ep, emb, model)
-        ep = armmod.attach_to_episode(ep, result)
         sim = simval.run(ep, emb, result)
         ctx.checkpoint["_sim"] = {"eligible": sim.eligible,
                                   "ik": sim.ik_convergence_rate,
@@ -445,8 +549,21 @@ def _stage_retarget(ctx: _Ctx) -> None:
                                   "collision_frames": sim.collision_count,
                                   "temporal_discontinuities": sim.temporal_discontinuities,
                                   "reasons": sim.reasons}
+        eligibility = dict(ep.retarget_eligibility)
+        eligibility[emb] = bool(sim.eligible)
+        ep = ep.model_copy(update={"retarget_eligibility": eligibility})
+        if sim.eligible:
+            ep = armmod.attach_to_episode(ep, result)
+            note = f"ELIGIBLE — {result.summary()}"
+        else:
+            # Preserve the verdict and diagnostics, not the unsafe trajectory. Exporters also
+            # re-check eligibility so either side of this handoff fails closed independently.
+            note = (
+                f"INELIGIBLE — trajectory withheld: {'; '.join(sim.reasons)} | "
+                f"{result.summary()}"
+            )
         _write_canonical(ctx, ep)
-        ctx.done(stage, result.summary())
+        ctx.done(stage, note)
     except Exception as exc:
         ctx.skip(stage, f"{type(exc).__name__}: {exc}")
 
