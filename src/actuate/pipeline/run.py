@@ -166,8 +166,9 @@ def _write_run_manifest(ctx: _Ctx) -> None:
             round(len(ep.frames) / source_frames, 6) if source_frames > 0 else None
         ),
         "canonical_retention_note": (
-            "Canonical frames require usable hand state; this retention fraction is not "
-            "the source-processing coverage."
+            "Canonical frames preserve the measured perception clock and may contain empty "
+            "optional channels; this retention fraction is distinct from source-processing "
+            "coverage."
         ),
     })
 
