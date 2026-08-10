@@ -9,7 +9,8 @@ block the corresponding export rather than being replaced with plausible values.
 
 Read [STATUS.md](STATUS.md) for real-data validation status and
 [docs/RESEARCH_BASIS.md](docs/RESEARCH_BASIS.md) for the papers behind the trust and data
-contracts.
+contracts. The reproducible NVIDIA acceptance record is in
+[docs/GPU_VALIDATION_2026-08-10.md](docs/GPU_VALIDATION_2026-08-10.md).
 
 > **Commercial-use warning:** the default WiLoR/MANO/UniDepth perception chain is not
 > commercially cleared under its published terms, and WiLoR also brings an Ultralytics

@@ -40,34 +40,33 @@ sublicense it.
 
 The repository-level acceptance gates pass:
 
-- 701 pipeline/API-independent tests passed; 32 external-service or environment-gated tests
-  skipped; frozen schema v5 and both import-boundary contracts passed.
+- The current local unit suite passes (`312 passed, 4 skipped`); the GitHub tests, contracts,
+  and infrastructure jobs are green; frozen schema v5 and both import-boundary contracts pass.
 - Dashboard API: 11 tests passed. The Alembic database is at migration head
   `0003_subject_consent_events`.
 - Dashboard: ESLint and the Next.js production build passed; all 18 routes were generated.
-- A real 90-frame egocentric video was evaluated end to end with no hidden frame cap. It
-  produced 51 hand-bearing canonical frames, a privacy report covering all 90 source frames,
-  a provisional quality score of 2/5 with perception confidence left unknown, and 50 valid
-  LeRobot successor transitions. No robot trajectory was fabricated when the trained Franka
-  estimator was absent.
+- A consent-cleared 59-second, 1,770-frame egocentric video was evaluated on an NVIDIA A100.
+  Source, perception, and canonical coverage were all 1,770/1,770 with no configured frame
+  cap. Privacy scanned all 1,770 frames, action labeling completed, and perception confidence
+  remained unknown. LeRobot and RLDS each exported and natively reloaded 619 valid human-space
+  records; a real CUDA ACT optimizer step completed with finite loss and non-zero gradients.
+- Franka validation was correctly ineligible (89.7536% IK convergence, 11 collision frames,
+  246 excessive temporal jumps), so no robot trajectory was persisted or exported.
 
-That acceptance run proves the workflow and honesty gates; it does **not** clear commercial
-model rights or establish customer-grade accuracy.
+See [GPU_VALIDATION_2026-08-10.md](GPU_VALIDATION_2026-08-10.md) for exact timings, the
+cache/recovery chain, evidence hashes, and limitations. This acceptance proves the technical
+workflow and honesty gates; it does **not** clear commercial model rights or establish
+customer-grade accuracy.
 
 ## GPU decision
 
-- The local machine exposes a 20-core Apple M4 Pro GPU through PyTorch MPS.
-- A direct UniDepthV2 MPS inference attempt failed at
-  `aten::upsample_bicubic2d.out`, which PyTorch 2.5 does not implement on MPS. Enabling CPU
-  fallback would be a mixed-device run, not a clean GPU acceptance.
-- WiLoR is deliberately CPU-only on Apple in this code because its MPS path reaches a known
-  non-contiguous-view failure.
-- The JarvisLabs CLI has no API key configured, so an NVIDIA L4/A10/A100 acceptance job could
-  not be launched during this audit.
+The human-space processing and packaging path is now NVIDIA-GPU acceptance tested on commit
+`92499388c26d7fd361ed5de93817bfb3bca27236` using an A100 PCIe 40 GB. The exact harness and
+dependency integrity gate are reproducible, and every final bundle checksum was verified.
 
-Therefore the product is **not yet NVIDIA-GPU acceptance tested on the current commit**. A
-historical RTX 2050 measurement in project documentation is useful prior evidence, not a
-substitute for a reproducible current-build run.
+This changes the technical answer, not the licensing answer: the run used research/non-
+commercial model assets, and its Franka candidate was physically ineligible and withheld.
+The assembled runtime therefore remains unsuitable for a commercial Figure license.
 
 ## Work required before a commercial offer
 
@@ -79,9 +78,9 @@ substitute for a reproducible current-build run.
    unknown, copyleft-incompatible, and non-commercial runtime/model artifacts.
 4. Record model name, weight digest, version, source, license class, and commercial-clearance
    evidence in every run manifest. Do not infer rights from a package's code license.
-5. Run a clean NVIDIA acceptance image on the exact dependency lock: full video, full source
-   coverage, crash recovery, concurrent admission control, isolated LeRobot/RLDS writers,
-   and loader verification.
+5. Convert the proven A100 harness into a locked, reproducible container and repeat it cold on
+   the replacement/commercially cleared model chain. Add concurrent admission-control and
+   multi-run soak tests; the current evidence is one consent-cleared source plus recovery runs.
 6. Benchmark on licensed ground truth: rig classification, stereo rejection, hand pose,
    metric depth/calibration, object recall, grasp signal, task accuracy, multi-episode
    segmentation, redaction recall, and retarget physics. The uncertainty and abstention rules
