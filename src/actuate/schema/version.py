@@ -1,6 +1,6 @@
 """Canonical schema versioning — Master Spec §3.
 
-`schema_version = 1`. The schema is FROZEN: `frozen/canonical_v1.schema.json` is the
+`schema_version = 5`. The schema is FROZEN: `frozen/canonical_v5.schema.json` is the
 generated JSON Schema, checked in, and `tests/unit/test_schema_frozen.py` fails if the
 models drift from it without a version bump.
 

@@ -9,11 +9,11 @@ whole-body keypoints -> hand crops -> the HaMeR transformer -- which recovers ha
 detector misses. `perception.hands.run(..., fallback="hamer")` invokes this only when WiLoR's
 primary pass finds nothing, so we pay HaMeR's heavier cost only when it can actually help.
 
-LICENCE -- unchanged and still blocking
----------------------------------------
-HaMeR is CC-BY-NC-4.0 and emits MANO (MPI non-commercial). It does NOT relax the delivery
-blocker one bit; it only improves *detection coverage*. Detection and deliverability were
-always separate problems -- this closes the first, not the second. INTERNAL RESEARCH ONLY.
+LICENCE -- changed front-end, same MANO blocker
+-----------------------------------------------
+HaMeR's repository code is MIT, but it emits MANO and requires separately downloaded model
+assets. The standard MANO grant is non-commercial, so HaMeR does NOT by itself clear this
+path for a commercial delivery. Detection coverage and deliverability remain separate.
 
 VALIDATION STATUS -- honest
 ---------------------------
@@ -80,9 +80,9 @@ class HaMeREstimator:
         self._model = self._model.to(self._device).eval()
 
         # detectron2 ViTDet person detector (HaMeR demo's default front-end)
+        import hamer
         from detectron2.config import LazyConfig
         from hamer.utils.utils_detectron2 import cascade_mask_rcnn_vitdet_h  # noqa: F401
-        import hamer
 
         cfg_path = (
             __import__("pathlib").Path(hamer.__file__).parent
@@ -171,6 +171,8 @@ class HaMeREstimator:
                     root_translation_virtual=cam_t_full[j].astype(np.float64),
                     virtual_focal=float(scaled_focal),
                     bbox=boxes[len(out_frames) % len(boxes)].astype(np.float64),
-                    detection_confidence=1.0,
+                    # HaMeR's wrapper currently exposes no calibrated hand-level score.
+                    # Unknown is materially different from a perfect detection.
+                    detection_confidence=None,
                 ))
         return out_frames

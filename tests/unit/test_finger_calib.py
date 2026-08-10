@@ -7,6 +7,8 @@ nothing (Master Spec §0).
 
 from __future__ import annotations
 
+import itertools
+
 import numpy as np
 import pytest
 
@@ -32,6 +34,7 @@ def test_fist_is_more_curled_than_open_and_uniform_theta_is_not():
     BROKEN VARIANT: filling all 45 components uniformly (the original bug). It leaves the fingers
     nearly extended, which is what inverted the calibration on real data.
     """
+    pytest.importorskip("torch")
     cal = mano_calib.mano_canonical_fingertips()
     open_d = np.linalg.norm(cal["open"], axis=1).mean()
     fist_d = np.linalg.norm(cal["fist"], axis=1).mean()
@@ -58,7 +61,7 @@ def test_flexion_magnitude_is_monotonic_within_the_canonical_range():
     A larger "more closed" number silently meaning a less-closed hand is exactly the kind of
     non-monotonicity that makes a calibration constant unsafe to tune by eye.
     """
-    import torch
+    torch = pytest.importorskip("torch")
 
     mano = mano_calib._mano_layer()
     tip_v = [mano_calib.MANO_TIP_VERTICES[f] for f in ("index", "middle", "ring", "thumb")]
@@ -72,7 +75,7 @@ def test_flexion_magnitude_is_monotonic_within_the_canonical_range():
 
     mags = np.linspace(0.0, mano_calib.FIST_THETA, 5)
     d = [mean_tip(m) for m in mags]
-    assert all(b < a for a, b in zip(d, d[1:])), f"curl not monotonic over [0, FIST_THETA]: {d}"
+    assert all(b < a for a, b in itertools.pairwise(d)), f"curl not monotonic over [0, FIST_THETA]: {d}"
     # and the documented reversal beyond it is real, not folklore
     assert mean_tip(1.6) > mean_tip(mano_calib.FIST_THETA)
 

@@ -40,7 +40,7 @@ def _torch():
 
 def _make_layers():
     import torch
-    import torch.nn as nn
+    from torch import nn
 
     class VNLinear(nn.Module):
         """Rotation-equivariant linear map over channels: (B, C_in, 3) -> (B, C_out, 3)."""
@@ -146,7 +146,7 @@ class RootFrameEstimator:
         torch = self._torch
         torch.manual_seed(seed)
         opt = torch.optim.Adam(self.net.parameters(), lr=lr)
-        feats_all, cent_all, tgt_all = self._batch(pairs)
+        feats_all, _cent_all, tgt_all = self._batch(pairs)
         n = len(pairs)
         self.net.train()
         losses = []

@@ -36,10 +36,13 @@ from pathlib import Path
 import numpy as np
 
 from actuate.canonical.build import episode_dof_names, state_and_action_vectors
+from actuate.lineage import build_lineage
 from actuate.package.lerobot_export import (
     _IMAGE_HW,
     ExportRefused,
+    _assert_export_consent,
     _decode_frames,
+    _degenerate_dimensions,
     _episode_tier,
     _robot_action_rows,
     _tier_filter,
@@ -138,6 +141,7 @@ def export_rlds(
 
     dof_names = episode_dof_names(eps[0])
     prepared = []
+    degenerate_by_episode: dict[str, list[str]] = {}
     for ep in eps:
         if not ep.task:
             raise ExportRefused(
@@ -145,6 +149,7 @@ def export_rlds(
                 "required Open-X field and this exporter will not invent one -- the same "
                 "fail-closed rule the LeRobot exporter enforces."
             )
+        _assert_export_consent(ep)
         if episode_dof_names(ep) != dof_names:
             raise ExportRefused(
                 f"episode {ep.episode_id} has a different state layout "
@@ -160,6 +165,9 @@ def export_rlds(
             )
         robot = (_robot_action_rows(ep, embodiment, keep, len(state))
                  if embodiment is not None else None)
+        degenerate_by_episode[ep.episode_id] = _degenerate_dimensions(
+            ep.episode_id, state, action, keep, dof_names, robot
+        )
         prepared.append((ep, _video_for(ep), state, action, keep, robot))
 
     n_robot_joints = len(prepared[0][5][0]) if embodiment is not None else None
@@ -237,8 +245,13 @@ def export_rlds(
                            "no reward signal (Open-X convention for demo data).",
             "derivation_notes": {e.episode_id: e.derivation_notes for e in eps},
             "frames_dropped_no_hand": n_dropped,
+            "zero_variance_dimensions": degenerate_by_episode,
+            "lineage": build_lineage({"format": "rlds", "embodiment": embodiment}),
         }, indent=2),
         encoding="utf-8")
+    from actuate.package.delivery_docs import write_dataset_readme
+
+    write_dataset_readme(root, format_name="RLDS / Open-X")
 
     return RldsExportResult(
         root=root, name=name, version=version, n_episodes=len(eps), n_steps=n_steps,

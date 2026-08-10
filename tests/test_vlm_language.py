@@ -14,10 +14,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config as cfg
 from utils.vlm_language import (
-    sample_representative_frames,
-    estimate_cost_usd,
-    should_spotcheck,
     check_task_disagreement,
+    estimate_cost_usd,
+    sample_representative_frames,
+    should_spotcheck,
 )
 
 
@@ -58,7 +58,7 @@ class TestSampleRepresentativeFrames:
             _seg("idle", 400, 999),
         ]
         frames = sample_representative_frames(episode, segments)
-        assert cfg.VLM_MIN_SAMPLE_FRAMES <= len(frames) or len(frames) == len(set([episode["start_frame"], episode["end_frame"]]))
+        assert cfg.VLM_MIN_SAMPLE_FRAMES <= len(frames) or len(frames) == len({episode["start_frame"], episode["end_frame"]})
         assert len(frames) <= cfg.VLM_MAX_SAMPLE_FRAMES
 
     def test_no_key_phase_segments_falls_back_to_evenly_spaced(self):

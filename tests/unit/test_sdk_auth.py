@@ -10,6 +10,14 @@ import pytest
 from actuate.config import auth
 
 
+def test_process_and_export_requires_the_isolated_writer_before_processing(monkeypatch):
+    from actuate import sdk
+
+    monkeypatch.delenv("ACTUATE_LEROBOT_PYTHON", raising=False)
+    with pytest.raises(RuntimeError, match="ACTUATE_LEROBOT_PYTHON"):
+        sdk.process_and_export("source-that-must-not-be-touched.mp4")
+
+
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("ACTUATE_HOME", str(tmp_path / ".actuate"))

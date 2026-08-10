@@ -18,8 +18,8 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from actuate.config import (
-    Actor,
     ActionVerb,
+    Actor,
     Channel,
     ConsentStatus,
     ControlMode,
@@ -82,7 +82,7 @@ class ActionInterval(_Base):
     subtask_id: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
-    def _span_ordered(self) -> "ActionInterval":
+    def _span_ordered(self) -> ActionInterval:
         if self.end_frame < self.start_frame:
             raise ValueError(
                 f"action interval end_frame {self.end_frame} < start_frame "

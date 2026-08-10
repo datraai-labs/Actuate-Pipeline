@@ -1,6 +1,6 @@
-"""`actuate storage` — inspect the buckets and, critically, VERIFY THE CONSENT BOUNDARY.
+"""`actuate storage` -- inspect the buckets and, critically, VERIFY THE CONSENT BOUNDARY.
 
-AWS Architecture §8: *"The consent boundary (IAM + bucket policy + fail-closed gate)
+AWS Architecture section 8: *"The consent boundary (IAM + bucket policy + fail-closed gate)
 should be stood up and tested first, before any real capture data lands, and re-verified
 whenever roles change."*
 
@@ -51,7 +51,7 @@ def verify_consent_boundary(
     env: Env = Env.DEV,
     profile: str = typer.Option(None, help="AWS profile."),
 ) -> None:
-    """Prove the delivery bucket refuses an un-consented write — against real AWS.
+    """Prove the delivery bucket refuses an un-consented write -- against real AWS.
 
     Checks, in order:
       1. All four buckets exist.
@@ -62,10 +62,10 @@ def verify_consent_boundary(
 
     This is an infrastructure check. The *code* half of the same boundary
     (`io.consent.DeliveryWriter`) is covered by tests that confirm data leaks when the
-    guard is removed — both halves exist because either alone is a single point of failure.
+    guard is removed -- both halves exist because either alone is a single point of failure.
     """
-    import botocore.exceptions
     import boto3
+    import botocore.exceptions
 
     settings = load_settings(env=env, storage_backend=StorageBackendKind.S3)
     if profile:
@@ -123,8 +123,8 @@ def verify_consent_boundary(
     typer.echo("")
     if failures:
         typer.secho(
-            f"CONSENT BOUNDARY NOT INTACT — {len(failures)} check(s) failed.\n"
-            "Do NOT land real capture data until these pass (AWS Architecture §8).",
+            f"CONSENT BOUNDARY NOT INTACT -- {len(failures)} check(s) failed.\n"
+            "Do NOT land real capture data until these pass (AWS Architecture section 8).",
             fg="red",
             bold=True,
         )

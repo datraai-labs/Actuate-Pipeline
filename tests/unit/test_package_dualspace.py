@@ -10,6 +10,8 @@ import pytest
 from actuate.config import ConsentStatus, RigType, Side, Tier
 from actuate.package.lerobot_export import (
     ExportRefused,
+    _assert_export_consent,
+    _degenerate_dimensions,
     _episode_tier,
     _robot_action_rows,
     _tier_filter,
@@ -124,7 +126,10 @@ def _with_robot(ep, n_steps, n_joints=7):
     action = RobotAction(embodiment="franka_panda", control_mode="joint",
                          joint_traj=tuple(tuple(0.1 * i for _ in range(n_joints))
                                           for i in range(n_steps)))
-    return ep.model_copy(update={"action_robot": {"franka_panda": action}})
+    return ep.model_copy(update={
+        "action_robot": {"franka_panda": action},
+        "retarget_eligibility": {"franka_panda": True},
+    })
 
 
 def test_robot_rows_align_by_full_episode_length():
@@ -151,6 +156,27 @@ def test_robot_rows_refuse_ambiguous_length():
 def test_robot_rows_refuse_a_missing_embodiment():
     with pytest.raises(ExportRefused, match="no action_robot"):
         _robot_action_rows(_episode(), "franka_panda", np.array([0]), n_total=10)
+
+
+def test_robot_rows_refuse_a_failed_physics_verdict():
+    ep = _with_robot(_episode(n=10), n_steps=10).model_copy(
+        update={"retarget_eligibility": {"franka_panda": False}}
+    )
+    with pytest.raises(ExportRefused, match="ineligible"):
+        _robot_action_rows(ep, "franka_panda", np.array([0, 1]), n_total=10)
+
+
+def test_constant_grasp_blocks_export():
+    names = ["x", "grasp"]
+    state = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]])
+    action = np.array([[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]])
+    with pytest.raises(ExportRefused, match="grasp.*zero variance"):
+        _degenerate_dimensions("ep", state, action, np.array([0, 1, 2]), names)
+
+
+def test_local_export_rechecks_consent_and_pii():
+    with pytest.raises(ExportRefused, match="local export blocked"):
+        _assert_export_consent(_episode())
 
 
 # ---------------------------------------------------------------- manifest

@@ -38,13 +38,13 @@ IDENT = (1.0, 0.0, 0.0, 0.0)
 
 
 def _frame(rig: RigType = RigType.HEAD_MOUNTED, **over) -> CanonicalFrame:
-    base = dict(t=0.0, rig=rig, episode_id="e", frame_idx=0)
+    base = {"t": 0.0, "rig": rig, "episode_id": "e", "frame_idx": 0}
     base.update(over)
     return CanonicalFrame(**base)
 
 
 def _episode(rig: RigType = RigType.HEAD_MOUNTED, **over) -> CanonicalEpisode:
-    base = dict(episode_id="e", capture_id="c", rig=rig)
+    base = {"episode_id": "e", "capture_id": "c", "rig": rig}
     base.update(over)
     return CanonicalEpisode(**base)
 

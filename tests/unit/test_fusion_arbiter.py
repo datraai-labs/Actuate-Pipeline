@@ -13,17 +13,16 @@ import pytest
 
 from actuate.config import Finger, InteractionState, Provenance, Side
 from actuate.fusion import (
+    TRUST_RANK,
     Candidate,
     HardwareSources,
     SchmittTrigger,
-    TRUST_RANK,
     arbitrate,
     enforce_min_dwell,
     finger_curl,
     grasp_signal,
 )
 from actuate.fusion import run as fusion_run
-
 
 # --------------------------------------------------------------------------------------
 # The arbiter
@@ -56,6 +55,17 @@ def test_confidence_breaks_ties_within_a_tier():
     a = Candidate("c", 1, Provenance.VISION_PRIMARY, confidence=0.4)
     b = Candidate("c", 2, Provenance.VISION_PRIMARY, confidence=0.8)
     assert arbitrate([a, b]).value == 2
+
+
+def test_missing_confidence_is_unknown_not_perfect():
+    unknown = Candidate("c", 1, Provenance.VISION_PRIMARY, confidence=None)
+    measured = Candidate("c", 2, Provenance.VISION_PRIMARY, confidence=0.01)
+    assert arbitrate([unknown, measured]).value == 2
+
+
+def test_candidate_requires_explicit_confidence():
+    with pytest.raises(TypeError):
+        Candidate("c", 1, Provenance.VISION_PRIMARY)  # type: ignore[call-arg]
 
 
 def test_hardware_overrides_vision_AND_broken_priority_fails():
@@ -177,8 +187,8 @@ def test_run_vision_only_is_vision_fallback_and_contact_is_populated():
     assert rep.provenance["contact"] is Provenance.VISION_FALLBACK
     # contact populated, non-NaN, and capped low (vision cannot feel contact)
     for ff in rep.frames.values():
-        for side, fingers in ff.contact.items():
-            for finger, cp in fingers.items():
+        for fingers in ff.contact.values():
+            for cp in fingers.values():
                 assert np.isfinite(cp.confidence)
                 assert 0.0 <= cp.confidence <= 0.40
                 assert cp.source is Provenance.VISION_FALLBACK

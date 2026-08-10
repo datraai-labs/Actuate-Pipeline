@@ -128,6 +128,9 @@ def _load(root: Path, horizon: int = HORIZON):
         "actuate/gate",
         root=root,
         delta_timestamps={"action": [i / 30 for i in range(horizon)]},
+        # TorchCodec requires matching system FFmpeg shared libraries.  PyAV is an official
+        # LeRobot backend and its wheel is portable across clean customer/GPU hosts.
+        video_backend="pyav",
     )
 
 
@@ -265,8 +268,8 @@ def test_a_schema_valid_but_UNTRAINABLE_export_is_caught_by_the_gate(exported):
     The training step is what catches it. That is the whole argument for having this gate
     rather than a schema test.
     """
-    import pyarrow.parquet as pq
     import pyarrow as pa
+    import pyarrow.parquet as pq
 
     root = exported.root
     parquet = next(root.glob("data/chunk-*/file-*.parquet"))

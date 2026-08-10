@@ -37,7 +37,6 @@ def templates() -> dict[str, dict]:
     sys.path.insert(0, str(INFRA))
     from aws_cdk import App
     from aws_cdk.assertions import Template
-
     from stacks.budget_stack import BudgetStack
     from stacks.data_stack import DataStack
     from stacks.storage_stack import StorageStack

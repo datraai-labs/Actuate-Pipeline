@@ -41,6 +41,7 @@ import numpy as np
 
 from actuate.canonical.build import episode_dof_names, state_and_action_vectors
 from actuate.config import Tier
+from actuate.lineage import build_lineage
 from actuate.package import normalize as _norm
 from actuate.package import transforms as _tf
 from actuate.package.manifest import generate as _generate_manifest
@@ -56,6 +57,16 @@ compute_norm_stats = _norm.compute
 
 class ExportRefused(RuntimeError):
     """The episode cannot be honestly exported. Not a warning."""
+
+
+def _assert_export_consent(ep: CanonicalEpisode) -> None:
+    """Re-verify consent and PII at local export, not only at remote delivery."""
+    if not ep.is_deliverable:
+        raise ExportRefused(
+            f"episode {ep.episode_id}: local export blocked: {ep.delivery_block_reason()}. "
+            "An export is a portable copy of the data and enforces the same consent/PII "
+            "boundary as delivery."
+        )
 
 
 @dataclass
@@ -109,7 +120,7 @@ def _decode_frames(video: Path, indices: np.ndarray) -> dict[int, np.ndarray]:
     if not cap.isOpened():
         raise ExportRefused(f"cannot open video {video}")
 
-    wanted = set(int(i) for i in indices)
+    wanted = {int(i) for i in indices}
     out: dict[int, np.ndarray] = {}
     idx = 0
     while True:
@@ -141,6 +152,14 @@ def _robot_action_rows(episode: CanonicalEpisode, embodiment: str,
             "export needs the L5 retarget to have run and been attached "
             "(retarget.arm.attach_to_episode)."
         )
+    verdict = episode.retarget_eligibility.get(embodiment)
+    if verdict is not True:
+        state = "missing" if verdict is None else "ineligible"
+        raise ExportRefused(
+            f"episode {episode.episode_id}: retarget eligibility for {embodiment!r} is "
+            f"{state}. Robot-space data may only export after an explicit passing physics "
+            "verdict."
+        )
     if ra.joint_traj is None:
         raise ExportRefused(
             f"episode {episode.episode_id}: action_robot[{embodiment!r}] has no joint_traj "
@@ -156,6 +175,49 @@ def _robot_action_rows(episode: CanonicalEpisode, embodiment: str,
         f"{len(traj)} steps but the episode has {n_total} frames ({keep.size} kept). "
         "The retarget and the export disagree about frame accounting -- refusing to guess."
     )
+
+
+def _degenerate_dimensions(
+    episode_id: str,
+    state: np.ndarray,
+    action: np.ndarray,
+    keep: np.ndarray,
+    names: list[str],
+    robot: np.ndarray | None = None,
+) -> list[str]:
+    """Find zero-variance training columns and hard-block a degenerate grasp signal."""
+    if keep.size < 2:
+        raise ExportRefused(
+            f"episode {episode_id}: only {keep.size} trainable transition(s); at least two "
+            "are required to detect degenerate training signals."
+        )
+    warnings_out: list[str] = []
+    for space, values in (("observation.state", state[keep]), ("action", action[keep])):
+        for column, name in enumerate(names):
+            values_col = values[:, column]
+            if np.all(np.isfinite(values_col)) and float(np.ptp(values_col)) <= 1e-8:
+                label = f"{space}.{name}"
+                if name == "grasp":
+                    raise ExportRefused(
+                        f"episode {episode_id}: {label} has zero variance. A constant grasp "
+                        "column is not useful manipulation supervision and commonly means the "
+                        "signal was never measured; refusing to ship it."
+                    )
+                warnings_out.append(label)
+    if robot is not None:
+        for column in range(robot.shape[1]):
+            if float(np.ptp(robot[:, column])) <= 1e-8:
+                warnings_out.append(f"action.robot.j{column}")
+    if warnings_out:
+        import warnings
+
+        warnings.warn(
+            f"episode {episode_id} has zero-variance dimensions: "
+            f"{', '.join(warnings_out)}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    return warnings_out
 
 
 def _hand_points_3d(frame) -> np.ndarray | None:
@@ -264,6 +326,7 @@ def export_lerobot_v3(
     # ---- per-episode fail-closed checks + vector extraction, BEFORE any writing ----
     dof_names = episode_dof_names(eps[0])
     prepared = []
+    degenerate_by_episode: dict[str, list[str]] = {}
     for ep in eps:
         if not ep.task:
             raise ExportRefused(
@@ -276,6 +339,7 @@ def export_lerobot_v3(
                 "Supply an operator-verified task explicitly, or fix classification. This "
                 "exporter will not invent one."
             )
+        _assert_export_consent(ep)
         if episode_dof_names(ep) != dof_names:
             raise ExportRefused(
                 f"episode {ep.episode_id} has a different state layout "
@@ -291,6 +355,9 @@ def export_lerobot_v3(
             )
         robot = (_robot_action_rows(ep, embodiment, keep, len(state))
                  if embodiment is not None else None)
+        degenerate_by_episode[ep.episode_id] = _degenerate_dimensions(
+            ep.episode_id, state, action, keep, dof_names, robot
+        )
         prepared.append((ep, _video_for(ep), state, action, keep, robot))
 
     # Frames with no detected hand are DROPPED, not zero-filled. Zeroing would teach a
@@ -416,11 +483,18 @@ def export_lerobot_v3(
                                  "shipped, per space",
                 "derivation_notes": {e.episode_id: e.derivation_notes for e in eps},
                 "frames_dropped_no_hand": n_dropped,
+                "zero_variance_dimensions": degenerate_by_episode,
+                "lineage": build_lineage({
+                    "format": "lerobot_v3", "embodiment": embodiment
+                }),
             },
             indent=2,
         ),
         encoding="utf-8",
     )
+    from actuate.package.delivery_docs import write_dataset_readme
+
+    write_dataset_readme(root, format_name="LeRobot v3")
 
     return ExportResult(
         root=root,

@@ -58,7 +58,7 @@ def test_redact_session_writes_the_downstream_filename(tmp_path):
 
 def test_redaction_flips_the_deliverable_gate(canonical_episode_factory=None):
     """The whole point: PASSED + GRANTED is what makes is_deliverable True."""
-    from actuate.io.consent import check_deliverable, ConsentViolation
+    from actuate.io.consent import ConsentViolation, check_deliverable
 
     # pending pii blocks even with consent granted...
     with pytest.raises(ConsentViolation, match="pii_status"):

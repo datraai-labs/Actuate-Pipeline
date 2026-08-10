@@ -20,6 +20,7 @@ def _video(path, n=20, width=64, height=48):
 
 
 def test_object_run_keeps_original_evenly_sampled_frame_ids(tmp_path, monkeypatch):
+    pytest.importorskip("PIL")
     from actuate.perception.objects import objects as mod
     from actuate.perception.sampling import sampled_indices
 

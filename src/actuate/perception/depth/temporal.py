@@ -277,7 +277,9 @@ def run(
 
     res = DepthResult(intrinsics=K, model=f"video_depth_anything_{encoder}")
     for i in range(len(depths)):
-        # VDA gives no per-pixel confidence; use uniform 1.0 (honest: no uncertainty channel).
+        # VDA gives no per-pixel uncertainty. This all-ones raster is only a neutral numerical
+        # weight required by DepthFrame's sampling interface; it is not a confidence estimate
+        # and is never eligible for certificate scoring.
         res.frames[i] = DepthFrame(
             depth_m=depths[i], confidence=np.ones_like(depths[i], dtype=np.float32),
             intrinsics=K,
@@ -287,7 +289,8 @@ def run(
     res.notes = {
         "model": (
             "Video-Depth-Anything (temporally consistent video depth). Intrinsics NOT estimated "
-            "by this model -- borrowed/approximated. Confidence is uniform (no uncertainty "
+            "by this model -- borrowed/approximated. The stored all-ones auxiliary raster is "
+            "a neutral sampling weight, not confidence (the model exposes no uncertainty "
             "channel). Compare against UniDepth with perception.depth.consistency.compare."
         )
     }

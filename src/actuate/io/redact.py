@@ -27,6 +27,7 @@ and the quality of the guarantee is exactly the quality of the detector you give
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,8 +60,15 @@ def haar_face_detector() -> Detector:
     """OpenCV frontal-face Haar cascade -> face boxes. CPU-only, no extra dependency."""
     import cv2
 
-    cascade = cv2.CascadeClassifier(
-        cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    cascade_path = Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml"
+    if not cascade_path.is_file():
+        raise RuntimeError(
+            "OpenCV's frontal-face cascade is missing; install an Actuate-supported "
+            "opencv-python/opencv-contrib-python 4.x build before enabling redaction"
+        )
+    cascade = cv2.CascadeClassifier(str(cascade_path))
+    if cascade.empty():
+        raise RuntimeError(f"OpenCV could not load the face cascade at {cascade_path}")
 
     def detect(frame_bgr) -> list[Region]:
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
@@ -100,7 +108,7 @@ def _downscaled(frame, detect: Detector, detect_width: int) -> list[Region]:
     if detect_width <= 0 or w <= detect_width:
         return detect(frame)
     s = w / detect_width
-    small = cv2.resize(frame, (detect_width, int(round(h / s))))
+    small = cv2.resize(frame, (detect_width, round(h / s)))
     return [(int(x * s), int(y * s), int(bw * s), int(bh * s))
             for (x, y, bw, bh) in detect(small)]
 
@@ -163,4 +171,19 @@ def redact_session(session_dir: Path, *, detector: Detector | None = None) -> Re
         if not cands:
             raise FileNotFoundError(f"no source video to redact in {session_dir}")
         src = cands[0]
-    return redact_video(src, session_dir / "redacted_compressed.mp4", detector=detector)
+    report = redact_video(src, session_dir / "redacted_compressed.mp4", detector=detector)
+    (session_dir / "privacy_report.json").write_text(
+        json.dumps({
+            "status": report.status.value,
+            "method": report.method,
+            "frames_scanned": report.frames_scanned,
+            "regions_blurred": report.regions_blurred,
+            "scope": "face regions detected by the configured detector",
+            "limitation": (
+                "Recall-bounded: PASSED means the redaction pass completed and detected "
+                "regions were blurred; it is not proof that zero PII remains."
+            ),
+        }, indent=2),
+        encoding="utf-8",
+    )
+    return report

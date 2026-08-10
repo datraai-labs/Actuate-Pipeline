@@ -24,8 +24,9 @@ confidence measures how sure a source is of itself, not how much we trust the so
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from actuate.config import Provenance
 
@@ -46,11 +47,16 @@ class Candidate:
     channel: str
     value: Any
     provenance: Provenance
-    confidence: float = 1.0
+    # No default: callers must either supply a real source score or say that the source
+    # exposes no comparable score with ``None``.  Missing metadata must never become
+    # perfect confidence merely because a key was absent.
+    confidence: float | None
 
     def __post_init__(self) -> None:
         if self.provenance not in TRUST_RANK:
             raise ValueError(f"unknown provenance {self.provenance!r}")
+        if self.confidence is not None and not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("candidate confidence must be in [0, 1] or None (not measured)")
 
 
 def arbitrate(
@@ -66,9 +72,16 @@ def arbitrate(
     if not candidates:
         raise ValueError("arbitrate() needs at least one candidate")
     rank_fn = rank.__getitem__ if isinstance(rank, dict) else rank
-    # Sort key: (trust tier, confidence). max() picks the most trusted, ties broken by
-    # confidence. Stable within equal keys -> first-listed wins, which callers can rely on.
-    return max(candidates, key=lambda c: (rank_fn(c.provenance), c.confidence))
+    # Sort key: (trust tier, confidence). A missing source-specific confidence remains
+    # unknown and loses only a tie within the same provenance tier; it never changes the
+    # cross-tier trust order. Stable within equal keys -> first-listed wins.
+    return max(
+        candidates,
+        key=lambda c: (
+            rank_fn(c.provenance),
+            float("-inf") if c.confidence is None else c.confidence,
+        ),
+    )
 
 
 def resolve_channel(

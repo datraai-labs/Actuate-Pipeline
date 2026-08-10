@@ -12,7 +12,6 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-
 # --------------------------------------------------------------------------------------
 # Pure pieces (torch / numpy only)
 # --------------------------------------------------------------------------------------
@@ -115,11 +114,11 @@ def test_run_pipeline_produces_a_joint_trajectory_and_candidate_spread(franka):
     from actuate.config import Provenance, RigType, Side
     from actuate.retarget.arm import RootFrameEstimator, run, simdata
     from actuate.schema import (
+        SE3,
         CanonicalEpisode,
         CanonicalFrame,
         HandState,
         ImageRef,
-        SE3,
     )
 
     # tiny estimator (mechanics only; convergence quality is a Kaggle concern)

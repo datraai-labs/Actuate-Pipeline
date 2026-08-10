@@ -9,16 +9,15 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import config as cfg
-from utils.hdf5_writer import write_session_h5
 
 # We need to import the primitive functions.
 # Since 05_primitives.py has a numeric prefix, use importlib.
 import importlib.util
+
+import config as cfg
+from utils.hdf5_writer import write_session_h5
 
 _spec = importlib.util.spec_from_file_location(
     "primitives",

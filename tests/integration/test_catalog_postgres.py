@@ -30,6 +30,7 @@ from actuate.catalog import (
 )
 from actuate.config import ConsentStatus, PiiStatus, RigType, Tier
 
+
 @pytest.fixture(scope="module")
 def engine():
     """A REAL Postgres. Two ways to get one, in order of preference:
@@ -68,7 +69,7 @@ def engine():
             "These tests need a real Postgres; they will not run against a mock."
         )
 
-    from testcontainers.postgres import PostgresContainer
+    from testcontainers.community.postgres import PostgresContainer
 
     # pgvector/pgvector ships the extension preinstalled; plain postgres does not, and
     # CREATE EXTENSION vector would fail — which is the point of using a real database.

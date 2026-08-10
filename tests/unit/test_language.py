@@ -6,21 +6,20 @@ missing key skips instead of failing."""
 
 from __future__ import annotations
 
+import importlib
 import json
 from types import SimpleNamespace
 
 import pytest
 
-import importlib
-
 # the package re-exports the `annotate` FUNCTION under the same name as the module, so an
 # `import ... as` would bind the function; importlib reaches the module itself
 lang_annotate = importlib.import_module("actuate.language.annotate")
 
-from actuate.config import RigType                      # noqa: E402
-from actuate.language import vlm                        # noqa: E402
-from actuate.language.annotate import ConsistencyScore  # noqa: E402
-from actuate.schema import CanonicalEpisode  # noqa: E402
+from actuate.config import RigType
+from actuate.language import vlm
+from actuate.language.annotate import ConsistencyScore
+from actuate.schema import CanonicalEpisode
 
 
 class _FakeClient:
@@ -54,7 +53,7 @@ _BAD_JUDGE = {"hand_consistency": 0.9, "object_consistency": 0.2,
               "unsupported_claims": ["a red stapler"], "verdict": "inconsistent"}
 _CAPTION = {"hand": "right hand flat over paper", "object": "papers on a desk",
             "action": "sorting papers", "scene": "office workbench",
-            "instruction": "Sort the papers on the desk."}
+            "instruction": "Sort the papers on the desk.", "task_guess": "sort the papers"}
 _PARAS = {"paraphrases": ["Arrange the documents on the desk.",
                           "Put the desk's papers in order.",
                           "Organize the paperwork lying on the desk."]}
@@ -151,3 +150,8 @@ def test_cost_estimate_is_positive_and_scales():
     one = vlm.estimate_annotation_cost(1)
     ten = vlm.estimate_annotation_cost(10)
     assert 0 < one < ten
+
+
+def test_independent_task_read_disagreement_is_fail_visible():
+    assert not vlm.task_disagreement("sort the papers", "sort the papers")
+    assert vlm.task_disagreement("tighten the bolt", "sort the papers")

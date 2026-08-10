@@ -17,7 +17,8 @@ from actuate.canonical import (
     episode_dof_names,
     state_and_action_vectors,
 )
-from actuate.config import RigType, Side
+from actuate.config import InteractionState, Provenance, RigType, Side
+from actuate.fusion import FrameFusion, FusionReport
 from actuate.perception.depth import smooth_root_depth
 from actuate.perception.depth.unidepth import DepthFrame, DepthResult
 
@@ -40,6 +41,22 @@ class _HR:
         self.frames = {i: [_HF(i)] for i in range(n)}
 
 
+def _fusion(n):
+    report = FusionReport(
+        rig=RigType.HEAD_MOUNTED,
+        states=[InteractionState.MOVING] * n,
+    )
+    for i in range(n):
+        report.frames[i] = FrameFusion(
+            interaction_state=InteractionState.MOVING,
+            grasp={Side.RIGHT: i / max(n - 1, 1)},
+            grasp_provenance=Provenance.VISION_FALLBACK,
+            contact={},
+            finger_joints_provenance={},
+        )
+    return report
+
+
 def _session(tmp_path, n):
     (tmp_path / "session_meta.json").write_text(
         json.dumps({"session_id": "syn", "fps_nominal": 30, "frame_count": n})
@@ -57,7 +74,7 @@ def test_build_from_perception_produces_v3_mano_and_53dim_state(tmp_path):
         )
 
     ep = build_from_perception(
-        _session(tmp_path, n), "a" * 64, hands=_HR(n), depth=depth,
+        _session(tmp_path, n), "a" * 64, hands=_HR(n), depth=depth, fusion=_fusion(n),
         rig=RigType.HEAD_MOUNTED, task="synthetic", artifact_dir=tmp_path / "run",
     )
 
@@ -82,7 +99,89 @@ def test_build_from_perception_produces_v3_mano_and_53dim_state(tmp_path):
         assert arrays["frame_indices"].tolist() == list(range(n))
     assert ep.frames[3].depth["head"].uri == "artifacts/depth/head.npz"
     assert ep.frames[3].depth["head"].frame_index == 3
-    assert ep.frames[3].confidence["depth"] == 1.0
+    # UniDepth's relative-confidence raster is preserved in the NPZ but not relabeled as a
+    # calibrated unit-interval probability in the customer certificate.
+    assert "depth" not in ep.frames[3].confidence
+    assert "hands" not in ep.frames[3].confidence  # the detector supplied no real score
+
+
+def test_canonical_clock_keeps_depth_frames_without_hand_detections(tmp_path):
+    """A detector miss must produce an empty-hand frame, not delete captured time."""
+    n, height, width = 6, 24, 32
+    intrinsics = np.array(
+        [[30, 0, width / 2], [0, 30, height / 2], [0, 0, 1]], dtype=np.float64
+    )
+    depth = DepthResult(intrinsics=intrinsics)
+    for i in range(n):
+        depth.frames[i] = DepthFrame(
+            depth_m=np.full((height, width), 0.6),
+            confidence=np.ones((height, width)),
+            intrinsics=intrinsics,
+        )
+    hands = _HR(n)
+    del hands.frames[1]
+    del hands.frames[4]
+
+    episode = build_from_perception(
+        _session(tmp_path, n),
+        "f" * 64,
+        hands=hands,
+        depth=depth,
+        fusion=_fusion(n),
+        rig=RigType.HEAD_MOUNTED,
+        task="synthetic",
+        artifact_dir=tmp_path / "run",
+    )
+
+    assert [frame.frame_idx for frame in episode.frames] == list(range(n))
+    assert episode.frames[1].hands == {}
+    assert episode.frames[4].hands == {}
+    assert episode.frames[1].depth["head"].frame_index == 1
+    assert episode.frames[4].depth["head"].frame_index == 4
+    # Fusion must follow source-frame IDs, not shift positionally after a detector miss.
+    assert episode.frames[4].confidence["grasp"] == _fusion(n).frames[4].grasp[Side.RIGHT]
+
+
+def test_build_records_current_commercial_constraints_despite_cache_era_notes(tmp_path):
+    """Old cached wording must not erase the active models' current license provenance."""
+    n, height, width = 3, 24, 32
+    intrinsics = np.array(
+        [[30, 0, width / 2], [0, 30, height / 2], [0, 0, 1]], dtype=np.float64
+    )
+    depth = DepthResult(intrinsics=intrinsics)
+    for i in range(n):
+        depth.frames[i] = DepthFrame(
+            depth_m=np.full((height, width), 0.6),
+            confidence=np.ones((height, width)),
+            intrinsics=intrinsics,
+        )
+    hands = _HR(n)
+    hands.notes = {"hand_model": "wilor", "licence": "obsolete cache-era wording"}
+
+    episode = build_from_perception(
+        _session(tmp_path, n),
+        "e" * 64,
+        hands=hands,
+        depth=depth,
+        fusion=_fusion(n),
+        rig=RigType.HEAD_MOUNTED,
+        task="pick up cup",
+    )
+
+    constraints = episode.derivation_notes["usage_constraints"]
+    assert "CC-BY-NC-ND-4.0" in constraints
+    assert "UniDepth" in constraints and "CC-BY-NC-4.0" in constraints
+    assert "obsolete cache-era wording" not in constraints
+
+
+def test_stereo_uses_registry_camera_names_not_fictional_wrist(tmp_path):
+    n = 3
+    ep = build_from_perception(
+        _session(tmp_path, n), "d" * 64, hands=_HR(n), fusion=_fusion(n),
+        rig=RigType.STEREO, task="synthetic",
+    )
+    assert set(ep.frames[0].images) == {"stereo_left", "stereo_right"}
+    assert "wrist" not in ep.frames[0].images
 
 
 def test_build_from_perception_carries_object_masks(tmp_path):

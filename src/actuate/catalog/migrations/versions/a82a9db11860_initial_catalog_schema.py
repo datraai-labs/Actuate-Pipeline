@@ -3,10 +3,9 @@
 Revision ID: a82a9db11860
 Revises: 
 """
-from alembic import op
+import pgvector.sqlalchemy
 import sqlalchemy as sa
-import pgvector.sqlalchemy  # noqa: F401  (VECTOR column type below)
-
+from alembic import op
 
 revision = 'a82a9db11860'
 down_revision = None

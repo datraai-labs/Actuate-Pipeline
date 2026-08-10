@@ -1,4 +1,4 @@
-"""`actuate language` -- L6 rich-context annotation (Master Spec §L6)."""
+"""`actuate language` -- L6 rich-context annotation (Master Spec section L6)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import typer
 
-language_app = typer.Typer(help="L6 — language rich-context (Master Spec §L6).")
+language_app = typer.Typer(help="L6 -- language rich-context (Master Spec section L6).")
 
 
 @language_app.command("annotate")
@@ -60,7 +60,7 @@ def annotate_cmd(
                    f"(conf {st.confidence:.2f}): {st.instruction}")
     if report.flagged_for_review:
         typer.secho(f"  {report.flagged_for_review} caption(s) FLAGGED FOR REVIEW "
-                    "(judge below threshold) — shipped with low confidence, not hidden",
+                    "(judge below threshold) -- shipped with low confidence, not hidden",
                     fg="yellow", bold=True)
 
     target = out or in_path
@@ -74,13 +74,13 @@ def label_actions_cmd(
     out: Path = typer.Option(None, help="Write the labelled episode here "
                                         "(defaults to --in, updated in place)."),
     use_vlm: bool = typer.Option(False, help="Refine ambiguous intervals with a VLM "
-                                             "(billed; off by default — geometry is $0)."),
+                                             "(billed; off by default -- geometry is $0)."),
 ) -> None:
     """Detect fine-grained atomic action intervals (closed 20-verb vocab) per actor.
 
     Geometry-only by default: L2 states + wrist velocity + finger curl + object proximity.
     Costs nothing. Actions the monocular bare-hand rig cannot support (pour, insert, ...)
-    are NOT fabricated — they stay in the vocabulary for cross-dataset comparison.
+    are NOT fabricated -- they stay in the vocabulary for cross-dataset comparison.
     """
     from actuate.language import label_actions
     from actuate.schema import CanonicalEpisode

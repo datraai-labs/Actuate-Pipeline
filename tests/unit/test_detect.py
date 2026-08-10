@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from actuate.config import ConsentStatus, RigType
+from actuate.ingest import RigDeclarationError, validate_declared_rig
 from actuate.sources.detect import (
     detect_layout,
     detect_rig,
@@ -36,6 +37,18 @@ def test_standard_aspect_is_head_mounted(tmp_path):
     _write_video(tmp_path / "clip.mp4", 1920, 1080)     # 16:9 -> egocentric default
     assert detect_layout(tmp_path) == "single_video"
     assert detect_rig(tmp_path) == RigType.HEAD_MOUNTED.value
+
+
+def test_stereo_pixels_cannot_be_declared_head_mounted(tmp_path):
+    _write_video(tmp_path / "clip.mp4", 2560, 720)
+    with pytest.raises(RigDeclarationError, match="must not be processed as one monocular"):
+        validate_declared_rig(tmp_path, RigType.HEAD_MOUNTED)
+
+
+def test_stereo_declaration_requires_two_view_geometry(tmp_path):
+    _write_video(tmp_path / "clip.mp4", 1280, 720)
+    with pytest.raises(RigDeclarationError, match="missing second view"):
+        validate_declared_rig(tmp_path, RigType.STEREO)
 
 
 def test_multiple_videos_is_multi_camera_teleop(tmp_path):
@@ -79,8 +92,8 @@ def test_normalize_drops_non_ascii(tmp_path):
 
 
 # ---------------------------------------------------------------- consent default
-def test_local_consent_is_granted():
-    assert local_consent_default() == ConsentStatus.GRANTED
+def test_local_execution_does_not_infer_subject_consent():
+    assert local_consent_default() == ConsentStatus.PENDING
 
 
 def test_local_consent_still_blocks_delivery_via_pii(tmp_path):

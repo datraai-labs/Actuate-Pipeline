@@ -32,6 +32,25 @@ def test_canonical_stage_surfaces_perception_failure_on_fresh_source(tmp_path):
     assert "metric" not in msg.lower()                # not the cryptic depth error
 
 
+def test_resume_does_not_reenter_perception_after_canonical_is_durable(tmp_path):
+    from actuate.pipeline.run import _Ctx, _stage_perceive
+
+    events = []
+    ctx = _Ctx(
+        session=tmp_path / "session",
+        out=tmp_path / "out",
+        profile={"perception": {"enabled": True}},
+        reporter=lambda *args: events.append(args),
+        confirm=lambda _prompt: False,
+        checkpoint={
+            "perceive": {"status": "done", "note": "90/90 frames (full source)"},
+            "canonical": {"status": "done", "note": "51 frames"},
+        },
+    )
+    assert _stage_perceive(ctx) == {}
+    assert events == [("perceive", "info", "resume: already done")]
+
+
 def test_canonical_still_uses_v1_fallback_when_artifacts_exist(tmp_path, monkeypatch):
     """The v1-legacy path is only taken when the session actually carries v1 artifacts
     (the bundled demo) -- a fresh source never guesses it."""
@@ -48,7 +67,7 @@ def test_canonical_still_uses_v1_fallback_when_artifacts_exist(tmp_path, monkeyp
 
     called = {}
 
-    def _fake_build_episode(sess, cid, task=None):
+    def _fake_build_episode(sess, cid, task=None, rig=None):
         called["v1"] = True
         raise RuntimeError("v1 build reached")         # we only assert the PATH was chosen
 

@@ -23,5 +23,5 @@ def sampled_indices(frame_count: int, max_frames: int | None) -> list[int]:
         return []
     if not max_frames or max_frames >= frame_count:
         return list(range(frame_count))
-    return sorted(set(int(round(x)) for x in
-                      np.linspace(0, frame_count - 1, int(max_frames))))
+    return sorted({round(x) for x in
+                      np.linspace(0, frame_count - 1, int(max_frames))})

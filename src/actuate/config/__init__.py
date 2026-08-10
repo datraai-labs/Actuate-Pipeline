@@ -6,6 +6,7 @@ from Actuate. Enforced by the import-linter contract in `.importlinter`.
 
 from __future__ import annotations
 
+from actuate.config.capabilities import product_capabilities
 from actuate.config.embodiments import (
     CANONICAL_REFERENCE_HAND,
     EMBODIMENT_REGISTRY,
@@ -15,10 +16,10 @@ from actuate.config.embodiments import (
     retarget_ready_embodiments,
 )
 from actuate.config.enums import (
-    ActionVerb,
-    Actor,
     MEASURED_PROVENANCES,
     PROVENANCE_TRUST_ORDER,
+    ActionVerb,
+    Actor,
     Channel,
     ConsentStatus,
     ControlMode,
@@ -49,14 +50,17 @@ from actuate.config.settings import (
 )
 
 __all__ = [
+    "CANONICAL_REFERENCE_HAND",
+    "EMBODIMENT_REGISTRY",
+    "MEASURED_PROVENANCES",
+    "PROVENANCE_TRUST_ORDER",
+    "RIG_REGISTRY",
     "ActionVerb",
     "Actor",
     "Bucket",
-    "CANONICAL_REFERENCE_HAND",
     "Channel",
     "ConsentStatus",
     "ControlMode",
-    "EMBODIMENT_REGISTRY",
     "EgoMotionMethod",
     "EmbodimentSpec",
     "Env",
@@ -64,11 +68,8 @@ __all__ = [
     "FingerActionRepr",
     "HandSpec",
     "InteractionState",
-    "MEASURED_PROVENANCES",
-    "PROVENANCE_TRUST_ORDER",
     "PiiStatus",
     "Provenance",
-    "RIG_REGISTRY",
     "RigSpec",
     "RigType",
     "SensorStreamSpec",
@@ -80,8 +81,9 @@ __all__ = [
     "get_embodiment",
     "get_rig",
     "load_settings",
+    "product_capabilities",
     "retarget_ready_embodiments",
     "trust_rank",
 ]
 
-from actuate.config import auth  # noqa: E402,F401  (user auth + defaults)
+from actuate.config import auth  # noqa: F401  (user auth + defaults)

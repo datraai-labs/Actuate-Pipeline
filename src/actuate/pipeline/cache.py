@@ -8,11 +8,29 @@ wraps sdk wraps pipeline, never the reverse). Behaviour is unchanged from the CL
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import pickle
 from collections.abc import Callable
 from pathlib import Path
 
 CACHE_DIR = ".actuate_cache"
+
+
+def _session_identity(session: Path) -> str:
+    """Prefer the capture's byte identity; fall back to a namespaced path hash.
+
+    A path alone is not a content identity: replacing a video in-place must miss the
+    cache, while staging the same capture elsewhere should be able to reuse it.
+    """
+    manifest = Path(session) / "capture_manifest.json"
+    try:
+        content_hash = json.loads(manifest.read_text(encoding="utf-8")).get("content_hash")
+        if isinstance(content_hash, str) and len(content_hash) == 64:
+            return content_hash
+    except (OSError, ValueError, TypeError):
+        pass
+    return "path-" + hashlib.sha256(str(Path(session).resolve()).encode()).hexdigest()
 
 
 def stage_cached(session: Path, stage: str, key: str, *, use_cache: bool, force: bool,
@@ -27,8 +45,12 @@ def stage_cached(session: Path, stage: str, key: str, *, use_cache: bool, force:
     if not use_cache:
         return run_fn(), "ran"
 
-    cache_dir = Path(session) / CACHE_DIR
-    cache_dir.mkdir(exist_ok=True)
+    session_identity = _session_identity(session)
+    cache_root = Path(os.getenv(
+        "ACTUATE_CACHE_DIR", Path.home() / ".cache" / "actuate" / "perception"
+    )).expanduser()
+    cache_dir = cache_root / session_identity
+    cache_dir.mkdir(parents=True, exist_ok=True)
     keyhash = hashlib.sha256(f"{stage}|{key}".encode()).hexdigest()[:12]
     path = cache_dir / f"{stage}_{keyhash}.pkl"
 

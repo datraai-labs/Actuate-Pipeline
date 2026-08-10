@@ -111,6 +111,14 @@ def test_sim_validate_flags_low_ik_convergence():
     assert any("IK convergence" in reason for reason in r.reasons)
 
 
+def test_sim_validate_preserves_precision_near_ik_threshold():
+    traj = np.zeros((10, 3))
+    r = sim_validate.run(
+        None, "test", traj, robot_model=_Robot(), ik_convergence=0.8975356679636836
+    )
+    assert "IK convergence 89.75% < 90.00%" in r.reasons
+
+
 def test_sim_validate_catches_a_temporal_teleport():
     arm = _Arm(
         frame_ids=[0, 1, 2],
@@ -141,6 +149,8 @@ def test_sim_validate_finger_traj_requires_a_hand_model():
 @pytest.mark.slow
 def test_sim_validate_on_the_real_franka_model():
     """Same gates against the actual MuJoCo Franka, not the stand-in."""
+    pytest.importorskip("mujoco")
+    pytest.importorskip("robot_descriptions")
     from actuate.retarget.arm.robot import franka_panda
 
     fr = franka_panda()

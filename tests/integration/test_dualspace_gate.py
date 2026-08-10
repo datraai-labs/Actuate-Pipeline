@@ -59,7 +59,9 @@ def test_dual_space_loads_with_both_action_spaces(exported):
     """GATE: both spaces present, selectable by embodiment tag, via LeRobot's OWN loader."""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-    ds = LeRobotDataset(repo_id="actuate/dualspace-gate", root=exported.root)
+    ds = LeRobotDataset(
+        repo_id="actuate/dualspace-gate", root=exported.root, video_backend="pyav"
+    )
     assert "action" in ds.meta.features                      # human space
     assert f"action.robot.{_EMB}" in ds.meta.features        # robot space, tagged
     sample = ds[0]

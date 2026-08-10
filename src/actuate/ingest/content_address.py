@@ -172,13 +172,16 @@ def check_legacy_claims(
             )
 
     declared_frames = session_meta.get("frame_count")
-    if declared_frames and perception_frames is not None:
-        if perception_frames != declared_frames:
-            problems.append(
-                f"session_meta declares {declared_frames} frames but {perception_frames} "
-                "per-frame records exist -- the perception outputs are from a different "
-                "recording"
-            )
+    if (
+        declared_frames
+        and perception_frames is not None
+        and perception_frames != declared_frames
+    ):
+        problems.append(
+            f"session_meta declares {declared_frames} frames but {perception_frames} "
+            "per-frame records exist -- the perception outputs are from a different "
+            "recording"
+        )
 
     return problems
 

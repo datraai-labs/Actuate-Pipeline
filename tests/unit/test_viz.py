@@ -164,11 +164,13 @@ def test_log_episode_accepts_sparse_video_frames_on_source_timeline(tmp_path):
     assert counts["video"] == 3
 
 
-def test_stage_cache_runs_on_miss_loads_on_hit_reruns_on_change(tmp_path):
+def test_stage_cache_runs_on_miss_loads_on_hit_reruns_on_change(tmp_path, monkeypatch):
     """The `actuate viz --cache` behaviour: never re-run a stage whose inputs are unchanged."""
     from actuate.cli.viz import _stage_cached
 
     calls = {"n": 0}
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("ACTUATE_CACHE_DIR", str(cache_root))
 
     def run_fn():
         calls["n"] += 1
@@ -195,7 +197,7 @@ def test_stage_cache_runs_on_miss_loads_on_hit_reruns_on_change(tmp_path):
     assert src == "ran" and calls["n"] == 4
 
     # a corrupt cache file falls through to a re-run rather than crashing
-    for bad in (tmp_path / ".actuate_cache").glob("depth_*.pkl"):
+    for bad in cache_root.rglob("depth_*.pkl"):
         bad.write_bytes(b"not a pickle")
     _, src = _stage_cached(tmp_path, "depth", "n=20", use_cache=True, force=False, run_fn=run_fn)
     assert src == "ran"

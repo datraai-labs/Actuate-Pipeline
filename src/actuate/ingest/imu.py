@@ -33,7 +33,6 @@ from typing import Any
 
 import numpy as np
 
-
 #: An enclosing raw-sample gap must exceed this multiple of the median inter-sample
 #: interval before frames interpolated inside it are flagged as fabricated. On the real
 #: 574.6 Hz stream (median dt 1.733 ms) this flags gaps > 5.2 ms — the 15 genuine

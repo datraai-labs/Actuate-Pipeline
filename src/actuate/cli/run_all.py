@@ -14,7 +14,7 @@ import typer
 
 from actuate.pipeline import run_pipeline
 
-run_app = typer.Typer(help="One-command pipeline (Master Spec §2.2): "
+run_app = typer.Typer(help="One-command pipeline (Master Spec section 2.2): "
                            "ingest -> perceive -> fuse -> canonical -> certify -> "
                            "retarget -> validate -> language -> package -> viz.")
 
@@ -46,12 +46,12 @@ def run_all(
     result = run_pipeline(in_path, out, profile, resume=resume,
                           reporter=reporter, confirm=typer.confirm)
 
-    typer.secho(f"\npipeline complete in {result.seconds:.0f}s — stage summary:", bold=True)
+    typer.secho(f"\npipeline complete in {result.seconds:.0f}s -- stage summary:", bold=True)
     for stage, rec in result.checkpoint.items():
         if stage.startswith("_") or not isinstance(rec, dict):
             continue                       # _capture_id / _tier / _sim are metadata
         color = _COLORS.get(rec["status"], "red")
         typer.secho(f"  {stage:12s} {rec['status']:8s} {rec.get('note', '')}", fg=color)
     typer.echo(f"\ncanonical: {result.canonical_path}")
-    typer.secho("nothing was delivered — `actuate deliver` is a separate, gated command "
+    typer.secho("nothing was delivered -- `actuate deliver` is a separate, gated command "
                 "(and the delivery bucket does not exist).", fg="yellow")

@@ -131,6 +131,13 @@ def read_session_h5(path: Path) -> Dict[str, Any]:
         ):
             if optional in f["imu"]:
                 result[f"imu_{optional}"] = f["imu"][optional][:]
+        # Legacy primitive extraction consumes the unprefixed name, while the QA/sync
+        # callers use the explicit ``imu_`` namespace above. Preserve both contracts.
+        result["interpolated_over_dropout"] = (
+            f["imu"]["interpolated_over_dropout"][:].astype(bool)
+            if "interpolated_over_dropout" in f["imu"]
+            else np.zeros(len(result["gyro"]), dtype=bool)
+        )
 
         # Metadata
         metadata_str = f.attrs.get("metadata", "{}")

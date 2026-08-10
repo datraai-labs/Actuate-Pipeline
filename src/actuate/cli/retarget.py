@@ -6,7 +6,6 @@ remain separate because their inputs and target embodiments are different.
 """
 
 # Typer's supported declaration style uses Option calls as defaults.
-# ruff: noqa: B008
 
 from __future__ import annotations
 
@@ -14,7 +13,7 @@ from pathlib import Path
 
 import typer
 
-retarget_app = typer.Typer(help="L5 -- cross-embodiment retargeting (Master Spec §L5).")
+retarget_app = typer.Typer(help="L5 -- cross-embodiment retargeting (Master Spec section L5).")
 
 
 @retarget_app.command("setup-humanoid")

@@ -1,4 +1,4 @@
-"""`actuate certify` -- L4 quality scoring (Master Spec §4 L4)."""
+"""`actuate certify` -- L4 quality scoring (Master Spec section 4 L4)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import typer
 
-certify_app = typer.Typer(help="L4 — quality certification (Master Spec §4 L4).")
+certify_app = typer.Typer(help="L4 -- quality certification (Master Spec section 4 L4).")
 
 
 @certify_app.command("run")
@@ -43,7 +43,7 @@ def run(
     ep = report.episode
     typer.secho(
         f"  deliverable: {'YES' if ep.is_deliverable else 'NO'}"
-        f"  ({ep.delivery_block_reason() or 'clear'}) — quality does not open this gate",
+        f"  ({ep.delivery_block_reason() or 'clear'}) -- quality does not open this gate",
         fg="green" if ep.is_deliverable else "yellow",
     )
 

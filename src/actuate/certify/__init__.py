@@ -29,14 +29,14 @@ from actuate.certify.score import (
 )
 
 __all__ = [
-    "CertificationReport",
-    "score",
-    "sync_integrity",
-    "calibration_completeness",
-    "perception_confidence",
-    "contact_consistency",
-    "composite_quality",
-    "speed_bin",
-    "find_mistakes",
     "QUALITY_WEIGHTS",
+    "CertificationReport",
+    "calibration_completeness",
+    "composite_quality",
+    "contact_consistency",
+    "find_mistakes",
+    "perception_confidence",
+    "score",
+    "speed_bin",
+    "sync_integrity",
 ]

@@ -121,7 +121,7 @@ class GeoRT:
     def __init__(self, n_tips: int, n_joints: int, joint_limits: np.ndarray,
                  hidden: int = 128, device: str = "cpu") -> None:
         import torch
-        import torch.nn as nn
+        from torch import nn
 
         self._torch = torch
         self.device = device

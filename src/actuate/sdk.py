@@ -22,8 +22,6 @@ from actuate.config import auth
 from actuate.ingest.run import ensure_session_meta
 from actuate.pipeline import run_pipeline
 
-#: Default object-detection prompts when the caller gives none (generic manipulation).
-_DEFAULT_PROMPTS = ["hand", "object", "tool"]
 #: Export-format aliases the SDK accepts.
 _FORMATS = {"lerobot_v3": "lerobot", "lerobot": "lerobot", "rlds": "rlds",
             "openx": "rlds", "open_x": "rlds"}
@@ -156,7 +154,7 @@ def process(
     prompts: list[str] | None = None,
     reporter=None,
     **kwargs,
-) -> "ProcessingRun":
+) -> ProcessingRun:
     """Process any source into a certified canonical episode + a Rerun recording.
 
     `source`: local video / session dir, or hf:// s3:// https:// openx:// (when
@@ -171,22 +169,25 @@ def process(
 
     src_kwargs = {k: kwargs[k] for k in ("files", "split", "max_episodes") if k in kwargs}
     session = _resolve_source(source, work_root, **src_kwargs)
-    meta = ensure_session_meta(session)
+    ensure_session_meta(session)
     rig = _detect_rig(session, rig)
-    if max_frames is None:
-        max_frames = int(meta.get("frame_count") or 45)
+    from actuate.config import product_capabilities
 
+    rig_capability = next(
+        (item for item in product_capabilities()["rigs"] if item["id"] == rig), None
+    )
+    if rig_capability is None:
+        raise ValueError(f"unknown rig {rig!r}; read the capability registry before processing")
+    if not rig_capability["enabled"]:
+        raise ValueError(f"rig {rig!r} is not enabled: {rig_capability['status']}")
     # auto-task: a VLM keyframe call when a key is available and no task was given
     # ($ tiny, one image). No key -> stays None, and the exporter fail-closes on it.
     if task is None and kwargs.get("auto_task", True):
         task = auto_task(session, prompt_fn=kwargs.get("prompt_fn"))
 
-    # local processing = your own data -> consent GRANTED. pii_status stays PENDING, so the
-    # delivery gate still blocks (see pipeline._stage_canonical). Cloud mode keeps PENDING.
-    from actuate.sources.detect import local_consent_default
-
-    consent = (local_consent_default().value if cfg.get("mode", "local") == "local"
-               else None)
+    # Consent is never inferred from execution mode. Local ownership is not evidence that
+    # every recorded subject granted permission. Callers must pass an explicit decision.
+    consent = kwargs.get("consent")
 
     run_out = work_root / f"{session.name}_out"
     profile = {
@@ -198,8 +199,13 @@ def process(
         # because PASSED is a delivery claim, not a default (see io.redact / io.consent).
         "redact_pii": bool(kwargs.get("redact_pii", False)),
         "video": _video_name(session),
-        "perception": {"enabled": True, "max_frames": max_frames,
-                       "prompts": prompts or _DEFAULT_PROMPTS},
+        "perception": {
+            "enabled": True,
+            "max_frames": max_frames,
+            # None lets the object stage derive vocabulary from the task and its broad
+            # manipulation fallback. An explicit list remains an operator override.
+            "prompts": prompts,
+        },
         "retarget": kwargs.get("retarget", {}),          # no model -> stage skips itself
         "language": kwargs.get("language", {"mode": "skip"}),  # opt-in; SDK won't auto-bill
         "export": {"formats": [], "tier": "all"},        # export is explicit via .export()
@@ -214,11 +220,64 @@ def process_and_export(
     export_format: str = "lerobot_v3",
     out: str | Path = "./output/",
     **kwargs,
-) -> "ExportResult":
-    """One-liner: process, then export in one call. Returns the ExportResult."""
-    out = Path(out).expanduser()
-    run = process(source, out=out / "_work", **kwargs)
-    return run.export(export_format, path=out)
+) -> ExportResult:
+    """Process, then invoke the requested writer in its isolated interpreter.
+
+    This preserves the convenience API without loading WiLoR/UniDepth and LeRobot or
+    TensorFlow in one process. The output dataset is written below ``out/<format>``; the
+    durable canonical work directory remains alongside it.
+    """
+    import json
+    import os
+    import subprocess
+
+    fmt = _FORMATS.get(export_format)
+    if fmt is None:
+        raise ValueError(f"unknown export format {export_format!r}")
+    env_name = "ACTUATE_LEROBOT_PYTHON" if fmt == "lerobot" else "ACTUATE_RLDS_PYTHON"
+    writer_python = os.getenv(env_name)
+    if not writer_python:
+        raise RuntimeError(
+            f"{export_format} uses an isolated writer. Set {env_name} to that "
+            "environment's Python executable; see docs/quickstart.md."
+        )
+
+    out = Path(out).expanduser().resolve()
+    run = process(source, out=out / "work", **kwargs)
+    destination = out / export_format
+    command = [
+        writer_python,
+        "-m",
+        "actuate.cli",
+        "export",
+        str(run._result.out.resolve()),
+        "--format",
+        export_format,
+        "--out",
+        str(destination),
+    ]
+    embodiment = kwargs.get("embodiment")
+    if embodiment:
+        command.extend(["--embodiment", str(embodiment)])
+    completed = subprocess.run(command, text=True, capture_output=True, check=False)
+    if completed.returncode:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise RuntimeError(f"isolated {export_format} export failed: {detail}")
+
+    if fmt == "lerobot":
+        info = json.loads((destination / "meta" / "info.json").read_text(encoding="utf-8"))
+        n_frames = int(info["total_frames"])
+    else:
+        manifest = json.loads(
+            (destination / "actuate_manifest.json").read_text(encoding="utf-8")
+        )
+        n_frames = int(manifest.get("n_steps") or manifest.get("total_steps") or 0)
+    return ExportResult(
+        format=export_format,
+        path=destination,
+        n_frames=n_frames,
+        embodiment=str(embodiment) if embodiment else None,
+    )
 
 
 # ------------------------------------------------------------------ result objects
@@ -375,6 +434,8 @@ class ProcessingRun:
         }
 
     def certificate(self) -> dict:
+        from actuate.certify.score import THRESHOLD_SET_VERSION, THRESHOLDS_PROVISIONAL
+
         m = self._ep().episode_meta
         c = m.components
         return {
@@ -390,6 +451,8 @@ class ProcessingRun:
             },
             "consent": self._ep().consent.value,
             "deliverable": self._ep().is_deliverable,
+            "thresholds_provisional": THRESHOLDS_PROVISIONAL,
+            "threshold_set": THRESHOLD_SET_VERSION,
         }
 
     def __repr__(self) -> str:

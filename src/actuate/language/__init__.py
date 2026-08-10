@@ -36,18 +36,18 @@ from actuate.language.vlm import (
 )
 
 __all__ = [
-    "annotate",
-    "label_actions",
-    "ActionLabelResult",
-    "verify_vlm_label",
-    "paraphrase",
-    "judge",
-    "segment_subtasks",
-    "AnnotationReport",
-    "ConsistencyScore",
     "JUDGE_THRESHOLD",
     "VLM_MODEL",
+    "ActionLabelResult",
+    "AnnotationReport",
+    "ConsistencyScore",
+    "annotate",
     "estimate_annotation_cost",
     "get_api_key",
+    "judge",
+    "label_actions",
     "make_client",
+    "paraphrase",
+    "segment_subtasks",
+    "verify_vlm_label",
 ]

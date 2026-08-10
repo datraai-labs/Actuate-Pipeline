@@ -6,13 +6,18 @@ build-backend = "hatchling.build"
 name = "actuate"
 version = "2.0.0-dev"
 description = "Multimodal capture -> certified, retargeted, VLA-training-ready robot data."
-requires-python = ">=3.10"
+# Pydantic 2.9.2 is deliberately pinned to reproduce frozen canonical schema v5.
+# Its pydantic-core/PyO3 release predates CPython 3.14, so reject that interpreter with a
+# clear resolver message instead of attempting a doomed local Rust build.
+requires-python = ">=3.10,<3.14"
 
 # Core stays CPU-only and light. Per Master Spec §5 ("GPU boundary"), the schema,
 # fusion, canonical, certification and the exporters must install and run WITHOUT a
 # GPU stack, so value ships before any model does. Heavy deps live in extras.
 dependencies = [
-    "pydantic>=2.7",
+    # JSON Schema is a frozen customer contract. 2.10+ changes enum-key mappings by adding
+    # propertyNames, so generator drift breaks a fresh checkout without any model change.
+    "pydantic==2.9.2",
     "pydantic-settings>=2.2",
     "typer>=0.12",
     "numpy>=1.24",
@@ -24,9 +29,11 @@ dependencies = [
 # the LocalBackend has no AWS dependency at all, which is what lets the storage
 # abstraction be proven before any bucket exists.
 aws = [
-    "boto3>=1.34",
-    "s3fs>=2024.6",
-    "fsspec>=2024.6",
+    # Keep boto3/botocore inside aiobotocore 3.9's compatible window. Unbounded
+    # boto3 currently resolves past it and makes a clean [aws] install impossible.
+    "boto3==1.43.56",
+    "s3fs==2026.2.0",
+    "fsspec==2026.2.0",
     "pyarrow>=16.0",
     "zarr>=2.18",
     "sqlalchemy>=2.0",
@@ -34,11 +41,17 @@ aws = [
     "psycopg[binary]>=3.1",
     "pgvector>=0.2.5",
 ]
-perception = ["torch>=2.2", "transformers>=4.40", "opencv-python>=4.8", "mediapipe==0.10.14"]
+perception = [
+    # WiLoR-mini 1.1 declares torch<=2.5. Keep the model worker on that tested line;
+    # LeRobot's newer torchvision floor lives in the isolated [export] environment.
+    "torch>=2.2,<=2.5", "torchvision>=0.17,<0.21",
+    "transformers>=4.40,<5", "opencv-python>=4.8,<5",
+    "opencv-contrib-python>=4.8,<5", "mediapipe==0.10.14",
+]
 # Arm retargeting (L5). MuJoCo for kinematics/IK/replay + robot_descriptions for URDFs/MJCF.
 # NOTE: not Pinocchio -- `pin` has no Windows wheels and fails to build; MuJoCo covers FK,
 # Jacobian IK, and physics replay in one dep that installs on Windows AND Linux/Kaggle.
-retarget = ["torch>=2.2", "mujoco>=3.1", "robot_descriptions>=1.9", "scipy>=1.11"]
+retarget = ["torch>=2.2,<=2.5", "mujoco>=3.1", "robot_descriptions>=1.9", "scipy>=1.11"]
 # Full-body BVH/SMPL-X -> humanoid retargeting from Araujo et al. (arXiv:2510.02252).
 # Pin the reference implementation so its robot assets and IK mappings are reproducible.
 humanoid-retarget = [
@@ -48,13 +61,21 @@ humanoid-retarget = [
 ]
 sim = ["mujoco>=3.1"]
 # Rerun visualization (`actuate viz`). Viewer-free import; only needed to log/open recordings.
-viz = ["rerun-sdk>=0.20", "opencv-python>=4.8", "av>=12"]
+viz = ["rerun-sdk>=0.20", "opencv-python>=4.8,<5", "av>=12"]
 service = ["fastapi>=0.111", "uvicorn>=0.30"]
 # SDK source resolvers (Phase 6): pull data from HuggingFace / URLs / Open-X. s3fs+fsspec
 # are already in [aws]; huggingface_hub + datasets add the HF read/write path.
-sources = ["huggingface_hub>=0.23", "datasets>=2.19", "requests>=2.31", "fsspec>=2024.6"]
-# lerobot + tfds are the export gate targets (load+train / tfds.load).
-export = ["lerobot>=0.1", "tensorflow-datasets>=4.9"]
+sources = [
+    "huggingface_hub>=0.34,<1.0", "datasets>=2.19,<5", "requests>=2.31",
+    "fsspec==2026.2.0",
+]
+# LeRobot is compatible with the perception environment. RLDS/TFDS is deliberately
+# isolated in the [rlds] extra below because its protobuf requirements conflict with
+# MediaPipe's protobuf<5 pin.
+# LeRobot 0.4.x requires torchvision>=0.21 (and therefore a newer Torch than WiLoR allows).
+# Install this extra in its own interpreter and point the dashboard at it with
+# ACTUATE_LEROBOT_PYTHON. The CLI can be invoked directly from that environment.
+export = ["lerobot>=0.4,<0.5", "av>=12"]
 # RLDS needs a separate environment from perception: TensorFlow Metadata requires protobuf
 # >=6.31 while MediaPipe/UniDepth's dependency chain is pinned below 6 in [all].
 rlds = [
@@ -62,33 +83,40 @@ rlds = [
     "tensorflow-datasets>=4.9",
     "tensorflow-metadata>=1.17",
     "protobuf>=6.31,<7",
-    "opencv-python-headless>=4.8",
+    "opencv-python-headless>=4.8,<5",
     "importlib-resources>=6.4",
 ]
 dev = [
     "pytest>=7.4",
-    "ruff>=0.5",
+    # CI is a customer-facing contract; avoid silently enabling new rule sets.
+    "ruff==0.16.0",
     "import-linter>=2.0",
     "testcontainers[postgres]>=4.5",
+    # The regression suite imports these CPU-only helpers at collection time. Keep the
+    # documented CI/dev install self-contained without pulling the GPU/model stack.
+    "scipy>=1.11",
+    "opencv-python-headless>=4.8,<5",
+    "httpx2>=2.0",
+    "h5py>=3.11",
+    "pandas>=2.2",
+    "anthropic>=0.40",
 ]
-# Everything a robotics-lab engineer needs for `pip install actuate[all]` -> process
-# real data end-to-end (perception + retarget + viz + sources + export + aws).
+# Everything needed to process real data. Export writers stay in [export]/[rlds]
+# environments because their native/dependency stacks conflict with perception.
 all = [
-    "torch>=2.2", "transformers>=4.40", "opencv-python>=4.8", "mediapipe==0.10.14",
+    "torch>=2.2,<=2.5", "torchvision>=0.17,<0.21",
+    "transformers>=4.40,<5", "opencv-python>=4.8,<5",
+    "opencv-contrib-python>=4.8,<5", "mediapipe==0.10.14",
     "mujoco>=3.1", "robot_descriptions>=1.9", "scipy>=1.11",
     "general-motion-retargeting @ git+https://github.com/YanjieZe/GMR.git@bb1bbe40774794fceb2a7c579a3464a28e68c844",
     "daqp>=0.7", "certifi>=2024.7",
     "rerun-sdk>=0.20", "av>=12",
-    "huggingface_hub>=0.23", "datasets>=2.19", "requests>=2.31",
-    "boto3>=1.34", "s3fs>=2024.6", "fsspec>=2024.6", "pyarrow>=16.0",
-    "lerobot>=0.1", "tensorflow-datasets>=4.9",
+    "huggingface_hub>=0.34,<1.0", "datasets>=2.19", "requests>=2.31",
+    "boto3==1.43.56", "s3fs==2026.2.0", "fsspec==2026.2.0", "pyarrow>=16.0",
     "anthropic>=0.40", "pyyaml>=6.0",
-    # protobuf is a genuine three-way conflict: tensorflow/tfds want >=6.31, but wandb
-    # (imported by UniDepth, the DEPTH stage) and mediapipe break on protobuf 7.x. PERCEPTION
-    # is the core path and must import, so we pin protobuf <6 -- LeRobot v3 export works here
-    # too. The one casualty is the RLDS (tfds) SECONDARY exporter, which needs >=6.31 and
-    # degrades with a clear message; run RLDS export in a separate env if you need it.
-    "protobuf>=5.28,<6",
+    # MediaPipe 0.10.14 requires protobuf<5. RLDS/TFDS requires protobuf>=6.31 and is
+    # therefore installed only through the isolated [rlds] extra.
+    "protobuf>=4.25.3,<5",
 ]
 
 [project.scripts]
@@ -113,6 +141,7 @@ markers = [
     "real_data: exercises a real captured session on disk, not a synthetic fixture",
     "needs_docker: requires Docker (testcontainers Postgres)",
     "needs_aws: requires real AWS credentials for a DatraAI-owned account",
+    "slow: exercises model geometry or simulation and may take longer than a fast unit test",
 ]
 
 [tool.black]
@@ -126,3 +155,19 @@ src = ["src"]
 # Numbered script filenames (01_ingest.py, etc.) aren't valid Python module names —
 # that's intentional (see note above), not a lint violation to fix.
 exclude = ["scripts", "infra/cdk.out"]
+
+[tool.ruff.lint.per-file-ignores]
+# Typer intentionally declares CLI metadata through Argument/Option calls in defaults.
+"src/actuate/cli/*.py" = ["B008"]
+# These files are explicit degradation/isolation boundaries around optional SDKs,
+# native model runtimes, remote stores, or best-effort caches.
+"src/actuate/cli/viz.py" = ["B008", "BLE001"]
+"src/actuate/cloud.py" = ["BLE001", "S110"]
+"src/actuate/ingest/run.py" = ["BLE001"]
+"src/actuate/perception/depth/benchmark.py" = ["BLE001"]
+"src/actuate/pipeline/cache.py" = ["BLE001", "S110"]
+"src/actuate/pipeline/run.py" = ["BLE001"]
+"src/actuate/sdk.py" = ["BLE001"]
+"src/actuate/sources/adapters/egocentric_rgbd.py" = ["BLE001"]
+"src/actuate/sources/resolvers.py" = ["BLE001"]
+"tests/unit/test_retarget_arm.py" = ["BLE001"]

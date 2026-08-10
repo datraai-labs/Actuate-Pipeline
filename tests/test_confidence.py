@@ -20,27 +20,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config as cfg
 from utils.confidence import (
-    _margin_confidence,
-    _snr_factor,
     _landmark_confidence,
+    _margin_confidence,
     _nearest_object,
-    confidence_wrist_pronate_imu,
-    confidence_wrist_supinate_imu,
-    confidence_wrist_flex_imu,
+    _snr_factor,
     confidence_contact_onset_imu,
     confidence_contact_release_imu,
-    confidence_idle_wrist,
-    confidence_wrist_rotation_vision,
-    confidence_power_grasp,
-    confidence_lateral_pinch,
-    confidence_reach_onset,
+    confidence_contact_vision,
     confidence_finger_curl,
     confidence_finger_extend,
-    confidence_transport,
     confidence_idle_head,
-    confidence_contact_vision,
+    confidence_idle_wrist,
+    confidence_lateral_pinch,
+    confidence_power_grasp,
+    confidence_reach_onset,
+    confidence_transport,
+    confidence_wrist_flex_imu,
+    confidence_wrist_pronate_imu,
+    confidence_wrist_rotation_vision,
+    confidence_wrist_supinate_imu,
 )
-from utils.imu_source_router import WristPrimaryStrategy, VisionPrimaryStrategy, FusionStrategy, ALL_PRIMITIVES
+from utils.imu_source_router import (
+    ALL_PRIMITIVES,
+    FusionStrategy,
+    VisionPrimaryStrategy,
+    WristPrimaryStrategy,
+)
 
 
 def _pose_with_derived(derived: dict, hands_detected=True, dominant_hand="right", confidence=0.9):

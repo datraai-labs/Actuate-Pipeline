@@ -50,8 +50,8 @@ class DeliveryRecord:
     notes: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
-        lines = [f"delivery -> {self.customer}/{self.dataset}: "
-                 f"{len(self.uris)} object(s), {len(self.episode_ids)} episode(s)"]
+        lines = [(f"delivery -> {self.customer}/{self.dataset}: "
+                 f"{len(self.uris)} object(s), {len(self.episode_ids)} episode(s)")]
         lines.append(f"  url: {self.url or 'NONE — local backend, nothing publicly reachable'}")
         for n in self.notes:
             lines.append(f"  note: {n}")
@@ -148,5 +148,10 @@ def deliver(
     return record
 
 
-__all__ = ["deliver", "DeliveryRecord", "DeliveryRefused", "ConsentViolation",
-           "QUALITY_FLOOR"]
+__all__ = [
+    "QUALITY_FLOOR",
+    "ConsentViolation",
+    "DeliveryRecord",
+    "DeliveryRefused",
+    "deliver",
+]

@@ -1,8 +1,9 @@
 """L1 -- hand pose. WiLoR -> MANO (Master Spec §L1).
 
-LICENCE: WiLoR is CC-BY-NC-4.0; MANO is MPI non-commercial. INTERNAL RESEARCH ONLY.
-Nothing derived from this may be delivered to a customer without an MPI commercial licence.
-See STATUS.md.
+LICENCE: WiLoR's published models are CC-BY-NC-ND-4.0 and MANO's standard grant is
+non-commercial. INTERNAL RESEARCH ONLY unless separate commercial rights have been signed.
+HaMeR's code is MIT, but its MANO model dependency remains separately restricted.
+See docs/COMMERCIAL_LICENSE_READINESS.md.
 """
 
 from __future__ import annotations

@@ -30,7 +30,7 @@ from pathlib import Path
 from actuate.perception.slam.vio import SlamResult
 
 
-def run(session_dir: Path) -> SlamResult:  # noqa: ARG001
+def run(session_dir: Path) -> SlamResult:
     raise NotImplementedError(
         "ORB-SLAM3 is not built. It has no pip distribution and needs a C++ toolchain "
         "(Pangolin/DBoW2/Eigen) that this machine does not have.\n\n"

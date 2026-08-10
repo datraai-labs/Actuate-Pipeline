@@ -119,8 +119,8 @@ def run_benchmark(models: dict, hands, video_frames, *, baseline="UniDepthV2",
 
     lines = [
         "Depth benchmark -- wrist z-jitter is the gate (place the hand, measure the trajectory).",
-        f"GATE: temporal model must reach < {GATE_WRIST_JITTER_MM:.0f} mm/frame smoothed "
-        "(3x below the fair 11.3 mm hand-cloud-fit baseline; NOT the 20.7 mm bbox strawman).",
+        (f"GATE: temporal model must reach < {GATE_WRIST_JITTER_MM:.0f} mm/frame smoothed "
+        "(3x below the fair 11.3 mm hand-cloud-fit baseline; NOT the 20.7 mm bbox strawman)."),
         "",
     ]
     lines += [rows[n].line() for n in models]

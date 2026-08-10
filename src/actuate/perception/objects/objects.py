@@ -52,6 +52,14 @@ _TRACK_MATCH_IOU = 0.3
 _BOX_THRESHOLD = 0.30
 _TEXT_THRESHOLD = 0.25
 
+# Broad manipulation vocabulary for unknown footage. This replaces the factory-only list
+# that returned no detections on both office and kitchen captures. Task-derived words are
+# prepended, so a known noun remains the strongest prompt without excluding everyday data.
+_GENERIC_MANIPULATION_PROMPTS = (
+    "cup", "bottle", "bowl", "plate", "container", "food", "utensil", "tool",
+    "paper", "document", "box", "package", "device", "part", "object", "surface",
+)
+
 
 @dataclass
 class ObjectFrame:
@@ -196,10 +204,9 @@ def _prompts_from(prompts: list[str] | str | None, task: str | None) -> list[str
         stop = {"the", "with", "using", "hand", "right", "left", "perform", "grasp", "and"}
         words = [w.strip(".,").lower() for w in task.split()]
         picked = [w for w in words if len(w) > 3 and w not in stop]
-        if picked:
-            return picked
-    # Real capture is a desk/paperwork scene.
-    return ["stapler", "paper", "document", "box"]
+        prompts = picked + list(_GENERIC_MANIPULATION_PROMPTS)
+        return list(dict.fromkeys(prompts))[:20]
+    return list(_GENERIC_MANIPULATION_PROMPTS)
 
 
 def run(

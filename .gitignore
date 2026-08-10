@@ -13,6 +13,7 @@ __pycache__/
 !.env.sample
 !.env.template
 .venv/
+.venv-*/
 venv/
 
 # Local secrets / credentials
@@ -96,3 +97,8 @@ infra/cdk.context.json
 # Perception cache for `actuate viz --cache` (pickled stage outputs; large, per-session)
 .actuate_cache/
 out/
+tmp/
+
+# Local coding-agent state is not product source.
+.agent-sessions/
+.codex/

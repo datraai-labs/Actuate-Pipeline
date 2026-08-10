@@ -217,5 +217,5 @@ class Actor(str, Enum):
     HEAD = "head"
 
     @staticmethod
-    def for_side(side: "Side") -> "Actor":
+    def for_side(side: Side) -> Actor:
         return Actor.LEFT_HAND if side == Side.LEFT else Actor.RIGHT_HAND

@@ -39,7 +39,7 @@ def login(
                     "processing works today.", fg="yellow")
     else:
         auth.login(mode="local")
-        typer.secho("local mode ready — no API key needed. "
+        typer.secho("local mode ready -- no API key needed. "
                     "Process data with `actuate process <source>`.", fg="green")
 
 
@@ -87,8 +87,10 @@ def process_cmd(
                                           "openx:// source."),
     task: str = typer.Option(None, help="Task description. Auto-detected via VLM if a key "
                                         "is set, else you'll be prompted."),
-    rig: str = typer.Option("auto", help="auto (detect from video) | head_mounted | stereo "
-                                         "| teleop_robot | ..."),
+    rig: str = typer.Option(
+        "auto",
+        help="auto or head_mounted. Registered-but-unvalidated rigs fail closed.",
+    ),
     embodiment: str = typer.Option(None, help="Robot for retargeting/robot-space export "
                                               "(defaults to your config)."),
     arm_model: Path = typer.Option(
@@ -99,20 +101,26 @@ def process_cmd(
     ),
     max_frames: int = typer.Option(None, help="Cap frames (default: full video)."),
     out: str = typer.Option(None, help="Working directory (default: ./actuate_runs)."),
-    export: str = typer.Option(None, "--export", help="Also export in one shot: "
-                                                      "lerobot_v3 | rlds."),
-    dataset_out: str = typer.Option("./dataset/", "--dataset-out",
-                                    help="Where --export writes the dataset."),
     to_s3: bool = typer.Option(None, "--to-s3/--local", help="Upload artifacts to S3 and "
                                "clean local (overrides `config storage`)."),
     redact_pii: bool = typer.Option(False, "--redact-pii", help="Blur faces and mark "
                                     "pii_status=passed (required, with consent, to deliver)."),
+    consent_granted: bool = typer.Option(
+        False,
+        "--consent-granted",
+        help="Confirm every recorded subject granted this processing/export use. Never inferred.",
+    ),
+    verbose: bool = typer.Option(
+        False, "--verbose", help="Show model/dependency logs and progress bars."
+    ),
 ) -> None:
     """Process a source into a certified canonical episode + Rerun recording.
 
-    Add `--export lerobot_v3` to process AND export in one command (the one-shot; the
-    power-user config-driven form is `actuate run all --config`).
+    Export is a separate command because LeRobot and RLDS run in isolated interpreters.
     """
+    from actuate.cli.logging import configure_customer_logging
+
+    configure_customer_logging(verbose=verbose)
     import actuate
 
     prompt_fn = (lambda msg: typer.prompt(msg, default="")) if task is None else None
@@ -120,24 +128,18 @@ def process_cmd(
         run = actuate.process(source, rig=rig, embodiment=embodiment, task=task,
                               max_frames=max_frames, out=out, reporter=_reporter,
                               prompt_fn=prompt_fn, redact_pii=redact_pii,
+                              consent="granted" if consent_granted else None,
                               retarget={"arm_model": str(arm_model)} if arm_model else {})
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ValueError) as exc:
         typer.secho(f"cannot process: {exc}", fg="red")
         raise typer.Exit(1) from exc
     _run_summary(run)
     exported_dirs = []
-    if export:
-        try:
-            res = run.export(export, path=dataset_out)
-        except (ValueError, RuntimeError) as exc:
-            typer.secho(f"export failed: {exc}", fg="red")
-            raise typer.Exit(1) from exc
-        exported_dirs = [dataset_out]
-        typer.secho(f"\nexported {res.n_frames} frames -> {res.path}  ({export})",
-                    fg="green")
-    else:
-        typer.secho(f"export with:  actuate export {run._result.out} "
-                    "--format lerobot_v3", fg="cyan")
+    typer.secho(
+        f"export with the isolated writer:  .venv-lerobot/bin/actuate export "
+        f"{run._result.out} --format lerobot_v3",
+        fg="cyan",
+    )
 
     # S3 storage: --to-s3 flag wins, else the `config storage` default
     from actuate.config import auth
@@ -194,7 +196,7 @@ def export_cmd(
     out = out or (processed / format)
     try:
         res = run.export(format, path=out, embodiment=embodiment)
-    except (ValueError, RuntimeError) as exc:
+    except (ImportError, ValueError, RuntimeError) as exc:
         typer.secho(f"export failed: {exc}", fg="red")
         raise typer.Exit(1) from exc
     typer.secho(f"exported {res.n_frames} frames -> {res.path}  ({format})", fg="green")
@@ -272,7 +274,7 @@ def report_cmd(
     ep = CanonicalEpisode.model_validate_json(canon.read_text(encoding="utf-8"))
     m = ep.episode_meta
     c = m.components
-    fmt = lambda v: "not measured" if v is None else f"{v:.2f}"  # noqa: E731
+    fmt = lambda v: "not measured" if v is None else f"{v:.2f}"
     typer.secho(f"quality {m.quality}/5   speed {m.speed}   task {ep.task!r}", bold=True)
     for name in ("sync_integrity", "calibration_completeness", "perception_confidence",
                  "contact_consistency", "ik_convergence_rate"):

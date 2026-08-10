@@ -9,8 +9,8 @@ would prove nothing about production. Fail loudly instead.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine

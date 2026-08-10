@@ -28,7 +28,6 @@ def template() -> dict:
     sys.path.insert(0, str(INFRA))
     from aws_cdk import App
     from aws_cdk.assertions import Template
-
     from stacks.storage_stack import StorageStack
 
     app = App(context={"env": "dev"})

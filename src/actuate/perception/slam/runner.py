@@ -46,20 +46,27 @@ def _rotation_to_se3(R: Rotation, t: np.ndarray) -> SE3:
     )
 
 
-def _load_gyro(session_dir: Path, n_frames: int) -> np.ndarray | None:
+def _load_gyro(session_dir: Path, n_frames: int) -> tuple[np.ndarray | None, np.ndarray]:
     """Per-video-frame gyro. v1's sync stage already resampled it onto the frame axis."""
     h5 = session_dir / "session.h5"
     if not h5.exists():
-        return None
+        return None, np.zeros(n_frames, dtype=bool)
     import h5py
 
     with h5py.File(h5, "r") as f:
         if "imu/gyro" not in f:
-            return None
+            return None, np.zeros(n_frames, dtype=bool)
         g = np.asarray(f["imu/gyro"][:], dtype=np.float64)
+        dropout = (
+            np.asarray(f["imu/interpolated_over_dropout"][:], dtype=bool)
+            if "imu/interpolated_over_dropout" in f
+            else np.zeros(n_frames, dtype=bool)
+        )
     if len(g) != n_frames:
-        return None
-    return g
+        return None, np.zeros(n_frames, dtype=bool)
+    if len(dropout) != n_frames:
+        dropout = np.ones(n_frames, dtype=bool)
+    return g, dropout
 
 
 def run(
@@ -90,7 +97,9 @@ def run(
     selected = sorted({int(i) for i in selected if 0 <= int(i) < n_frames})
     selected = selected[::stride]
 
-    gyro = _load_gyro(session_dir, int(meta["frame_count"]))
+    gyro, interpolated_over_dropout = _load_gyro(
+        session_dir, int(meta["frame_count"])
+    )
     has_imu = gyro is not None
 
     if method == "auto":
@@ -115,6 +124,12 @@ def run(
             "direct sensor measurement, not an inference. Drift accumulates with time and "
             "33 ms is far too short for it to matter."
         )
+        if interpolated_over_dropout.any():
+            notes["imu_dropout"] = (
+                f"{int(interpolated_over_dropout.sum())} frame(s) use IMU values interpolated "
+                "across a physical sensor gap. Those frame poses are tagged approximated in "
+                "canonical output, not measured_human."
+            )
     else:
         rel_rot = [Rotation.identity()] * n_frames
         rot_mag = np.zeros(n_frames)
@@ -253,6 +268,7 @@ def run(
         rotation_rad_gyro_span=rot_gyro_span,
         rotation_rad_vision=rot_vision,
         translation_is_metric=False,
+        interpolated_over_dropout=interpolated_over_dropout,
         _rotvec_gyro=rv_gyro,
         _rotvec_vision=rv_vision,
         imu_to_camera=R_ext,

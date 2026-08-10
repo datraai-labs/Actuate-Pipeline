@@ -103,7 +103,7 @@ def _annotate_rgb(
                 out = cv2.addWeighted(out, 1.0, overlay, 0.32, 0.0)
         info = by_track.get(track)
         if info:
-            x0, y0, x1, y1 = [int(round(v)) for v in info["bbox_xyxy_px"]]
+            x0, y0, x1, y1 = [round(v) for v in info["bbox_xyxy_px"]]
             cv2.rectangle(out, (x0, y0), (x1, y1), color, 4)
             label = f"{info['label']} #{track}  {info['score']:.2f}"
             cv2.putText(

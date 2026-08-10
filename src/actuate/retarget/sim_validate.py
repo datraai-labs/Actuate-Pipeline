@@ -117,7 +117,9 @@ def run(canonical, embodiment: str, trajectory, *, robot_model=None, hand_model=
             f"{MAX_JOINT_DELTA_RAD_PER_FRAME} rad/source-frame"
         )
     if ik_convergence is not None and ik_convergence < MIN_IK_CONVERGENCE:
-        reasons.append(f"IK convergence {ik_convergence:.0%} < {MIN_IK_CONVERGENCE:.0%}")
+        # Keep enough precision that a near-threshold failure cannot render as the logically
+        # contradictory "90% < 90%" in customer-facing stage and certificate text.
+        reasons.append(f"IK convergence {ik_convergence:.2%} < {MIN_IK_CONVERGENCE:.2%}")
 
     return SimValidationResult(
         embodiment=embodiment, n_frames=n,

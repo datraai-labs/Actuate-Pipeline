@@ -3,10 +3,8 @@ DatraAI Pipeline — Tests for service/api.py
 Uses FastAPI's TestClient to verify the wrapper REST endpoints.
 """
 
-import os
-import sys
 import shutil
-import tempfile
+import sys
 from pathlib import Path
 
 # Add project root to sys.path
@@ -15,14 +13,54 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import pytest
 from fastapi.testclient import TestClient
-from service.api import app, FRONTEND_STAGES
+from service.api import FRONTEND_STAGES, app, session_jobs
 
 
 class TestPipelineAPI:
     """Verifies behavior and routing logic of the thin FastAPI wrapper."""
 
     @pytest.fixture(autouse=True)
-    def setup_client(self):
+    def setup_client(self, tmp_path, monkeypatch):
+        # The old test silently depended on one developer's uncommitted
+        # ``processed/session_001`` tree. Build the contract fixture here so a fresh clone
+        # and CI exercise the same endpoints deterministically.
+        monkeypatch.chdir(tmp_path)
+        proc = tmp_path / "processed" / "session_001"
+        proc.mkdir(parents=True)
+        raw = tmp_path / "raw" / "session_001"
+        raw.mkdir(parents=True)
+
+        completed = [
+            ("01_ingest", 242.3),
+            ("02_sync", 1.0),
+            ("04d_depth_estimate", 1.0),
+            ("04_hand_pose", 1.0),
+            ("04c_object_track", 1.0),
+            ("05_primitives", 1.0),
+            ("06b_episode_segment", 1.0),
+            ("07_task_classify", 1.0),
+        ]
+        lines = [
+            f"2026-08-10T00:00:00+00:00 | INFO | [{stage}] ✓ ({duration:.1f}s)"
+            for stage, duration in completed
+        ]
+        lines.append(
+            "2026-08-10T00:00:01+00:00 | ERROR | DELIVERY BLOCKED: consent=pending"
+        )
+        (proc / "pipeline.log").write_text("\n".join(lines), encoding="utf-8")
+        (proc / "quality_certificate.json").write_text(
+            '{"session_id":"session_001"}', encoding="utf-8"
+        )
+        (proc / "language_grounding.json").write_text('{}', encoding="utf-8")
+        (proc / "task_label.json").write_text(
+            '{"episodes":[{"L1_task":"unknown"}]}', encoding="utf-8"
+        )
+        (proc / "episodes.json").write_text('[]', encoding="utf-8")
+        (proc / "hand_pose.json").write_text('[]', encoding="utf-8")
+        (proc / "object_tracks.json").write_text('[]', encoding="utf-8")
+        (proc / "depth_data.json").write_text('[]', encoding="utf-8")
+        (proc / "redacted_compressed.mp4").write_bytes(b"fixture-video")
+        session_jobs.clear()
         self.client = TestClient(app)
 
     def test_health_check(self):
@@ -175,4 +213,3 @@ class TestPipelineAPI:
         qc_run = next(r for r in runs if r["stage"] == "09_quality_certificate")
         assert qc_run["status"] == "failed"
         assert "DELIVERY BLOCKED" in qc_run["error_message"]
-

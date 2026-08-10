@@ -4,6 +4,8 @@ commands (status/config/report) run for real against a tiny prebuilt canonical."
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from typer.testing import CliRunner
 
@@ -88,9 +90,46 @@ def test_process_error_message_is_actionable(monkeypatch):
     assert r.exit_code == 1 and "cannot process" in r.stdout
 
 
+def test_process_only_grants_consent_when_operator_says_so(monkeypatch, tmp_path):
+    seen = []
+
+    class _Run:
+        status = "completed"
+        _result = SimpleNamespace(out=tmp_path / "out")
+
+        def summary(self):
+            return {
+                "quality": None,
+                "num_frames": 1,
+                "task": "pick up cup",
+                "canonical_path": str(tmp_path / "out" / "canonical.json"),
+            }
+
+    import actuate
+
+    def _process(*args, **kwargs):
+        seen.append(kwargs.get("consent"))
+        return _Run()
+
+    monkeypatch.setattr(actuate, "process", _process)
+    without = runner.invoke(app, ["process", "clip.mp4", "--task", "pick up cup"])
+    with_flag = runner.invoke(
+        app,
+        ["process", "clip.mp4", "--task", "pick up cup", "--consent-granted"],
+    )
+    assert without.exit_code == 0 and with_flag.exit_code == 0
+    assert seen == [None, "granted"]
+
+
 def test_export_errors_without_canonical(tmp_path):
     r = runner.invoke(app, ["export", str(tmp_path / "empty")])
     assert r.exit_code == 1 and "actuate process" in r.stdout
+
+
+def test_deliver_lists_all_missing_options_at_once(tmp_path):
+    r = runner.invoke(app, ["deliver", str(tmp_path / "dataset")])
+    assert r.exit_code == 2
+    assert "missing required options: --customer, --episodes" in r.stdout
 
 
 # ---------------------------------------------------------------- power-user tree survives

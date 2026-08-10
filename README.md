@@ -1,157 +1,157 @@
 # Actuate
 
-Multimodal robot capture → certified, retargeted, **VLA-training-ready** datasets
-(LeRobot v3 / RLDS) for frontier robotics labs.
+Actuate turns egocentric manipulation video into a provenance-carrying canonical episode,
+quality certificate, and (when every gate passes) a LeRobot v3 or RLDS dataset.
 
-Six capture rigs in — egocentric head-mounted, UMI handheld gripper, stereo, instrumented
-glove, teleoperated robot, DexUMI exoskeleton. Training-ready data out, with a
-machine-checkable quality certificate and a **fail-closed consent gate** on every episode.
+The product is deliberately fail-closed: an absent measurement stays absent, uncalibrated
+model scores are not shown as probabilities, and consent, PII, task, or retargeting failures
+block the corresponding export rather than being replaced with plausible values.
 
-> **Read [`STATUS.md`](STATUS.md) before trusting anything here.** It grades every component
-> as tested-against-real-data / unit-tested / written-only. Increment 1 built the
-> foundation; most layers are deliberately empty.
+Read [STATUS.md](STATUS.md) for real-data validation status and
+[docs/RESEARCH_BASIS.md](docs/RESEARCH_BASIS.md) for the papers behind the trust and data
+contracts. The reproducible NVIDIA acceptance record is in
+[docs/GPU_VALIDATION_2026-08-10.md](docs/GPU_VALIDATION_2026-08-10.md).
 
-## The documents that govern
+> **Commercial-use warning:** the default WiLoR/MANO/UniDepth perception chain is not
+> commercially cleared under its published terms, and WiLoR also brings an Ultralytics
+> licensing decision. Do not sell or deliver that runtime or its generated artifacts to a
+> commercial customer until separate rights are signed or the models are replaced. See
+> [docs/COMMERCIAL_LICENSE_READINESS.md](docs/COMMERCIAL_LICENSE_READINESS.md).
 
-| Doc | Role |
-|---|---|
-| [`docs/architecture/MASTER_IMPLEMENTATION_SPEC.md`](docs/architecture/MASTER_IMPLEMENTATION_SPEC.md) | **The document we build from.** §3 canonical schema is the freeze point; §8 is the build order. |
-| [`docs/architecture/AWS_ARCHITECTURE.md`](docs/architecture/AWS_ARCHITECTURE.md) | Storage, the Postgres catalog, and the consent boundary **enforced in IAM, not just code**. |
-| [`docs/PIPELINE_STATUS.md`](docs/PIPELINE_STATUS.md) | The honest ledger of what is genuinely unvalidated in the v1 pipeline. |
+## Supported today
 
-Earlier architecture docs (v1, v2) are kept as history in `docs/architecture/`; the Master
-Spec consolidates them. The v1 pipeline's own README is at
-[`docs/README_v1_pipeline.md`](docs/README_v1_pipeline.md).
-
-## Two non-negotiables
-
-1. **CLI/API-first.** Everything is a library function first; the Typer CLI and the FastAPI
-   service are thin consumers, never dependencies. If a capability only works through the
-   CLI or the service, it is wrong. **Enforced in CI** by an import-linter contract.
-2. **Verify against real data.** A component is "done" only when tested against real data,
-   and **every correctness test must be confirmed to fail against a broken version.**
-   "Looks right" is not a status.
+- Head-mounted egocentric video: enabled and real-data verified.
+- Stereo: registered but disabled until real stereo calibration and end-to-end validation pass.
+- UMI, teleoperation, glove, and DexUMI: deferred; not offered as working inputs.
+- WiLoR hands, UniDepth metric depth, Grounding DINO + SAM2 objects: live pipeline.
+- LeRobot v3: supported behind consent, PII, task, and data-integrity gates.
+- RLDS: supported only in its isolated `[rlds]` environment; TensorFlow never shares the GPU
+  worker process with perception.
+- Robot retargeting: IK and MuJoCo validation are implemented, but no trained root-frame model
+  ships yet. Robot trajectories therefore skip honestly by default.
 
 ## Install
 
-```bash
-pip install -e ".[aws,dev,service]"   # core is CPU-only and light; heavy deps are extras
-```
+For the normal GPU processing path:
 
-Extras: `[perception]` (WiLoR, depth models — GPU), `[retarget]` (IK), `[sim]` (MuJoCo),
-`[aws]` (S3 + Postgres + pgvector), `[service]` (FastAPI). The core library, the schema,
-certification, and the exporters all run **without a GPU stack** — so value ships before
-any model does.
-
-## Run the tests
+Python 3.10-3.13 is supported. Schema v5 is generated with an exact Pydantic version, so
+Python 3.14 is intentionally rejected until that frozen contract is migrated explicitly.
 
 ```bash
-pytest tests/unit               # fast; no Docker, no AWS
-pytest tests/integration        # needs Docker (spins up a real Postgres + pgvector)
-pytest                          # everything, incl. the v1 pipeline suite
-lint-imports                    # the CLI/API-first dependency contract
-actuate schema freeze --check   # fails if the models drifted without a version bump
+python -m venv .venv
+source .venv/bin/activate                    # Windows: .venv\Scripts\activate
+python -m pip install -U pip
+python -m pip install -e ".[perception,retarget,sim,sources]"
 ```
 
-## The CLI
+Core/schema/tests without GPU models:
 
 ```bash
-actuate schema freeze              # emit the versioned JSON Schema
-actuate storage whoami             # WHICH AWS ACCOUNT ARE WE POINTED AT?  (see below)
-actuate storage buckets            # the four bucket names for an env
-actuate storage verify-consent-boundary --env dev --profile datraai-admin
-actuate migrate plan               # what migration would do. Reads only, touches nothing.
-actuate migrate run --backend s3 --env dev --profile datraai-admin --yes
+python -m pip install -e ".[dev]"
 ```
 
-Layer commands (`ingest`, `perceive`, `fuse`, `canonical`, `certify`, `retarget`,
-`language`, `package`) parse and honestly print "not implemented" — Increment 1 built the
-foundation only.
-
-## AWS
-
-**Actuate's infrastructure lives in account `<ACTUATE_AWS_ACCOUNT>`, region `eu-north-1`, via the
-`datraai-admin` profile.**
-
-> ⚠️ A dev machine here may have credentials for a **partner account**
-> (`vendor-upload-only` @ `<PARTNER_ACCOUNT>`, holding `northstar-*` / `humanstryde-*` buckets)
-> configured as its default. **Never provision Actuate infrastructure there.** Run
-> `actuate storage whoami` if you are unsure. The CDK app hardcodes no account ID and
-> requires `ACTUATE_AWS_ACCOUNT` to be set explicitly — it deliberately ignores
-> `CDK_DEFAULT_ACCOUNT`, which the CDK CLI auto-populates from whatever credentials happen
-> to be ambient.
-
-### Bring up the consent boundary FIRST
-
-AWS Architecture §8: *"The consent boundary (IAM + bucket policy + fail-closed gate) should
-be stood up and tested first, before any real capture data lands."*
+LeRobot and RLDS must be installed separately. LeRobot's Torch/TorchVision floor conflicts
+with WiLoR's tested Torch ceiling; RLDS's TensorFlow/protobuf stack conflicts with MediaPipe.
 
 ```bash
-aws configure --profile datraai-admin                  # <ACTUATE_AWS_ACCOUNT>, eu-north-1
-aws sts get-caller-identity --profile datraai-admin    # must print <ACTUATE_AWS_ACCOUNT>
-
-cd infra
-pip install -r requirements.txt
-npm install -g aws-cdk
-
-cdk synth -c env=dev                                   # offline; needs no credentials
-
-export ACTUATE_AWS_ACCOUNT=<ACTUATE_AWS_ACCOUNT>
-export AWS_REGION=eu-north-1
-cdk bootstrap aws://$ACTUATE_AWS_ACCOUNT/$AWS_REGION --profile datraai-admin
-cdk deploy -c env=dev --profile datraai-admin --all
-
-# Then PROVE the boundary is intact, before any data lands:
-actuate storage verify-consent-boundary --env dev --profile datraai-admin
+python -m venv .venv-lerobot
+source .venv-lerobot/bin/activate
+python -m pip install -e ".[export]"
 ```
 
-Stacks: `StorageStack` (4 buckets + KMS CMK + the IAM consent boundary), `DataStack`
-(Aurora Serverless v2 Postgres + Secrets Manager). `ComputeStack` and `ServiceStack` are
-later increments.
+RLDS uses a third environment:
 
-### The consent boundary, in three independent layers
-
-Un-consented data reaching a customer requires **all three** to fail:
-
-1. **Code** — `io.consent.DeliveryWriter` refuses any write whose episode is not
-   `consent=granted` **and** `pii_status=passed`. Fail-closed: a *missing* record blocks.
-   Proven load-bearing by a test that removes the guard and watches data leak.
-2. **Catalog** — `catalog.deliverable_episodes()` is an INNER JOIN through `consent` and
-   `certifications`. An un-consented episode cannot be *returned*, let alone written.
-3. **IAM** — the delivery bucket policy `Deny`s `PutObject` from every principal except the
-   packaging role. An explicit Deny cannot be overridden by any Allow, anywhere.
-
-Consent is keyed on **`capture_id`**, not episode — one physical recording yields many
-episodes, and a revocation must revoke all of them at once.
-
-## Storage layout
-
-```
-s3://actuate-raw-<env>/       <rig>/<capture_id>/...      versioned; -> Glacier Deep Archive
-s3://actuate-work-<env>/      canonical/<episode_id>/vN/  Intelligent-Tiering
-s3://actuate-delivery-<env>/  <customer>/<dataset>/<ver>/ CONSENT-PASSED ONLY
-s3://actuate-artifacts-<env>/ checkpoints, URDFs, sim assets
+```bash
+python -m venv .venv-rlds
+source .venv-rlds/bin/activate
+python -m pip install -e ".[rlds]"
 ```
 
-Blobs in S3; everything queryable in Postgres with an S3 URI pointer. **Video is never
-duplicated or re-encoded** — the canonical representation references chunked MP4, it does
-not carry pixels.
+For the dashboard worker, set `ACTUATE_LEROBOT_PYTHON` and `ACTUATE_RLDS_PYTHON` to those
+environments' Python executables. For the CLI export step, invoke `actuate` from
+`.venv-lerobot`; canonical artifacts are portable between the environments.
 
-## Repo shape
+## Customer flow
 
+```bash
+.venv/bin/actuate login --local
+.venv/bin/actuate status
+
+.venv/bin/actuate process my_video.mp4 \
+  --rig head_mounted \
+  --consent-granted \
+  --redact-pii \
+  --out my_output
+
+.venv/bin/actuate report my_output/my_video_out
+
+.venv-lerobot/bin/actuate export my_output/my_video_out \
+  --format lerobot_v3 \
+  --out my_output/lerobot_v3
+
+.venv-lerobot/bin/actuate deliver my_output/lerobot_v3 \
+  --customer example_lab \
+  --episodes my_output/my_video_out/canonical.json \
+  --local-root ./delivered
 ```
-src/actuate/        the library — the source of truth
-  config/           settings + rig registry (6 rigs) + embodiment registry
-  schema/           THE FROZEN CANONICAL CONTRACT (schema_version=1)
-  io/               storage backends, Parquet/Zarr store, the consent guard
-  catalog/          Postgres (SQLAlchemy + Alembic + pgvector)
-  ingest/ perception/ fusion/ canonical/ certify/ retarget/ language/ package/ feedback/
-  cli/              Typer (thin)
-  service/          FastAPI (thin consumer)
-infra/              AWS CDK: StorageStack + DataStack
-scripts/NN_*.py     the 17 v1 stages — still the execution path (run_pipeline.py)
+
+`--consent-granted` is an explicit attestation that every recorded subject granted this use;
+local file ownership is not treated as consent. `--redact-pii` runs the privacy pass required
+for export/delivery. Revocation blocks every later export.
+
+The default processes the full source. `--max-frames N` is an explicit sampling mode and the
+coverage is recorded. Add `--verbose` only when diagnosing model/dependency output; the normal
+console shows Actuate's stage results and exact skip reasons.
+
+If no task is supplied, Actuate uses `ANTHROPIC_API_KEY` for optional automatic task reading;
+without the key it prompts. To avoid either behavior, pass `--task` explicitly. VLM language
+annotation is opt-in and may incur API cost.
+
+Customer S3 delivery is not generally available yet. `--local-root` is the verified delivery
+path. Operator-only AWS commands are documented under `docs/architecture/` and should never
+be run against ambient or partner-account credentials.
+
+## Outputs
+
+Every run writes a `README.md`, frozen canonical JSON Schema, `run_manifest.json` with code and
+dependency lineage, and `checkpoint.json` with each stage's status and skip reason. The source
+may be staged for reproducibility, and dataset writers may decode or re-encode video; Actuate
+does not claim a no-copy/no-re-encoding path.
+
+`pipeline.rrd` opens in the Rerun viewer. Dense depth lives under `artifacts/depth/`. Internal
+perception caches live outside the customer output tree under `~/.cache/actuate` by default.
+
+Identifiers:
+
+- `capture_id`: SHA-256 identity of the original capture bytes.
+- `episode_id`: capture prefix plus a segmentation suffix such as `_ep00`.
+- `schema_version`: frozen canonical contract version (currently v5).
+
+## Verification
+
+```bash
+pytest tests/unit
+lint-imports
+actuate schema freeze --check
 ```
 
-Dependency direction is one-way and CI-enforced: `cli/` and `service/` import layers;
-layers import only `schema/`, `io/`, `config/`, `catalog/`, and each other in pipeline
-order. **Nothing in a layer imports `cli/` or `service/`.**
+Integration tests have explicit dependency markers and may require Docker, GPU models, AWS, or
+the isolated RLDS environment. A feature is not described as real-data validated merely because
+its unit tests pass.
+
+## Architecture
+
+The library is the source of truth; CLI and API are thin consumers. Dependency direction is
+checked by import-linter.
+
+```text
+src/actuate/
+  ingest/ perception/ fusion/ canonical/ certify/
+  retarget/ language/ package/ feedback/
+  config/ schema/ io/ catalog/
+  cli/ service/
+```
+
+The canonical schema is frozen and provenance-enforcing. See
+[docs/architecture/MASTER_IMPLEMENTATION_SPEC.md](docs/architecture/MASTER_IMPLEMENTATION_SPEC.md)
+for the contract and [docs/PIPELINE_STATUS.md](docs/PIPELINE_STATUS.md) for the evidence ledger.

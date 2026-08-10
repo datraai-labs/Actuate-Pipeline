@@ -9,72 +9,26 @@ silently is worse than one that defaults conservatively and says so:
 - `normalize_filenames(dir)`-- spaces, parens, unicode -> pipeline-safe names (the Kaggle bug).
 - `auto_task(session, ...)` -- one VLM call on a keyframe to name the task, or None.
 
-Consent: `local_consent_default()` returns GRANTED for local/self-hosted processing (you are
-processing your OWN data). The fail-closed consent gate at the DELIVERY boundary is untouched
--- this only affects what a locally-built canonical starts with, never what may ship.
+Consent is not inferred here. Local/self-hosted execution says where computation happens; it
+does not prove that every recorded subject granted permission.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from actuate.config import ConsentStatus, RigType
+from actuate.config import ConsentStatus
+from actuate.ingest.layout import detect_layout, detect_rig
 
-#: width/height ratio above this = side-by-side stereo (two ~square-ish views side by side).
-_STEREO_ASPECT = 1.9
+__all__ = [
+    "detect_layout",
+    "detect_rig",
+    "local_consent_default",
+    "normalize_filenames",
+]
+
 #: filename characters the perception path trips on -> replaced with '_'.
 _UNSAFE = ' ()[]{}&,;'
-
-
-def _probe_video(video: Path) -> tuple[int, int]:
-    import cv2
-
-    cap = cv2.VideoCapture(str(video))
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-    cap.release()
-    return w, h
-
-
-def detect_layout(session: Path) -> str:
-    """single_video | stereo_video | multi_camera | lerobot | rlds | unknown.
-
-    A present VIDEO wins: a v1 processed session carries both an .mp4 and a stray
-    `session.h5`, and it is a video session -- so .h5/.hdf5 -> rlds only fires when there is
-    NO video to process. LeRobot's own meta/info.json is checked first (it is unambiguous).
-    """
-    session = Path(session)
-    if (session / "meta" / "info.json").exists():
-        return "lerobot"
-    videos = sorted(p for p in session.glob("*.mp4"))
-    # collapse redaction/derivative variants -- `compressed.mp4` and
-    # `redacted_compressed.mp4` are one camera, not two. Count DISTINCT base names.
-    bases = {v.name.replace("redacted_", "").replace("_redacted", "") for v in videos}
-    if len(bases) > 1:
-        return "multi_camera"
-    if videos:
-        # prefer a non-redacted variant to probe geometry
-        probe = next((v for v in videos if "redacted" not in v.name), videos[0])
-        w, h = _probe_video(probe)
-        if h and w / h >= _STEREO_ASPECT:
-            return "stereo_video"
-        return "single_video"
-    if any(session.glob("*.h5")) or any(session.glob("*.hdf5")):
-        return "rlds"                            # no video -> a robomimic/RLDS h5 dataset
-    return "unknown"
-
-
-def detect_rig(session: Path) -> str:
-    """Infer the rig from the session. Falls back to head_mounted (the common egocentric
-    case) rather than guessing an exotic rig -- a wrong rig changes downstream assumptions,
-    so the default is the safe, most-common one."""
-    layout = detect_layout(session)
-    if layout == "stereo_video":
-        return RigType.STEREO.value
-    if layout == "multi_camera":
-        return RigType.TELEOP_ROBOT.value        # multiple synced cameras = a teleop rig
-    # lerobot / rlds / single_video / unknown -> head_mounted egocentric default
-    return RigType.HEAD_MOUNTED.value
 
 
 def normalize_filenames(directory: Path) -> list[tuple[str, str]]:
@@ -101,10 +55,8 @@ def normalize_filenames(directory: Path) -> list[tuple[str, str]]:
 
 
 def local_consent_default() -> ConsentStatus:
-    """Local/self-hosted processing: your own data -> GRANTED. The DELIVERY gate stays
-    fail-closed regardless, so this never lets un-consented data ship -- it only spares a
-    developer from a PENDING block on data they own."""
-    return ConsentStatus.GRANTED
+    """Compatibility helper: local processing defaults to PENDING, never auto-granted."""
+    return ConsentStatus.PENDING
 
 
 # NOTE: task auto-detection needs the VLM (actuate.language), which sits ABOVE this layer in
