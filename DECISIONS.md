@@ -1,3 +1,9 @@
+## 2026-08-14 Corpus B constrained VLM decoding
+Status: APPROVED
+Decision: Enforce `VLMRecord` JSON during generation with LM Format Enforcer 0.11.2, isolate GPU dependencies in `semantic-gpu`, record decoding parameters/backend/schema hash, and rerun both pinned observers on the cached A30.
+Why: Both unrestricted smoke outputs understood the frame but violated the approved evidence contract, so invalid tokens must be prevented before strict validation.
+Rejected: Prompt-only retries; regex extraction; a second VLM repair call; accepting provider-specific response shapes; vLLM for this first adapter.
+
 ## 2026-08-14 JarvisLabs access and private checkpoint
 Status: APPROVED
 Decision: Register a dedicated local SSH public key for GPU execution and publish only the Corpus B semantic V1 work to the current private GitHub branch with a draft PR against master.

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
 from enum import Enum
 from typing import Annotated, Literal
@@ -174,6 +176,13 @@ class CallStatus(str, Enum):
     FAILED = "failed"
 
 
+class DecodeParameters(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    do_sample: Literal[False]
+    max_new_tokens: int = Field(gt=0)
+
+
 class ModelCall(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -190,6 +199,10 @@ class ModelCall(BaseModel):
     prompt_id: str = Field(min_length=1)
     prompt_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     output_schema_version: str = Field(min_length=1)
+    output_schema_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    decoding_backend: str = Field(min_length=1)
+    decoding_backend_version: str = Field(min_length=1)
+    decode_parameters: DecodeParameters
     request_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     response_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     raw_response_uri: str = Field(min_length=1)
@@ -299,3 +312,8 @@ def vlm_record_json_schema() -> dict:
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
     schema["$id"] = SEMANTIC_SCHEMA_VERSION
     return schema
+
+
+def vlm_record_schema_hash() -> str:
+    payload = json.dumps(vlm_record_json_schema(), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()

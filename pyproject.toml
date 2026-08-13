@@ -35,6 +35,14 @@ aws = [
     "pgvector>=0.2.5",
 ]
 perception = ["torch>=2.2", "transformers>=4.40", "opencv-python>=4.8", "mediapipe==0.10.14"]
+semantic-gpu = [
+    "torch>=2.2",
+    "transformers>=4.57,<5",
+    "accelerate>=1.2,<2",
+    "pillow>=10,<13",
+    "num2words>=0.5.14,<1",
+    "lm-format-enforcer==0.11.2",
+]
 # Arm retargeting (L5). MuJoCo for kinematics/IK/replay + robot_descriptions for URDFs/MJCF.
 # NOTE: not Pinocchio -- `pin` has no Windows wheels and fails to build; MuJoCo covers FK,
 # Jacobian IK, and physics replay in one dep that installs on Windows AND Linux/Kaggle.

@@ -13,6 +13,7 @@ from actuate.schema.semantic import (
     SemanticClaim,
     VLMRecord,
     vlm_record_json_schema,
+    vlm_record_schema_hash,
 )
 
 CAPTURE_ID = "a" * 64
@@ -73,6 +74,7 @@ def test_generated_schema_keeps_claim_field_authority_separate():
         "completion_state",
         "corpus_relation",
     }
+    assert len(vlm_record_schema_hash()) == 64
 
 
 def test_task_completion_and_corpus_relations_are_not_visible_facts():
