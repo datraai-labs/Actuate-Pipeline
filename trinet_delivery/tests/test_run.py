@@ -55,7 +55,7 @@ def test_run_creates_and_resumes_one_ledger(tmp_path, monkeypatch):
     assert first[3] == "2026-08-18T12:00:00+00:00"
     assert second[3] == "2026-08-18T12:01:00+00:00"
     assert count == second_count == 1
-    assert version == second_version == 6
+    assert version == second_version == 10
     assert "preserved=0" in second_result.output
     assert "ui=not_implemented_until_hosted_phase" in first_result.output
 

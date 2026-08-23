@@ -1,9 +1,13 @@
 import sqlite3
+import struct
 from dataclasses import replace
 from hashlib import sha256
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 import trinet_delivery.inventory as inventory_module
+import trinet_delivery.run as run_module
 from trinet_delivery.cli import app
 from trinet_delivery.inventory import (
     FileFact,
@@ -12,9 +16,49 @@ from trinet_delivery.inventory import (
     group_captures,
 )
 from trinet_delivery.run import open_run, store_inventory, store_preservation
+from trinet_delivery.video import VideoArtifact
 from typer.testing import CliRunner
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def stub_video_verification(monkeypatch):
+    def verify(source, output, expected_sha256):
+        output.parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(pa.table({"video_frame_index": [0, 1],
+                                 "mp4_pts_ns": [0, 100]}), output)
+        output_hash = sha256(output.read_bytes()).hexdigest()
+        return VideoArtifact(output_hash, 2, "test", 1, 1,
+                             "30/1", 1, 0, "{}")
+
+    monkeypatch.setattr(run_module, "verify_video", verify)
+
+
+def valid_imu(seed=b""):
+    header = bytearray(64)
+    struct.pack_into("<8sIIHHQQI", header, 0, b"TRIMU001", 4, 400, 2, 3, 50, 75, 1)
+    value = float(sum(seed) % 10)
+    rows = [struct.pack("<Q18f", timestamp, *([value + row] * 18))
+            for row, timestamp in enumerate((100, 200))]
+    return bytes(header) + b"".join(rows)
+
+
+def valid_vts(seed=b""):
+    offset = sum(seed) % 10
+    header = struct.pack("<8sIIqiHH", b"TRIVTS01", 4, 30000, 0, 0, 0, 0)
+    rows = [struct.pack("<IQIQIII", frame, 1_000_000 + offset + frame * 100,
+                        frame + 3, 1_000 + frame, 5000, 15, 26000)
+            for frame in range(2)]
+    return header + b"".join(rows)
+
+
+def valid_tel():
+    header = bytearray(32)
+    struct.pack_into("<8sIII", header, 0, b"TRTEL01\0", 1, 32, 2)
+    rows = [struct.pack("<QiIIHBB", timestamp, 33910 + row, 0, 10240, 30, 0, 0)
+            for row, timestamp in enumerate((100, 200))]
+    return bytes(header) + b"".join(rows)
 
 
 def write_capture(folder, name, layout="single_video", complete=True, prefix=b""):
@@ -28,7 +72,9 @@ def write_capture(folder, name, layout="single_video", complete=True, prefix=b""
     if not complete:
         names.pop(-2 if layout == "stereo_pair" else 0)
     for filename in names:
-        (folder / filename).write_bytes(prefix + filename.encode())
+        content = valid_imu(prefix) if filename.endswith(".imu") else (
+            valid_vts(prefix) if filename.endswith(".vts") else prefix + filename.encode())
+        (folder / filename).write_bytes(content)
 
 
 def rows(database_path, query):
@@ -79,6 +125,12 @@ def test_batch_preserves_complete_incomplete_stereo_auxiliary_and_other(tmp_path
     assert "preserved=14" in result.output
     assert "captures=3" in result.output
     assert "new=14" in result.output
+    assert "timing_created=2" in result.output
+    assert "timing_unavailable=1" in result.output
+    assert rows(
+        database_path,
+        "SELECT status, COUNT(*) FROM timing_artifact GROUP BY status ORDER BY status",
+    ) == [("ready", 2), ("unavailable", 1)]
 
 
 def test_unchanged_rerun_verifies_without_copying(tmp_path, monkeypatch):
@@ -97,6 +149,47 @@ def test_unchanged_rerun_verifies_without_copying(tmp_path, monkeypatch):
     assert second.exit_code == 0, second.output
     assert "new=0" in second.output
     assert "unchanged=3" in second.output
+    assert "timing_reused=1" in second.output
+
+
+def test_changed_timing_output_fails_closed(tmp_path):
+    source = tmp_path / "source"
+    run_dir = tmp_path / "run"
+    write_capture(source, "recording")
+    assert runner.invoke(app, ["run", str(source), str(run_dir)]).exit_code == 0
+    relative = rows(
+        run_dir / "run.sqlite",
+        "SELECT parquet_relative_path FROM timing_artifact WHERE status='ready'",
+    )[0][0]
+    (run_dir / relative).write_bytes(b"changed")
+
+    result = runner.invoke(app, ["run", str(source), str(run_dir)])
+
+    assert result.exit_code == 1
+    assert "timing_failed=1" in result.output
+    assert rows(
+        run_dir / "run.sqlite", "SELECT reason FROM timing_artifact WHERE status='failed'"
+    ) == [("Published frame timing Parquet changed after verification",)]
+
+
+def test_changed_video_index_fails_closed(tmp_path):
+    source = tmp_path / "source"
+    run_dir = tmp_path / "run"
+    write_capture(source, "recording")
+    assert runner.invoke(app, ["run", str(source), str(run_dir)]).exit_code == 0
+    relative = rows(
+        run_dir / "run.sqlite",
+        "SELECT frame_index_relative_path FROM video_artifact WHERE status='verified'",
+    )[0][0]
+    (run_dir / relative).write_bytes(b"changed")
+
+    result = runner.invoke(app, ["run", str(source), str(run_dir)])
+
+    assert result.exit_code == 1
+    assert "video_failed=1" in result.output
+    assert rows(
+        run_dir / "run.sqlite", "SELECT error FROM video_artifact WHERE status='failed'"
+    ) == [("Published video frame index changed after verification",)]
 
 
 def test_exact_duplicate_capture_is_canonical_once(tmp_path):
@@ -136,7 +229,7 @@ def test_add_change_remove_reports_transitions_and_keeps_removed_mapping(tmp_pat
 
     (source / "recording.mp4").write_bytes(b"X" * len(b"recording.mp4"))
     notes.unlink()
-    (source / "recording.tel").write_bytes(b"tel")
+    (source / "recording.tel").write_bytes(valid_tel())
     result = runner.invoke(app, ["run", str(source), str(run_dir)])
 
     assert result.exit_code == 0, result.output
@@ -158,9 +251,11 @@ def test_wrong_parent_and_duplicate_camera_member_are_not_complete(tmp_path):
     (source / "a").mkdir(parents=True)
     (source / "b").mkdir()
     for name in ("take_L.mp4", "take_L.vts", "take.imu"):
-        (source / "a" / name).write_bytes(b"a")
+        content = valid_imu() if name.endswith(".imu") else (
+            valid_vts() if name.endswith(".vts") else b"a")
+        (source / "a" / name).write_bytes(content)
     for name in ("take_R.mp4", "take_R.vts"):
-        (source / "b" / name).write_bytes(b"b")
+        (source / "b" / name).write_bytes(valid_vts() if name.endswith(".vts") else b"b")
     result = runner.invoke(app, ["run", str(source), str(run_dir)])
     assert result.exit_code == 0, result.output
     assert rows(
@@ -266,13 +361,14 @@ def test_corrupt_blob_fails_closed_without_overwrite(tmp_path):
         "SELECT cache_relative_path FROM source_file WHERE relative_path='recording.imu'",
     )[0][0]
     blob = run_dir / cache_path
-    blob.write_bytes(b"X" * blob.stat().st_size)
+    blob_size = blob.stat().st_size
+    blob.write_bytes(b"X" * blob_size)
 
     failed = runner.invoke(app, ["run", str(source), str(run_dir)])
 
     assert failed.exit_code == 1
     assert "Immutable cache blob changed:" in failed.output
-    assert blob.read_bytes() == b"X" * len(b"recording.imu")
+    assert blob.read_bytes() == b"X" * blob_size
     assert rows(
         run_dir / "run.sqlite",
         "SELECT COUNT(*) FROM source_file WHERE present=1 AND source_sha256 IS NOT NULL",
