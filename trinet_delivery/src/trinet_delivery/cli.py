@@ -53,8 +53,11 @@ def run(
     typer.echo(f"timing_reused={result.timing_reused}")
     typer.echo(f"timing_unavailable={result.timing_unavailable}")
     typer.echo(f"timing_failed={result.timing_failed}")
+    typer.echo(f"qc_created={result.qc_created}")
+    typer.echo(f"qc_reused={result.qc_reused}")
+    typer.echo(f"qc_failed={result.qc_failed}")
     if ui:
         typer.echo("ui=not_implemented_until_hosted_phase")
     if (result.imu_failed or result.vts_failed or result.tel_failed or result.video_failed
-            or result.timing_failed):
+            or result.timing_failed or result.qc_failed):
         raise typer.Exit(1)

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -11,8 +12,16 @@ from trinet_delivery.inventory import (
     inventory_local,
     preserve_inventory,
 )
+from trinet_delivery.qc import QcError, build_qc, timing_stream_facts
 from trinet_delivery.timing import TimingError, TimingStream, build_timing
-from trinet_delivery.trinet import ImuError, SidecarError, convert_imu, convert_tel, decode_vts
+from trinet_delivery.trinet import (
+    ImuError,
+    SidecarError,
+    convert_imu,
+    convert_tel,
+    decode_imu,
+    decode_vts,
+)
 from trinet_delivery.video import VideoError, verify_video
 
 
@@ -55,6 +64,9 @@ class RunResult:
     timing_reused: int
     timing_unavailable: int
     timing_failed: int
+    qc_created: int
+    qc_reused: int
+    qc_failed: int
 
 
 def open_run(source: str, run_dir: Path) -> str:
@@ -84,7 +96,7 @@ def open_run(source: str, run_dir: Path) -> str:
             database.execute("INSERT INTO run VALUES (1, ?, ?, ?, ?)", (run_id, source, now, now))
             return run_id
 
-        if version not in range(1, 11):
+        if version not in range(1, 12):
             raise RuntimeError(f"Unsupported run database version: {version}")
         stored = database.execute(
             "SELECT run_id, source FROM run WHERE singleton = 1"
@@ -104,7 +116,7 @@ def open_run(source: str, run_dir: Path) -> str:
 
 def load_previous(database_path: Path) -> dict[str, tuple[bool, str | None]]:
     with sqlite3.connect(database_path) as database:
-        if database.execute("PRAGMA user_version").fetchone()[0] not in (6, 7, 8, 9, 10):
+        if database.execute("PRAGMA user_version").fetchone()[0] not in (6, 7, 8, 9, 10, 11):
             return {}
         rows = database.execute(
             "SELECT source_item_id, present, source_sha256 FROM source_file"
@@ -115,7 +127,7 @@ def store_inventory(database_path: Path, inventory: SourceInventory) -> None:
     with sqlite3.connect(database_path) as database:
         database.execute("PRAGMA foreign_keys = ON")
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in range(1, 11)
+        assert version in range(1, 12)
         if version < 6:
             database.executescript(
                 """
@@ -208,7 +220,7 @@ def store_preservation(database_path: Path, preservation: Preservation) -> None:
     files, captures, _ = preservation
     with sqlite3.connect(database_path) as database:
         database.execute("PRAGMA foreign_keys = ON")
-        assert database.execute("PRAGMA user_version").fetchone()[0] in (6, 7, 8, 9, 10)
+        assert database.execute("PRAGMA user_version").fetchone()[0] in (6, 7, 8, 9, 10, 11)
         database.execute("BEGIN IMMEDIATE")
         cursor = database.executemany(
             """UPDATE source_file
@@ -223,7 +235,7 @@ def store_preservation(database_path: Path, preservation: Preservation) -> None:
 def process_imus(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
     with sqlite3.connect(database_path) as database:
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in (6, 7, 8, 9, 10)
+        assert version in (6, 7, 8, 9, 10, 11)
         if version == 6:
             database.execute(
                 """CREATE TABLE imu_artifact (
@@ -287,7 +299,7 @@ def process_imus(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
 def process_sidecars(database_path: Path, run_dir: Path) -> tuple[int, int, int, int, int, int]:
     with sqlite3.connect(database_path) as database:
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in (7, 8, 9, 10)
+        assert version in (7, 8, 9, 10, 11)
         if version == 7:
             database.executescript(
                 """BEGIN IMMEDIATE;
@@ -406,7 +418,7 @@ def process_sidecars(database_path: Path, run_dir: Path) -> tuple[int, int, int,
 def process_videos(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
     with sqlite3.connect(database_path) as database:
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in (8, 9, 10)
+        assert version in (8, 9, 10, 11)
         if version == 8:
             database.executescript(
                 """BEGIN IMMEDIATE;
@@ -480,7 +492,7 @@ def process_videos(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
 def process_timing(database_path: Path, run_dir: Path) -> tuple[int, int, int, int]:
     with sqlite3.connect(database_path) as database:
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in (9, 10)
+        assert version in (9, 10, 11)
         if version == 9:
             database.executescript(
                 """BEGIN IMMEDIATE;
@@ -578,6 +590,168 @@ def process_timing(database_path: Path, run_dir: Path) -> tuple[int, int, int, i
             )
     return created, reused, unavailable, failed
 
+
+def process_qc(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
+    with sqlite3.connect(database_path) as database:
+        database.row_factory = sqlite3.Row
+        version = database.execute("PRAGMA user_version").fetchone()[0]
+        assert version in (10, 11)
+        if version == 10:
+            database.executescript(
+                """BEGIN IMMEDIATE;
+                CREATE TABLE qc_artifact (
+                    capture_id TEXT PRIMARY KEY, input_signature TEXT NOT NULL,
+                    status TEXT NOT NULL, json_relative_path TEXT, json_sha256 TEXT,
+                    pass_count INTEGER, fail_count INTEGER, unknown_count INTEGER,
+                    not_applicable_count INTEGER, reason TEXT,
+                    CHECK (status IN ('ready', 'failed'))
+                );
+                PRAGMA user_version = 11;
+                COMMIT;"""
+            )
+        captures = database.execute(
+            """SELECT capture_id, capture_layout, grouping_status
+               FROM capture_snapshot JOIN capture_candidate USING (parent_path, capture_key)
+               WHERE is_canonical=1 ORDER BY capture_id"""
+        ).fetchall()
+        created = reused = failed = 0
+        for capture in captures:
+            capture_id = capture["capture_id"]
+            members = [dict(row) for row in database.execute(
+                """SELECT relative_path, role, camera_stream_id, size_bytes, source_sha256,
+                          cache_relative_path
+                   FROM capture_snapshot JOIN capture_member USING (parent_path, capture_key)
+                   JOIN source_file USING (source_item_id)
+                   WHERE capture_id=? AND is_canonical=1 ORDER BY relative_path""",
+                (capture_id,),
+            )]
+            verified = sum(
+                len(member["source_sha256"] or "") == 64
+                and member["cache_relative_path"] == f"cache/blobs/{member['source_sha256']}"
+                for member in members
+            )
+            imu_row = database.execute(
+                """SELECT status, source_sha256, parquet_relative_path, parquet_sha256,
+                          sample_count, error FROM imu_artifact WHERE capture_id=?""",
+                (capture_id,),
+            ).fetchone()
+            tel_row = database.execute(
+                """SELECT status, source_sha256, parquet_relative_path, parquet_sha256,
+                          record_count, error FROM tel_artifact WHERE capture_id=?""",
+                (capture_id,),
+            ).fetchone()
+            timing_row = database.execute(
+                """SELECT status, parquet_relative_path, parquet_sha256, row_count,
+                          matched_rows, coverage_rows, stereo_pair_count,
+                          stereo_unmatched_rows, reason FROM timing_artifact WHERE capture_id=?""",
+                (capture_id,),
+            ).fetchone()
+            expected = {"single_video": ("single",), "stereo_pair": ("left", "right")}.get(capture["capture_layout"])
+            stream_ids = expected or tuple(row[0] for row in database.execute(
+                """SELECT DISTINCT camera_stream_id FROM capture_snapshot
+                   JOIN capture_member USING (parent_path, capture_key)
+                   WHERE capture_id=? AND is_canonical=1 AND camera_stream_id IS NOT NULL
+                   ORDER BY camera_stream_id""", (capture_id,)))
+            streams = []
+            for stream_id in stream_ids:
+                vts_row = database.execute(
+                    """SELECT status, source_sha256, native_version, frame_rate_milli,
+                              frame_count, first_timestamp_ns, last_timestamp_ns,
+                              master_clock_offset_ns, clock_skew_ppb, sync_quality_us,
+                              sync_flags, error FROM vts_artifact
+                       WHERE capture_id=? AND camera_stream_id=?""",
+                    (capture_id, stream_id),
+                ).fetchone()
+                video_row = database.execute(
+                    """SELECT status, source_sha256, frame_index_relative_path,
+                              frame_index_sha256, frame_count, codec, width, height,
+                              average_frame_rate, duration_ns, audio_stream_count,
+                              facts_json, error FROM video_artifact
+                       WHERE capture_id=? AND camera_stream_id=?""",
+                    (capture_id, stream_id),
+                ).fetchone()
+                video = dict(video_row) if video_row else {"status": "missing"}
+                if video.get("facts_json") is not None:
+                    video["probe"] = json.loads(video.pop("facts_json"))
+                streams.append({"camera_stream_id": stream_id,
+                                "vts": dict(vts_row) if vts_row else {"status": "missing"},
+                                "video": video})
+            facts = {
+                "capture_id": capture_id,
+                "capture_layout": capture["capture_layout"],
+                "grouping_status": capture["grouping_status"],
+                "source": {"file_count": len(members),
+                           "bytes": sum(member["size_bytes"] for member in members),
+                           "verified_members": verified,
+                           "all_hashes_verified_in_current_run": verified == len(members),
+                           "members": members},
+                "imu": dict(imu_row) if imu_row else {"status": "missing"},
+                "streams": streams,
+                "telemetry": dict(tel_row) if tel_row else {"status": "absent"},
+                "timing": dict(timing_row) if timing_row else {"status": "unavailable", "reason": "not processed"},
+            }
+            encoded = json.dumps(facts, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            signature = sha256(f"qc_internal.v2|{encoded}".encode()).hexdigest()
+            relative = f"work/{capture_id}/qc_internal.json"
+            output = run_dir / relative
+            prior = database.execute(
+                """SELECT input_signature, json_sha256, status, pass_count, fail_count,
+                          unknown_count, not_applicable_count FROM qc_artifact
+                   WHERE capture_id=?""", (capture_id,),
+            ).fetchone()
+            try:
+                if facts["imu"]["status"] == "decoded":
+                    imu_members = [member for member in members if member["role"] == "imu"]
+                    if len(imu_members) != 1:
+                        raise QcError("Decoded IMU artifact does not have exactly one source member")
+                    member = imu_members[0]
+                    native = decode_imu(run_dir / member["cache_relative_path"], member["source_sha256"])
+                    first = int(native.samples["timestamp_ns"][0])
+                    last = int(native.samples["timestamp_ns"][-1])
+                    if len(native.samples) != facts["imu"]["sample_count"]:
+                        raise QcError("Decoded IMU sample count changed before QC")
+                    facts["imu"]["native"] = {
+                        "version": native.version, "declared_sample_rate_hz": native.sample_rate_hz,
+                        "accel_full_scale_code": native.accel_fs,
+                        "gyro_full_scale_code": native.gyro_fs,
+                        "header_start_time_ns": native.start_time_ns,
+                        "video_start_time_ns": native.video_start_ns, "flags": native.flags,
+                        "device_id_hex": native.device_id.hex(),
+                        "ios_clock_offset_ns": native.ios_host_offset_ns,
+                        "reserved_header_hex": native.reserved_header.hex(),
+                        "first_sample_timestamp_ns": first, "last_sample_timestamp_ns": last,
+                        "measured_sample_rate_hz": None if len(native.samples) == 1 else round(
+                            (len(native.samples) - 1) * 1_000_000_000 / (last - first), 6),
+                    }
+                if facts["timing"]["status"] == "ready":
+                    facts["timing"]["streams"] = timing_stream_facts(
+                        run_dir / facts["timing"]["parquet_relative_path"],
+                        facts["timing"]["parquet_sha256"])
+                if prior and prior["input_signature"] == signature and prior["status"] == "ready":
+                    if not output.is_file() or sha256(output.read_bytes()).hexdigest() != prior["json_sha256"]:
+                        raise QcError("Published internal QC JSON changed after verification")
+                    reused += 1
+                    continue
+                artifact = build_qc(facts, output)
+                values = (signature, "ready", relative, artifact.json_sha256, artifact.pass_count, artifact.fail_count,
+                          artifact.unknown_count,
+                          artifact.not_applicable_count, None)
+                created += 1
+            except (OSError, TypeError, ValueError) as error:
+                values = (signature, "failed", None, None, None, None, None, None, str(error))
+                failed += 1
+            database.execute(
+                """INSERT INTO qc_artifact VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(capture_id) DO UPDATE SET input_signature=excluded.input_signature,
+                   status=excluded.status, json_relative_path=excluded.json_relative_path,
+                   json_sha256=excluded.json_sha256, pass_count=excluded.pass_count,
+                   fail_count=excluded.fail_count, unknown_count=excluded.unknown_count,
+                   not_applicable_count=excluded.not_applicable_count, reason=excluded.reason""",
+                (capture_id, *values),
+            )
+    return created, reused, failed
+
+
 def prepare_local_run(source: str, run_dir: Path) -> RunResult:
     try:
         inventory = inventory_local(source, run_dir)
@@ -600,6 +774,7 @@ def prepare_local_run(source: str, run_dir: Path) -> RunResult:
     sidecar_counts = process_sidecars(database_path, run_dir)
     video_counts = process_videos(database_path, run_dir)
     timing_counts = process_timing(database_path, run_dir)
+    qc_counts = process_qc(database_path, run_dir)
     files, captures, removed = preservation
     counts = {status: 0 for status in ("new", "changed", "unchanged")}
     for file in files:
@@ -609,5 +784,5 @@ def prepare_local_run(source: str, run_dir: Path) -> RunResult:
         run_id, len(inventory.files), len(inventory.captures),
         counts["new"], counts["changed"], counts["unchanged"],
         removed, unique, len(captures) - unique,
-        *imu_counts, *sidecar_counts, *video_counts, *timing_counts,
+        *imu_counts, *sidecar_counts, *video_counts, *timing_counts, *qc_counts,
     )

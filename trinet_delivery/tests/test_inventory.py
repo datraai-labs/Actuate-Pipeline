@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import struct
 from dataclasses import replace
@@ -127,10 +128,25 @@ def test_batch_preserves_complete_incomplete_stereo_auxiliary_and_other(tmp_path
     assert "new=14" in result.output
     assert "timing_created=2" in result.output
     assert "timing_unavailable=1" in result.output
+    assert "qc_created=3" in result.output
     assert rows(
         database_path,
         "SELECT status, COUNT(*) FROM timing_artifact GROUP BY status ORDER BY status",
     ) == [("ready", 2), ("unavailable", 1)]
+    assert rows(
+        database_path,
+        "SELECT status, COUNT(*) FROM qc_artifact GROUP BY status",
+    ) == [("ready", 3)]
+    mono_qc = rows(
+        database_path,
+        "SELECT json_relative_path FROM qc_artifact JOIN capture_snapshot USING(capture_id) "
+        "WHERE parent_path='mono'",
+    )[0][0]
+    native = json.loads((run_dir / mono_qc).read_text())["facts"]["imu"]["native"]
+    assert native["declared_sample_rate_hz"] == 400
+    assert native["header_start_time_ns"] == 50
+    assert native["first_sample_timestamp_ns"] == 100
+    assert native["device_id_hex"] == "00" * 16
 
 
 def test_unchanged_rerun_verifies_without_copying(tmp_path, monkeypatch):
@@ -150,6 +166,27 @@ def test_unchanged_rerun_verifies_without_copying(tmp_path, monkeypatch):
     assert "new=0" in second.output
     assert "unchanged=3" in second.output
     assert "timing_reused=1" in second.output
+    assert "qc_reused=1" in second.output
+
+
+def test_changed_qc_output_fails_closed(tmp_path):
+    source = tmp_path / "source"
+    run_dir = tmp_path / "run"
+    write_capture(source, "recording")
+    assert runner.invoke(app, ["run", str(source), str(run_dir)]).exit_code == 0
+    relative = rows(
+        run_dir / "run.sqlite",
+        "SELECT json_relative_path FROM qc_artifact WHERE status='ready'",
+    )[0][0]
+    (run_dir / relative).write_bytes(b"changed")
+
+    result = runner.invoke(app, ["run", str(source), str(run_dir)])
+
+    assert result.exit_code == 1
+    assert "qc_failed=1" in result.output
+    assert rows(
+        run_dir / "run.sqlite", "SELECT reason FROM qc_artifact WHERE status='failed'"
+    ) == [("Published internal QC JSON changed after verification",)]
 
 
 def test_changed_timing_output_fails_closed(tmp_path):

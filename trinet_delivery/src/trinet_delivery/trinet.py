@@ -89,7 +89,7 @@ class TelArtifact:
     record_count: int
 
 
-def _decode_imu(source: Path, expected_sha256: str) -> ImuData:
+def decode_imu(source: Path, expected_sha256: str) -> ImuData:
     raw = source.read_bytes()
     if sha256(raw).hexdigest() != expected_sha256:
         raise ImuError("IMU source SHA-256 does not match the preserved mapping")
@@ -187,7 +187,7 @@ def _verify_parquet(path: Path, data: ImuData, source_sha256: str) -> None:
 
 
 def convert_imu(source: Path, output: Path, expected_sha256: str) -> ImuArtifact:
-    data = _decode_imu(source, expected_sha256)
+    data = decode_imu(source, expected_sha256)
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = output.with_name(f".{output.name}.staging")
     staging.unlink(missing_ok=True)
