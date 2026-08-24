@@ -289,8 +289,8 @@ def build_delivery(run_dir: Path, projection: Path, output: Path) -> DeliveryArt
             expected_files = {"README.md", "manifest.csv"}
             with sqlite3.connect(run_dir / "run.sqlite") as database:
                 database.row_factory = sqlite3.Row
-                if database.execute("PRAGMA user_version").fetchone()[0] != 11:
-                    raise PackageError("Delivery requires a schema-11 run ledger")
+                if database.execute("PRAGMA user_version").fetchone()[0] not in (11, 12):
+                    raise PackageError("Delivery requires a schema-11 or schema-12 run ledger")
                 for row in rows:
                     capture_id = row["capture_id"]
                     source_episode = projection / "episodes" / capture_id

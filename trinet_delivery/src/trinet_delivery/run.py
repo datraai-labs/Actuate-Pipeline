@@ -1,3 +1,4 @@
+import csv
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -12,7 +13,13 @@ from trinet_delivery.inventory import (
     inventory_local,
     preserve_inventory,
 )
-from trinet_delivery.qc import QcError, build_qc, timing_stream_facts
+from trinet_delivery.package import (
+    PackageError,
+    _vendor_visualizations,
+    build_delivery,
+    project_supplier,
+)
+from trinet_delivery.qc import QcError, build_qc, supplier_issues, timing_stream_facts
 from trinet_delivery.timing import TimingError, TimingStream, build_timing
 from trinet_delivery.trinet import (
     ImuError,
@@ -69,6 +76,25 @@ class RunResult:
     qc_failed: int
 
 
+@dataclass(frozen=True)
+class DeliveryRunResult:
+    status: str
+    review_path: Path
+    included: int
+    excluded: int
+    pending: int
+    output: Path | None
+
+
+REVIEW_FIELDS = (
+    "capture_id", "source_relative_directory", "source_group", "capture_layout",
+    "grouping_status", "qc_sha256", "pass_count", "fail_count", "unknown_count",
+    "not_applicable_count", "blocking_checks", "material_checks", "decision",
+    "limitations_json", "decided_by", "decided_at",
+)
+REVIEW_FACT_FIELDS = REVIEW_FIELDS[:12]
+
+
 def open_run(source: str, run_dir: Path) -> str:
     assert source
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -96,7 +122,7 @@ def open_run(source: str, run_dir: Path) -> str:
             database.execute("INSERT INTO run VALUES (1, ?, ?, ?, ?)", (run_id, source, now, now))
             return run_id
 
-        if version not in range(1, 12):
+        if version not in range(1, 13):
             raise RuntimeError(f"Unsupported run database version: {version}")
         stored = database.execute(
             "SELECT run_id, source FROM run WHERE singleton = 1"
@@ -116,7 +142,7 @@ def open_run(source: str, run_dir: Path) -> str:
 
 def load_previous(database_path: Path) -> dict[str, tuple[bool, str | None]]:
     with sqlite3.connect(database_path) as database:
-        if database.execute("PRAGMA user_version").fetchone()[0] not in (6, 7, 8, 9, 10, 11):
+        if database.execute("PRAGMA user_version").fetchone()[0] not in (6, 7, 8, 9, 10, 11, 12):
             return {}
         rows = database.execute(
             "SELECT source_item_id, present, source_sha256 FROM source_file"
@@ -127,7 +153,7 @@ def store_inventory(database_path: Path, inventory: SourceInventory) -> None:
     with sqlite3.connect(database_path) as database:
         database.execute("PRAGMA foreign_keys = ON")
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in range(1, 12)
+        assert version in range(1, 13)
         if version < 6:
             database.executescript(
                 """
@@ -220,7 +246,7 @@ def store_preservation(database_path: Path, preservation: Preservation) -> None:
     files, captures, _ = preservation
     with sqlite3.connect(database_path) as database:
         database.execute("PRAGMA foreign_keys = ON")
-        assert database.execute("PRAGMA user_version").fetchone()[0] in (6, 7, 8, 9, 10, 11)
+        assert database.execute("PRAGMA user_version").fetchone()[0] in (6, 7, 8, 9, 10, 11, 12)
         database.execute("BEGIN IMMEDIATE")
         cursor = database.executemany(
             """UPDATE source_file
@@ -235,7 +261,7 @@ def store_preservation(database_path: Path, preservation: Preservation) -> None:
 def process_imus(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
     with sqlite3.connect(database_path) as database:
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in (6, 7, 8, 9, 10, 11)
+        assert version in (6, 7, 8, 9, 10, 11, 12)
         if version == 6:
             database.execute(
                 """CREATE TABLE imu_artifact (
@@ -299,7 +325,7 @@ def process_imus(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
 def process_sidecars(database_path: Path, run_dir: Path) -> tuple[int, int, int, int, int, int]:
     with sqlite3.connect(database_path) as database:
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in (7, 8, 9, 10, 11)
+        assert version in (7, 8, 9, 10, 11, 12)
         if version == 7:
             database.executescript(
                 """BEGIN IMMEDIATE;
@@ -418,7 +444,7 @@ def process_sidecars(database_path: Path, run_dir: Path) -> tuple[int, int, int,
 def process_videos(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
     with sqlite3.connect(database_path) as database:
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in (8, 9, 10, 11)
+        assert version in (8, 9, 10, 11, 12)
         if version == 8:
             database.executescript(
                 """BEGIN IMMEDIATE;
@@ -492,7 +518,7 @@ def process_videos(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
 def process_timing(database_path: Path, run_dir: Path) -> tuple[int, int, int, int]:
     with sqlite3.connect(database_path) as database:
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in (9, 10, 11)
+        assert version in (9, 10, 11, 12)
         if version == 9:
             database.executescript(
                 """BEGIN IMMEDIATE;
@@ -595,7 +621,7 @@ def process_qc(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
     with sqlite3.connect(database_path) as database:
         database.row_factory = sqlite3.Row
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in (10, 11)
+        assert version in (10, 11, 12)
         if version == 10:
             database.executescript(
                 """BEGIN IMMEDIATE;
@@ -750,6 +776,220 @@ def process_qc(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
                 (capture_id, *values),
             )
     return created, reused, failed
+
+
+def _write_review(review_path: Path, rows: list[dict]) -> None:
+    staging = review_path.with_name(f".{review_path.name}.staging")
+    staging.unlink(missing_ok=True)
+    try:
+        with staging.open("w", newline="") as file:
+            writer = csv.DictWriter(file, fieldnames=REVIEW_FIELDS, lineterminator="\n")
+            writer.writeheader()
+            writer.writerows(rows)
+        with staging.open(newline="") as file:
+            if list(csv.DictReader(file)) != rows:
+                raise RunError("Review sheet changed during write")
+        staging.replace(review_path)
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def _delivery_review(database_path: Path, run_dir: Path):
+    review_path = run_dir / "review.csv"
+    if review_path.is_symlink():
+        raise RunError(f"Review sheet cannot be a symlink: {review_path}")
+    with sqlite3.connect(database_path) as database:
+        database.row_factory = sqlite3.Row
+        version = database.execute("PRAGMA user_version").fetchone()[0]
+        if version == 11:
+            database.executescript(
+                """BEGIN IMMEDIATE;
+                CREATE TABLE delivery_decision (
+                    capture_id TEXT PRIMARY KEY CHECK (length(capture_id) = 64),
+                    qc_sha256 TEXT NOT NULL CHECK (length(qc_sha256) = 64),
+                    status TEXT NOT NULL CHECK (status IN ('include', 'exclude')),
+                    limitations_json TEXT NOT NULL,
+                    decided_by TEXT NOT NULL,
+                    decided_at TEXT NOT NULL
+                );
+                PRAGMA user_version = 12;
+                COMMIT;"""
+            )
+        elif version != 12:
+            raise RunError(f"Delivery review requires a schema-11 or schema-12 run ledger, not {version}")
+
+        current = {}
+        records = database.execute(
+            """SELECT capture_id, parent_path, capture_key, capture_layout, grouping_status,
+                      json_relative_path, json_sha256, pass_count, fail_count,
+                      unknown_count, not_applicable_count
+               FROM capture_snapshot JOIN capture_candidate USING (parent_path, capture_key)
+               JOIN qc_artifact USING (capture_id)
+               WHERE is_canonical=1 AND status='ready' ORDER BY capture_id"""
+        ).fetchall()
+        current_count = database.execute(
+            "SELECT COUNT(*) FROM capture_snapshot WHERE is_canonical=1"
+        ).fetchone()[0]
+        if len(records) != current_count:
+            raise RunError("Every current capture must have ready QC before delivery review")
+        for record in records:
+            relative = Path(record["json_relative_path"])
+            if relative.is_absolute() or ".." in relative.parts:
+                raise RunError(f"Unsafe QC artifact path: {record['capture_id']}")
+            encoded = (run_dir / relative).read_bytes()
+            if sha256(encoded).hexdigest() != record["json_sha256"]:
+                raise RunError(f"Current QC artifact changed: {record['capture_id']}")
+            internal = json.loads(encoded)
+            blocked, material = supplier_issues(internal)
+            row = {
+                "capture_id": record["capture_id"],
+                "source_relative_directory": record["parent_path"],
+                "source_group": record["capture_key"],
+                "capture_layout": record["capture_layout"] or "",
+                "grouping_status": record["grouping_status"],
+                "qc_sha256": record["json_sha256"],
+                "pass_count": str(record["pass_count"]),
+                "fail_count": str(record["fail_count"]),
+                "unknown_count": str(record["unknown_count"]),
+                "not_applicable_count": str(record["not_applicable_count"]),
+                "blocking_checks": "|".join(blocked),
+                "material_checks": "|".join(material),
+            }
+            current[record["capture_id"]] = {
+                "row": row, "internal_qc": internal,
+                "parent_path": record["parent_path"], "capture_key": record["capture_key"],
+            }
+
+        prior = {row["capture_id"]: dict(row) for row in database.execute(
+            "SELECT * FROM delivery_decision")}
+        if review_path.exists():
+            with review_path.open(newline="") as file:
+                reader = csv.DictReader(file)
+                if tuple(reader.fieldnames or ()) != REVIEW_FIELDS:
+                    raise RunError("Review sheet columns changed")
+                rows = list(reader)
+            seen = set()
+            for row in rows:
+                capture_id = row["capture_id"]
+                if capture_id in seen:
+                    raise RunError(f"Review sheet has duplicate capture: {capture_id}")
+                seen.add(capture_id)
+                if capture_id not in current:
+                    raise RunError(f"Review sheet contains a capture that is no longer current: {capture_id}")
+                if any(row[field] != current[capture_id]["row"][field]
+                       for field in REVIEW_FACT_FIELDS):
+                    raise RunError(f"Review sheet facts changed or became stale: {capture_id}")
+                existing = prior.get(capture_id)
+                expected_time = existing["decided_at"] if (
+                    existing and existing["qc_sha256"] == row["qc_sha256"]) else ""
+                if row["decided_at"] != expected_time:
+                    raise RunError(f"Review decision time was edited: {capture_id}")
+                status = row["decision"].strip()
+                decided_by = row["decided_by"].strip()
+                try:
+                    limitations = json.loads(row["limitations_json"] or "[]")
+                except json.JSONDecodeError as error:
+                    raise RunError(f"Invalid limitations JSON for {capture_id}: {error}") from error
+                if (not isinstance(limitations, list)
+                        or any(not isinstance(item, str) or not item.strip() for item in limitations)):
+                    raise RunError(f"Limitations must be a JSON list of non-empty strings: {capture_id}")
+                limitations = [item.strip() for item in limitations]
+                if status not in ("", "include", "exclude"):
+                    raise RunError(f"Invalid review decision for {capture_id}: {status!r}")
+                if not status:
+                    if decided_by or limitations:
+                        raise RunError(f"Pending decision has human fields: {capture_id}")
+                    database.execute("DELETE FROM delivery_decision WHERE capture_id=?", (capture_id,))
+                    continue
+                if not decided_by:
+                    raise RunError(f"Decision requires decided_by: {capture_id}")
+                if status == "include" and current[capture_id]["row"]["blocking_checks"]:
+                    raise RunError(f"Blocking capture cannot be included: {capture_id}")
+                if (status == "include" and current[capture_id]["row"]["material_checks"]
+                        and not limitations):
+                    raise RunError(f"Material checks require declared limitations: {capture_id}")
+                if status == "exclude" and limitations:
+                    raise RunError(f"Excluded capture cannot have supplier limitations: {capture_id}")
+                values = (status, json.dumps(limitations, separators=(",", ":")), decided_by)
+                unchanged = (existing and existing["qc_sha256"] == row["qc_sha256"]
+                             and values == (existing["status"], existing["limitations_json"],
+                                             existing["decided_by"]))
+                decided_at = existing["decided_at"] if unchanged else datetime.now(UTC).isoformat()
+                database.execute(
+                    """INSERT INTO delivery_decision VALUES (?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(capture_id) DO UPDATE SET qc_sha256=excluded.qc_sha256,
+                       status=excluded.status, limitations_json=excluded.limitations_json,
+                       decided_by=excluded.decided_by, decided_at=excluded.decided_at""",
+                    (capture_id, row["qc_sha256"], *values, decided_at),
+                )
+        decisions = {row["capture_id"]: dict(row) for row in database.execute(
+            "SELECT * FROM delivery_decision")}
+        output_rows = []
+        for capture_id, entry in current.items():
+            decision = decisions.get(capture_id)
+            if decision and decision["qc_sha256"] == entry["row"]["qc_sha256"]:
+                entry["decision"] = {
+                    "status": decision["status"], "decided_by": decision["decided_by"],
+                    "decided_at": decision["decided_at"],
+                    "limitations": json.loads(decision["limitations_json"]),
+                }
+                human = {
+                    "decision": decision["status"],
+                    "limitations_json": decision["limitations_json"],
+                    "decided_by": decision["decided_by"], "decided_at": decision["decided_at"],
+                }
+            else:
+                entry["decision"] = None
+                human = {"decision": "", "limitations_json": "[]", "decided_by": "", "decided_at": ""}
+            output_rows.append(entry["row"] | human)
+        _write_review(review_path, output_rows)
+        database.commit()
+    return review_path, tuple(current.values())
+
+
+def complete_local_delivery(source: str, run_dir: Path, output: Path) -> DeliveryRunResult:
+    source_path = Path(source).expanduser().resolve()
+    output = output.expanduser().resolve()
+    if output == source_path or source_path in output.parents:
+        raise RunInputError("Delivery output must be outside the source directory")
+    if output.exists() or output.is_symlink():
+        raise RunInputError(f"Delivery output already exists: {output}")
+    try:
+        review_path, entries = _delivery_review(run_dir / "run.sqlite", run_dir)
+        pending = sum(entry["decision"] is None for entry in entries)
+        included = [entry for entry in entries
+                    if entry["decision"] and entry["decision"]["status"] == "include"]
+        excluded = len(entries) - pending - len(included)
+        if pending:
+            return DeliveryRunResult("review_required", review_path, len(included), excluded, pending, None)
+        if not included:
+            return DeliveryRunResult("no_captures_included", review_path, 0, excluded, 0, None)
+        with sqlite3.connect(run_dir / "run.sqlite") as database:
+            database.row_factory = sqlite3.Row
+            episodes = tuple({
+                "internal_qc": entry["internal_qc"],
+                "source_relative_directory": entry["parent_path"],
+                "source_group": entry["capture_key"],
+                "vendor_calibration_references": [],
+                "vendor_visualizations": _vendor_visualizations(
+                    database, entry["parent_path"], entry["capture_key"]),
+                "decision": entry["decision"],
+            } for entry in included)
+        signature = sha256(json.dumps([
+            {"capture_id": entry["row"]["capture_id"],
+             "qc_sha256": entry["row"]["qc_sha256"], "decision": entry["decision"]}
+            for entry in included
+        ], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        projection = run_dir / "work/deliveries" / signature / "projection"
+        if not projection.exists() and not projection.is_symlink():
+            project_supplier(episodes, projection)
+        build_delivery(run_dir, projection, output)
+        return DeliveryRunResult("complete", review_path, len(included), excluded, 0, output)
+    except RunError:
+        raise
+    except (OSError, KeyError, TypeError, ValueError, sqlite3.Error,
+            csv.Error, json.JSONDecodeError, QcError, PackageError) as error:
+        raise RunError(str(error)) from error
 
 
 def prepare_local_run(source: str, run_dir: Path) -> RunResult:

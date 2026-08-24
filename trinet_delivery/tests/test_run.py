@@ -97,3 +97,20 @@ def test_team_option_was_replaced_without_starting_a_run(tmp_path):
     assert result.exit_code != 0
     assert "No such option: --team" in result.output
     assert not run_dir.exists()
+
+
+def test_output_option_creates_review_sheet_before_delivery(tmp_path):
+    source = tmp_path / "source"
+    run_dir = tmp_path / "run"
+    output = tmp_path / "delivery"
+    source.mkdir()
+
+    result = runner.invoke(
+        app, ["run", str(source), str(run_dir), "--output", str(output)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "review_sheet=" in result.output
+    assert "delivery_status=no_captures_included" in result.output
+    assert (run_dir / "review.csv").is_file()
+    assert not output.exists()

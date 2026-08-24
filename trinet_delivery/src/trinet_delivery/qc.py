@@ -20,6 +20,24 @@ class QcArtifact:
     not_applicable_count: int
 
 
+SUPPLIER_BLOCKERS = (
+    "capture_structure", "source_integrity", "imu_decode", "vts_decode:",
+    "video_decode:", "video_vts_frame_count:", "timing_artifact",
+    "timing_row_accounting",
+)
+
+
+def supplier_issues(internal: dict) -> tuple[list[str], list[str]]:
+    if internal["schema_version"] != "trinet_delivery.qc_internal.v2":
+        raise QcError(f"Unsupported internal QC schema: {internal['schema_version']}")
+    checks = {check["check_id"]: check["result"] for check in internal["checks"]}
+    unresolved = [name for name, result in checks.items()
+                  if result not in ("pass", "not_applicable")]
+    blocked = [name for name in unresolved
+               if any(name == prefix or name.startswith(prefix) for prefix in SUPPLIER_BLOCKERS)]
+    return blocked, [name for name in unresolved if name not in blocked]
+
+
 def timing_stream_facts(path: Path, expected_sha256: str) -> list[dict]:
     if sha256(path.read_bytes()).hexdigest() != expected_sha256:
         raise QcError("Timing Parquet SHA-256 does not match its verified artifact")
@@ -50,23 +68,14 @@ def timing_stream_facts(path: Path, expected_sha256: str) -> list[dict]:
 
 
 def _supplier_qc(internal: dict, decision: dict) -> dict:
-    if internal["schema_version"] != "trinet_delivery.qc_internal.v2":
-        raise QcError(f"Unsupported internal QC schema: {internal['schema_version']}")
+    blocked, material = supplier_issues(internal)
     if decision["status"] != "include":
         raise QcError("Supplier projection requires an explicit include decision")
     if not decision["decided_by"] or not decision["decided_at"]:
         raise QcError("Include decision requires decided_by and decided_at")
     checks = {check["check_id"]: check["result"] for check in internal["checks"]}
-    blockers = ("capture_structure", "source_integrity", "imu_decode", "vts_decode:",
-                "video_decode:", "video_vts_frame_count:", "timing_artifact",
-                "timing_row_accounting")
-    blocked = [name for name, result in checks.items()
-               if result not in ("pass", "not_applicable")
-               and any(name == prefix or name.startswith(prefix) for prefix in blockers)]
     if blocked:
         raise QcError(f"Supplier projection blocked by: {', '.join(blocked)}")
-    material = [name for name, result in checks.items()
-                if result not in ("pass", "not_applicable") and name not in blocked]
     limitations = decision["limitations"]
     if material and not limitations:
         raise QcError(f"Material checks require declared limitations: {', '.join(material)}")

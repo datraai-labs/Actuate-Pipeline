@@ -1,8 +1,14 @@
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
-from trinet_delivery.run import RunError, RunInputError, prepare_local_run
+from trinet_delivery.run import (
+    RunError,
+    RunInputError,
+    complete_local_delivery,
+    prepare_local_run,
+)
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -17,6 +23,7 @@ def run(
     source: str,
     run_dir: Path,
     ui: bool = typer.Option(False, "--ui"),
+    output: Annotated[Path | None, typer.Option("--output")] = None,
 ) -> None:
     try:
         result = prepare_local_run(source, run_dir)
@@ -61,3 +68,18 @@ def run(
     if (result.imu_failed or result.vts_failed or result.tel_failed or result.video_failed
             or result.timing_failed or result.qc_failed):
         raise typer.Exit(1)
+    if output is not None:
+        try:
+            delivery = complete_local_delivery(source, run_dir, output)
+        except RunInputError as error:
+            raise typer.BadParameter(str(error), param_hint="--output") from error
+        except RunError as error:
+            typer.echo(f"delivery_error={error}", err=True)
+            raise typer.Exit(1) from error
+        typer.echo(f"review_sheet={delivery.review_path}")
+        typer.echo(f"delivery_status={delivery.status}")
+        typer.echo(f"delivery_included={delivery.included}")
+        typer.echo(f"delivery_excluded={delivery.excluded}")
+        typer.echo(f"delivery_pending={delivery.pending}")
+        if delivery.output is not None:
+            typer.echo(f"delivery_output={delivery.output}")

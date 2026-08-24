@@ -316,6 +316,14 @@ def test_final_delivery_materializes_and_reopens_every_required_file(tmp_path, m
     assert not any(path.is_symlink() for path in output.rglob("*"))
 
 
+def test_final_delivery_accepts_decision_schema_12(tmp_path, monkeypatch):
+    run_dir, projection, output = delivery_input(tmp_path, monkeypatch)
+    with sqlite3.connect(run_dir / "run.sqlite") as database:
+        database.execute("PRAGMA user_version = 12")
+
+    assert build_delivery(run_dir, projection, output).capture_count == 1
+
+
 def test_vendor_visualization_is_delivered_and_decode_failure_blocks_output(tmp_path, monkeypatch):
     run_dir, projection, output = delivery_input(tmp_path, monkeypatch, visualization=True)
     artifact = build_delivery(run_dir, projection, output)
