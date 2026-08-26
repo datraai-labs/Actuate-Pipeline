@@ -4,10 +4,10 @@ import sqlite3
 from hashlib import sha256
 from pathlib import Path
 
+import actuate_delivery.run as run_module
 import pytest
-import trinet_delivery.run as run_module
-from trinet_delivery.qc import build_qc
-from trinet_delivery.run import RunError, RunInputError, complete_local_delivery
+from actuate_delivery.qc import build_qc
+from actuate_delivery.run import RunError, RunInputError, complete_local_delivery
 
 
 def facts(capture_id, grouping="complete", partial=False):
@@ -83,7 +83,8 @@ def write_rows(path, rows):
 
 
 def fake_package(monkeypatch, captured):
-    def project(episodes, output):
+    def project(episodes, output, calibration=None):
+        assert calibration is None
         captured.extend(episodes)
         output.mkdir(parents=True)
 
@@ -128,13 +129,59 @@ def test_review_resume_appends_new_capture_and_builds_only_included(tmp_path, mo
     assert len(captured) == 1
     assert captured[0]["internal_qc"]["capture_id"] == "a" * 64
     with sqlite3.connect(run_dir / "run.sqlite") as database:
-        assert database.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert database.execute("PRAGMA user_version").fetchone()[0] == 14
         decisions = database.execute(
             "SELECT capture_id, status, decided_by, decided_at FROM delivery_decision ORDER BY 1"
         ).fetchall()
         assert [(row[0], row[1], row[2]) for row in decisions] == [
             ("a" * 64, "include", "owner"), ("b" * 64, "exclude", "owner")]
         assert all(row[3] for row in decisions)
+
+
+def test_episode_ids_are_allocated_once_and_new_captures_append(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    run_dir = tmp_path / "run"
+    output = tmp_path / "delivery"
+    first_capture = "a" * 64
+    second_capture = "b" * 64
+    insert_capture(run_dir, first_capture, "take-z")
+
+    complete_local_delivery(str(source), run_dir, output)
+    assert review_rows(run_dir / "review.csv")[0]["episode_id"] == "episode_000001"
+
+    insert_capture(run_dir, second_capture, "take-a")
+    complete_local_delivery(str(source), run_dir, output)
+    rows = {row["capture_id"]: row["episode_id"]
+            for row in review_rows(run_dir / "review.csv")}
+
+    assert rows == {
+        first_capture: "episode_000001",
+        second_capture: "episode_000002",
+    }
+    with sqlite3.connect(run_dir / "run.sqlite") as database:
+        assert database.execute(
+            "SELECT capture_id, episode_number FROM delivery_episode ORDER BY episode_number"
+        ).fetchall() == [(first_capture, 1), (second_capture, 2)]
+
+
+def test_complete_episodes_receive_ids_before_incomplete_candidates(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    run_dir = tmp_path / "run"
+    incomplete = "a" * 64
+    complete = "b" * 64
+    insert_capture(run_dir, incomplete, "take-a", grouping="incomplete")
+    insert_capture(run_dir, complete, "take-z")
+
+    complete_local_delivery(str(source), run_dir, tmp_path / "delivery")
+    rows = {row["capture_id"]: row["episode_id"]
+            for row in review_rows(run_dir / "review.csv")}
+
+    assert rows == {
+        complete: "episode_000001",
+        incomplete: "episode_000002",
+    }
 
 
 @pytest.mark.parametrize(("changes", "message"), [

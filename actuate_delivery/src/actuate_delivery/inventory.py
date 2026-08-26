@@ -1,4 +1,5 @@
 import json
+import mimetypes
 import os
 from dataclasses import dataclass
 from hashlib import sha256
@@ -21,6 +22,12 @@ class FileFact:
     camera_stream_id: str | None
     size_bytes: int
     modified_time_ns: int
+    source_type: str
+    parent_source_item_id: str
+    mime_type: str
+    source_checksum_algorithm: str | None
+    source_checksum: str | None
+    can_download: bool
 
 @dataclass(frozen=True)
 class CaptureFact:
@@ -42,6 +49,25 @@ class PreservedFile:
     source_sha256: str
     change: str
 Preservation = tuple[tuple[PreservedFile, ...], tuple[tuple[str, str, str, bool], ...], int]
+
+
+def classify_name(name: str) -> tuple[str, str | None, str | None]:
+    path = Path(name)
+    role = ROLES.get(path.suffix.lower().removeprefix("."), "other")
+    stem = path.stem
+    capture_key = stem
+    camera_stream_id = None
+    if role == "video" and (stem == "visualization" or stem.endswith("_stereo_depth_imu")):
+        return "auxiliary", None, None
+    if role in ("video", "vts"):
+        camera_stream_id = "single"
+        if stem.endswith("_L"):
+            capture_key = stem[:-2]
+            camera_stream_id = "left"
+        elif stem.endswith("_R"):
+            capture_key = stem[:-2]
+            camera_stream_id = "right"
+    return role, capture_key, camera_stream_id
 
 def group_captures(files: tuple[FileFact, ...]) -> tuple[CaptureFact, ...]:
     keys = {
@@ -85,6 +111,50 @@ def group_captures(files: tuple[FileFact, ...]) -> tuple[CaptureFact, ...]:
     return tuple(captures)
 
 
+def select_inventory(
+    inventory: SourceInventory, source_item_ids: tuple[str, ...] | None
+) -> SourceInventory:
+    if source_item_ids is None:
+        return inventory
+    files = {file.source_item_id: file for file in inventory.files}
+    unknown = sorted(set(source_item_ids) - files.keys())
+    if unknown:
+        raise ValueError(f"Unknown source item ID: {unknown[0]}")
+
+    selected = set(source_item_ids)
+    groups = {
+        (files[item_id].parent_path, files[item_id].capture_key)
+        for item_id in selected if files[item_id].capture_key is not None
+    }
+    captures_by_parent = {}
+    for capture in inventory.captures:
+        captures_by_parent.setdefault(capture.parent_path, []).append(capture.capture_key)
+    for item_id in tuple(selected):
+        file = files[item_id]
+        if file.role != "auxiliary":
+            continue
+        name = Path(file.relative_path).name
+        keys = captures_by_parent.get(file.parent_path, [])
+        exact = [key for key in keys if name == f"{key}_stereo_depth_imu.mp4"]
+        if exact:
+            groups.add((file.parent_path, exact[0]))
+        elif name == "visualization.mp4" and len(keys) == 1:
+            groups.add((file.parent_path, keys[0]))
+    for file in inventory.files:
+        if (file.parent_path, file.capture_key) in groups:
+            selected.add(file.source_item_id)
+        if file.role == "auxiliary":
+            name = Path(file.relative_path).name
+            keys = [key for parent, key in groups if parent == file.parent_path]
+            if any(name == f"{key}_stereo_depth_imu.mp4" for key in keys) or (
+                name == "visualization.mp4" and len(captures_by_parent.get(file.parent_path, [])) == 1
+                and keys
+            ):
+                selected.add(file.source_item_id)
+    selected_files = tuple(file for file in inventory.files if file.source_item_id in selected)
+    return SourceInventory(inventory.source_identity, selected_files, group_captures(selected_files))
+
+
 def inventory_local(source: str, run_dir: Path) -> SourceInventory:
     root = Path(source).expanduser().resolve(strict=True)
     if not root.is_dir():
@@ -118,24 +188,7 @@ def inventory_local(source: str, run_dir: Path) -> SourceInventory:
                 continue
 
             relative = path.relative_to(root)
-            extension = path.suffix.lower()
-            role = ROLES.get(extension.removeprefix("."), "other")
-            stem = path.stem
-            capture_key = stem
-            camera_stream_id = None
-            if role == "video" and (
-                stem == "visualization" or stem.endswith("_stereo_depth_imu")
-            ):
-                role = "auxiliary"
-                capture_key = None
-            elif role in ("video", "vts"):
-                camera_stream_id = "single"
-                if stem.endswith("_L"):
-                    capture_key = stem[:-2]
-                    camera_stream_id = "left"
-                elif stem.endswith("_R"):
-                    capture_key = stem[:-2]
-                    camera_stream_id = "right"
+            role, capture_key, camera_stream_id = classify_name(name)
 
             metadata = path.stat()
             relative_path = relative.as_posix()
@@ -149,6 +202,12 @@ def inventory_local(source: str, run_dir: Path) -> SourceInventory:
                     camera_stream_id,
                     metadata.st_size,
                     metadata.st_mtime_ns,
+                    "local",
+                    relative.parent.as_posix(),
+                    mimetypes.guess_type(name)[0] or "application/octet-stream",
+                    None,
+                    None,
+                    True,
                 )
             )
 
@@ -178,6 +237,19 @@ def _copy_bytes(source, destination, digest) -> None:
         destination.write(chunk)
         digest.update(chunk)
 
+
+def _publish_staging(staging: Path, run_dir: Path, fact: FileFact, source_hash: str) -> None:
+    if staging.stat().st_size != fact.size_bytes or _hash_file(staging) != source_hash:
+        raise ValueError(f"Copied bytes changed: {fact.relative_path}")
+    blob = run_dir / f"cache/blobs/{source_hash}"
+    blob.parent.mkdir(parents=True, exist_ok=True)
+    if blob.exists() or blob.is_symlink():
+        _verify_blob(blob, fact.size_bytes, source_hash)
+        staging.unlink()
+    else:
+        staging.replace(blob)
+
+
 def _copy_to_blob(source: Path, run_dir: Path, fact: FileFact) -> str:
     _check_source(source, fact)
     staging = run_dir / "cache/staging" / sha256(fact.source_item_id.encode()).hexdigest()
@@ -190,24 +262,49 @@ def _copy_to_blob(source: Path, run_dir: Path, fact: FileFact) -> str:
         _copy_bytes(source_file, destination, digest)
     source_hash = digest.hexdigest()
     _check_source(source, fact)
-    if staging.stat().st_size != fact.size_bytes or _hash_file(staging) != source_hash:
-        raise ValueError(f"Copied bytes changed: {fact.relative_path}")
-
-    blob = run_dir / f"cache/blobs/{source_hash}"
-    blob.parent.mkdir(parents=True, exist_ok=True)
-    if blob.exists() or blob.is_symlink():
-        _verify_blob(blob, fact.size_bytes, source_hash)
-        staging.unlink()
-    else:
-        staging.replace(blob)
+    _publish_staging(staging, run_dir, fact, source_hash)
     return source_hash
 
+
+def _preservation_result(
+    inventory: SourceInventory,
+    hashes: dict[str, str],
+    previous: dict[str, tuple[bool, str | None]],
+    present_item_ids: set[str],
+) -> Preservation:
+    preserved = []
+    for fact in inventory.files:
+        prior = previous.get(fact.source_item_id)
+        source_hash = hashes[fact.source_item_id]
+        change = "unchanged" if prior and prior[0] and prior[1] == source_hash else (
+            "changed" if prior and prior[0] and prior[1] else "new"
+        )
+        preserved.append(PreservedFile(fact.source_item_id, source_hash, change))
+
+    snapshots = []
+    canonical_ids = set()
+    for capture in inventory.captures:
+        identity = sorted(
+            (member.role, member.camera_stream_id or "", hashes[member.source_item_id],
+             member.size_bytes)
+            for member in capture.members
+        )
+        capture_id = sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
+        snapshots.append((capture.parent_path, capture.capture_key, capture_id,
+                          capture_id not in canonical_ids))
+        canonical_ids.add(capture_id)
+    removed = sum(
+        present and item_id not in present_item_ids
+        for item_id, (present, _) in previous.items()
+    )
+    return tuple(preserved), tuple(snapshots), removed
+
 def preserve_inventory(source_root: Path, run_dir: Path, inventory: SourceInventory,
-                       previous: dict[str, tuple[bool, str | None]]) -> Preservation:
+                       previous: dict[str, tuple[bool, str | None]],
+                       present_item_ids: set[str]) -> Preservation:
     if source_root.is_relative_to((run_dir / "cache").resolve()):
         raise ValueError("Cannot preserve a source inside RUN_DIR/cache")
 
-    preserved = []
     hashes = {}
     for fact in inventory.files:
         source = source_root / fact.relative_path
@@ -227,24 +324,5 @@ def preserve_inventory(source_root: Path, run_dir: Path, inventory: SourceInvent
                 source_hash = copied_hash
         else:
             source_hash = _copy_to_blob(source, run_dir, fact)
-        change = "unchanged" if prior and prior[0] and prior[1] == source_hash else (
-            "changed" if prior and prior[0] and prior[1] else "new"
-        )
         hashes[fact.source_item_id] = source_hash
-        preserved.append(PreservedFile(fact.source_item_id, source_hash, change))
-
-    snapshots = []
-    canonical_ids = set()
-    for capture in inventory.captures:
-        identity = sorted(
-            (member.role, member.camera_stream_id or "", hashes[member.source_item_id],
-             member.size_bytes)
-            for member in capture.members
-        )
-        capture_id = sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
-        snapshots.append((capture.parent_path, capture.capture_key, capture_id,
-                          capture_id not in canonical_ids))
-        canonical_ids.add(capture_id)
-    current_ids = {file.source_item_id for file in inventory.files}
-    removed = sum(present and item_id not in current_ids for item_id, (present, _) in previous.items())
-    return tuple(preserved), tuple(snapshots), removed
+    return _preservation_result(inventory, hashes, previous, present_item_ids)

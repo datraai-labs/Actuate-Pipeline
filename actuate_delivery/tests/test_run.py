@@ -2,8 +2,8 @@ import sqlite3
 from datetime import UTC, datetime
 from hashlib import sha256
 
-import trinet_delivery.run as run_module
-from trinet_delivery.cli import app
+import actuate_delivery.run as run_module
+from actuate_delivery.cli import app
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -38,14 +38,19 @@ def test_run_creates_and_resumes_one_ledger(tmp_path, monkeypatch):
 
     monkeypatch.setattr(run_module, "datetime", Clock)
 
+    output = tmp_path / "delivery"
     first_result = runner.invoke(
-        app, ["run", str(source), str(run_dir), "--ui"]
+        app, ["run", str(source), str(run_dir), "--output", str(output)],
+        input="owner\nn\n",
     )
     assert first_result.exit_code == 0, first_result.output
     first, count, version = read_run(run_dir / "run.sqlite")
 
     same_source = source / ".." / source.name
-    second_result = runner.invoke(app, ["run", str(same_source), str(run_dir)])
+    second_result = runner.invoke(
+        app, ["run", str(same_source), str(run_dir), "--output", str(output)],
+        input="owner\nn\n",
+    )
     assert second_result.exit_code == 0, second_result.output
     second, second_count, second_version = read_run(run_dir / "run.sqlite")
 
@@ -55,10 +60,9 @@ def test_run_creates_and_resumes_one_ledger(tmp_path, monkeypatch):
     assert first[3] == "2026-08-18T12:00:00+00:00"
     assert second[3] == "2026-08-18T12:01:00+00:00"
     assert count == second_count == 1
-    assert version == second_version == 11
-    assert "preserved=0" in second_result.output
-    assert "qc_created=0" in first_result.output
-    assert "ui=not_implemented_until_hosted_phase" in first_result.output
+    assert version == second_version == 6
+    assert "unchanged: 0" in second_result.output
+    assert "Stopped safely" in first_result.output
 
 
 def test_run_rejects_changed_source_without_mutating_ledger(tmp_path):
@@ -67,13 +71,20 @@ def test_run_rejects_changed_source_without_mutating_ledger(tmp_path):
     run_dir = tmp_path / "run"
     source_a.mkdir()
     source_b.mkdir()
-    assert runner.invoke(app, ["run", str(source_a), str(run_dir)]).exit_code == 0
+    output = tmp_path / "delivery"
+    assert runner.invoke(
+        app, ["run", str(source_a), str(run_dir), "--output", str(output)],
+        input="owner\nn\n",
+    ).exit_code == 0
     database_path = run_dir / "run.sqlite"
     before = read_run(database_path)
     before_hash = sha256(database_path.read_bytes()).hexdigest()
     before_mtime = database_path.stat().st_mtime_ns
 
-    result = runner.invoke(app, ["run", str(source_b), str(run_dir)])
+    result = runner.invoke(
+        app, ["run", str(source_b), str(run_dir), "--output", str(output)],
+        input="owner\n",
+    )
     after = read_run(database_path)
 
     assert result.exit_code != 0
@@ -106,11 +117,12 @@ def test_output_option_creates_review_sheet_before_delivery(tmp_path):
     source.mkdir()
 
     result = runner.invoke(
-        app, ["run", str(source), str(run_dir), "--output", str(output)]
+        app, ["run", str(source), str(run_dir), "--output", str(output)],
+        input="owner\ny\ny\ny\ny\nn\n",
     )
 
     assert result.exit_code == 0, result.output
-    assert "review_sheet=" in result.output
-    assert "delivery_status=no_captures_included" in result.output
+    assert "review path:" in result.output
+    assert "Approve Run QC and continue?" in result.output
     assert (run_dir / "review.csv").is_file()
     assert not output.exists()

@@ -28,7 +28,7 @@ SUPPLIER_BLOCKERS = (
 
 
 def supplier_issues(internal: dict) -> tuple[list[str], list[str]]:
-    if internal["schema_version"] != "trinet_delivery.qc_internal.v2":
+    if internal["schema_version"] != "actuate_delivery.qc_internal.v2":
         raise QcError(f"Unsupported internal QC schema: {internal['schema_version']}")
     checks = {check["check_id"]: check["result"] for check in internal["checks"]}
     unresolved = [name for name, result in checks.items()
@@ -105,7 +105,7 @@ def _supplier_qc(internal: dict, decision: dict) -> dict:
                           "covered_frames": timing["coverage_rows"]}},
         ))
     supplier = {
-        "schema_version": "trinet_delivery.qc.v1", "capture_id": internal["capture_id"],
+        "schema_version": "actuate_delivery.qc.v1", "capture_id": internal["capture_id"],
         "result": "pass_with_declared_limitation" if limitations else "pass",
         "checks": supplier_checks, "limitations": limitations, "transformations": [],
         "human_decision": {key: decision[key] for key in ("status", "decided_by", "decided_at")},
@@ -182,7 +182,7 @@ def build_qc(facts: dict, output: Path) -> QcArtifact:
         "pass" if telemetry["status"] == "decoded" else "fail"), telemetry)
     counts = {result: sum(check["result"] == result for check in checks)
               for result in ("pass", "fail", "unknown", "not_applicable")}
-    document = {"schema_version": "trinet_delivery.qc_internal.v2",
+    document = {"schema_version": "actuate_delivery.qc_internal.v2",
                 "capture_id": facts["capture_id"], "facts": facts,
                 "checks": checks, "summary": counts}
     try:

@@ -3,24 +3,33 @@ import sqlite3
 import struct
 from dataclasses import replace
 from hashlib import sha256
+from types import SimpleNamespace
 
+import actuate_delivery.inventory as inventory_module
+import actuate_delivery.run as run_module
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-import trinet_delivery.inventory as inventory_module
-import trinet_delivery.run as run_module
-from trinet_delivery.cli import app
-from trinet_delivery.inventory import (
+from actuate_delivery.inventory import (
     FileFact,
     PreservedFile,
     SourceInventory,
     group_captures,
+    select_inventory,
 )
-from trinet_delivery.run import open_run, store_inventory, store_preservation
-from trinet_delivery.video import VideoArtifact
-from typer.testing import CliRunner
+from actuate_delivery.run import open_run, store_inventory, store_preservation
+from actuate_delivery.video import VideoArtifact
 
-runner = CliRunner()
+
+def run_pipeline(source, run_dir):
+    try:
+        result = run_module.prepare_local_run(str(source), run_dir)
+    except run_module.RunError as error:
+        return SimpleNamespace(exit_code=1, output=f"run_error={error}\n")
+    values = result.__dict__ | {"preserved": result.files}
+    output = "\n".join(f"{key}={value}" for key, value in values.items()) + "\n"
+    failed = sum(value for key, value in values.items() if key.endswith("_failed"))
+    return SimpleNamespace(exit_code=int(bool(failed)), output=output)
 
 
 @pytest.fixture(autouse=True)
@@ -94,7 +103,7 @@ def test_batch_preserves_complete_incomplete_stereo_auxiliary_and_other(tmp_path
     ignored = source / "stereo/System Volume Information/nested"
     write_capture(ignored, "ignored", "stereo_pair")
 
-    result = runner.invoke(app, ["run", str(source), str(run_dir)])
+    result = run_pipeline(source, run_dir)
     assert result.exit_code == 0, result.output
     database_path = run_dir / "run.sqlite"
     files = rows(
@@ -149,18 +158,119 @@ def test_batch_preserves_complete_incomplete_stereo_auxiliary_and_other(tmp_path
     assert native["device_id_hex"] == "00" * 16
 
 
+def test_explicit_selection_expands_stereo_sidecars_and_visualization(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    run_dir = tmp_path / "run"
+    write_capture(source / "selected", "take", "stereo_pair")
+    (source / "selected/visualization.mp4").write_bytes(b"visualization")
+    write_capture(source / "unselected", "recording")
+    (source / "notes.txt").write_bytes(b"notes")
+
+    inventory = inventory_module.inventory_local(str(source), run_dir)
+    selected = select_inventory(inventory, ("selected/take_L.mp4",))
+    selected_paths = {file.relative_path for file in selected.files}
+    assert selected_paths == {
+        "selected/take.imu", "selected/take_L.mp4", "selected/take_L.vts",
+        "selected/take_R.mp4", "selected/take_R.vts", "selected/visualization.mp4",
+    }
+
+    copy_to_blob = inventory_module._copy_to_blob
+
+    def selected_copy(path, target_run_dir, fact):
+        assert fact.relative_path in selected_paths
+        return copy_to_blob(path, target_run_dir, fact)
+
+    monkeypatch.setattr(inventory_module, "_copy_to_blob", selected_copy)
+
+    result = run_module.prepare_local_run(
+        str(source), run_dir, ("selected/take_L.mp4",)
+    )
+    assert result.files == 6
+    assert result.captures == 1
+    assert len(list((run_dir / "cache/blobs").iterdir())) == 5
+    assert rows(
+        run_dir / "run.sqlite",
+        "SELECT relative_path, selected, source_sha256 IS NOT NULL "
+        "FROM source_file ORDER BY relative_path",
+    ) == [
+        ("notes.txt", 0, 0),
+        ("selected/take.imu", 1, 1),
+        ("selected/take_L.mp4", 1, 1),
+        ("selected/take_L.vts", 1, 1),
+        ("selected/take_R.mp4", 1, 1),
+        ("selected/take_R.vts", 1, 1),
+        ("selected/visualization.mp4", 1, 1),
+        ("unselected/recording.imu", 0, 0),
+        ("unselected/recording.mp4", 0, 0),
+        ("unselected/recording.vts", 0, 0),
+    ]
+    assert rows(
+        run_dir / "run.sqlite",
+        "SELECT source_type, parent_source_item_id, mime_type, can_download "
+        "FROM source_file WHERE relative_path='selected/take_L.mp4'",
+    ) == [("local", "selected", "video/mp4", 1)]
+
+
+def test_unknown_selection_fails_before_run_creation(tmp_path):
+    source = tmp_path / "source"
+    run_dir = tmp_path / "run"
+    write_capture(source, "recording")
+
+    with pytest.raises(run_module.RunInputError, match="Unknown source item ID"):
+        run_module.prepare_local_run(str(source), run_dir, ("missing",))
+
+    assert not run_dir.exists()
+
+
+def test_narrower_selection_retains_prior_unselected_blobs(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    run_dir = tmp_path / "run"
+    write_capture(source / "one", "take1")
+    write_capture(source / "two", "take2")
+    run_module.prepare_local_run(str(source), run_dir)
+    prior = rows(
+        run_dir / "run.sqlite",
+        "SELECT relative_path, source_sha256 FROM source_file ORDER BY relative_path",
+    )
+
+    hash_file = inventory_module._hash_file
+
+    def selected_hash(path):
+        assert "/two/" not in path.as_posix()
+        return hash_file(path)
+
+    monkeypatch.setattr(inventory_module, "_hash_file", selected_hash)
+    result = run_module.prepare_local_run(
+        str(source), run_dir, ("one/take1.mp4",)
+    )
+
+    assert result.files == 3
+    assert result.removed == 0
+    assert rows(
+        run_dir / "run.sqlite",
+        "SELECT relative_path, source_sha256 FROM source_file ORDER BY relative_path",
+    ) == prior
+    assert rows(
+        run_dir / "run.sqlite",
+        "SELECT relative_path FROM source_file WHERE selected=0 ORDER BY relative_path",
+    ) == [("two/take2.imu",), ("two/take2.mp4",), ("two/take2.vts",)]
+    assert rows(
+        run_dir / "run.sqlite", "SELECT parent_path FROM capture_snapshot"
+    ) == [("one",)]
+
+
 def test_unchanged_rerun_verifies_without_copying(tmp_path, monkeypatch):
     source = tmp_path / "source"
     run_dir = tmp_path / "run"
     write_capture(source, "recording")
-    first = runner.invoke(app, ["run", str(source), str(run_dir)])
+    first = run_pipeline(source, run_dir)
     assert first.exit_code == 0, first.output
 
     def reject_copy(*args):
         raise AssertionError("unchanged files must not be copied")
 
     monkeypatch.setattr(inventory_module, "_copy_to_blob", reject_copy)
-    second = runner.invoke(app, ["run", str(source), str(run_dir)])
+    second = run_pipeline(source, run_dir)
 
     assert second.exit_code == 0, second.output
     assert "new=0" in second.output
@@ -173,14 +283,14 @@ def test_changed_qc_output_fails_closed(tmp_path):
     source = tmp_path / "source"
     run_dir = tmp_path / "run"
     write_capture(source, "recording")
-    assert runner.invoke(app, ["run", str(source), str(run_dir)]).exit_code == 0
+    assert run_pipeline(source, run_dir).exit_code == 0
     relative = rows(
         run_dir / "run.sqlite",
         "SELECT json_relative_path FROM qc_artifact WHERE status='ready'",
     )[0][0]
     (run_dir / relative).write_bytes(b"changed")
 
-    result = runner.invoke(app, ["run", str(source), str(run_dir)])
+    result = run_pipeline(source, run_dir)
 
     assert result.exit_code == 1
     assert "qc_failed=1" in result.output
@@ -193,14 +303,14 @@ def test_changed_timing_output_fails_closed(tmp_path):
     source = tmp_path / "source"
     run_dir = tmp_path / "run"
     write_capture(source, "recording")
-    assert runner.invoke(app, ["run", str(source), str(run_dir)]).exit_code == 0
+    assert run_pipeline(source, run_dir).exit_code == 0
     relative = rows(
         run_dir / "run.sqlite",
         "SELECT parquet_relative_path FROM timing_artifact WHERE status='ready'",
     )[0][0]
     (run_dir / relative).write_bytes(b"changed")
 
-    result = runner.invoke(app, ["run", str(source), str(run_dir)])
+    result = run_pipeline(source, run_dir)
 
     assert result.exit_code == 1
     assert "timing_failed=1" in result.output
@@ -213,14 +323,14 @@ def test_changed_video_index_fails_closed(tmp_path):
     source = tmp_path / "source"
     run_dir = tmp_path / "run"
     write_capture(source, "recording")
-    assert runner.invoke(app, ["run", str(source), str(run_dir)]).exit_code == 0
+    assert run_pipeline(source, run_dir).exit_code == 0
     relative = rows(
         run_dir / "run.sqlite",
         "SELECT frame_index_relative_path FROM video_artifact WHERE status='verified'",
     )[0][0]
     (run_dir / relative).write_bytes(b"changed")
 
-    result = runner.invoke(app, ["run", str(source), str(run_dir)])
+    result = run_pipeline(source, run_dir)
 
     assert result.exit_code == 1
     assert "video_failed=1" in result.output
@@ -236,7 +346,7 @@ def test_exact_duplicate_capture_is_canonical_once(tmp_path):
     write_capture(source / "b", "take", prefix=b"same-")
     write_capture(source / "c", "take", prefix=b"diff-")
 
-    result = runner.invoke(app, ["run", str(source), str(run_dir)])
+    result = run_pipeline(source, run_dir)
     assert result.exit_code == 0, result.output
     snapshots = rows(
         run_dir / "run.sqlite",
@@ -258,7 +368,7 @@ def test_add_change_remove_reports_transitions_and_keeps_removed_mapping(tmp_pat
     write_capture(source, "recording")
     notes = source / "notes.txt"
     notes.write_bytes(b"notes")
-    assert runner.invoke(app, ["run", str(source), str(run_dir)]).exit_code == 0
+    assert run_pipeline(source, run_dir).exit_code == 0
     old_mapping = rows(
         run_dir / "run.sqlite",
         "SELECT source_sha256, cache_relative_path FROM source_file WHERE relative_path='notes.txt'",
@@ -267,7 +377,7 @@ def test_add_change_remove_reports_transitions_and_keeps_removed_mapping(tmp_pat
     (source / "recording.mp4").write_bytes(b"X" * len(b"recording.mp4"))
     notes.unlink()
     (source / "recording.tel").write_bytes(valid_tel())
-    result = runner.invoke(app, ["run", str(source), str(run_dir)])
+    result = run_pipeline(source, run_dir)
 
     assert result.exit_code == 0, result.output
     assert "new=1" in result.output
@@ -293,14 +403,15 @@ def test_wrong_parent_and_duplicate_camera_member_are_not_complete(tmp_path):
         (source / "a" / name).write_bytes(content)
     for name in ("take_R.mp4", "take_R.vts"):
         (source / "b" / name).write_bytes(valid_vts() if name.endswith(".vts") else b"b")
-    result = runner.invoke(app, ["run", str(source), str(run_dir)])
+    result = run_pipeline(source, run_dir)
     assert result.exit_code == 0, result.output
     assert rows(
         run_dir / "run.sqlite",
         "SELECT parent_path, grouping_status FROM capture_candidate ORDER BY 1",
     ) == [("a", "incomplete"), ("b", "incomplete")]
 
-    left = FileFact("one", "take_L.mp4", ".", "video", "take", "left", 1, 1)
+    left = FileFact("one", "take_L.mp4", ".", "video", "take", "left", 1, 1,
+                    "local", ".", "video/mp4", None, None, True)
     duplicate = replace(left, source_item_id="two", relative_path="copy/take_L.mp4")
     capture = group_captures((left, duplicate))[0]
     assert capture.grouping_status == "ambiguous"
@@ -312,7 +423,7 @@ def test_run_directory_inside_source_and_source_inside_cache_are_rejected(tmp_pa
     original = source / "recording.imu"
     original.write_bytes(b"immutable")
     before_hash = sha256(original.read_bytes()).hexdigest()
-    inside = runner.invoke(app, ["run", str(source), str(source / "run")])
+    inside = run_pipeline(source, source / "run")
     assert inside.exit_code != 0
     assert "RUN_DIR must not be equal to or inside SOURCE" in inside.output
     assert sha256(original.read_bytes()).hexdigest() == before_hash
@@ -321,7 +432,7 @@ def test_run_directory_inside_source_and_source_inside_cache_are_rejected(tmp_pa
     cached_source = run_dir / "cache/source"
     cached_source.mkdir(parents=True)
     (cached_source / "recording.vts").write_bytes(b"vts")
-    cached = runner.invoke(app, ["run", str(cached_source), str(run_dir)])
+    cached = run_pipeline(cached_source, run_dir)
     assert cached.exit_code == 1
     assert "Cannot preserve a source inside RUN_DIR/cache" in cached.output
 
@@ -333,13 +444,14 @@ def test_inventory_write_rolls_back_as_one_transaction(tmp_path):
     open_run(source.as_uri(), run_dir)
     database_path = run_dir / "run.sqlite"
     before = database_path.read_bytes()
-    first = FileFact("duplicate", "one", ".", "video", "one", "single", 1, 1)
+    first = FileFact("duplicate", "one", ".", "video", "one", "single", 1, 1,
+                     "local", ".", "video/mp4", None, None, True)
     broken = SourceInventory(
         source.as_uri(), (first, replace(first, source_item_id="other", size_bytes=-1)), ()
     )
 
     with pytest.raises(sqlite3.IntegrityError):
-        store_inventory(database_path, broken)
+        store_inventory(database_path, broken, broken)
 
     assert database_path.read_bytes() == before
 
@@ -355,7 +467,7 @@ def test_interrupted_copy_is_not_published_and_retry_succeeds(tmp_path, monkeypa
         raise OSError("simulated interrupted copy")
 
     monkeypatch.setattr(inventory_module, "_copy_bytes", interrupt)
-    failed = runner.invoke(app, ["run", str(source), str(run_dir)])
+    failed = run_pipeline(source, run_dir)
     assert failed.exit_code == 1
     assert "run_error=simulated interrupted copy" in failed.output
     assert not (run_dir / "cache/blobs").exists()
@@ -365,7 +477,7 @@ def test_interrupted_copy_is_not_published_and_retry_succeeds(tmp_path, monkeypa
     ) == [(0,)]
 
     monkeypatch.setattr(inventory_module, "_copy_bytes", copy_bytes)
-    resumed = runner.invoke(app, ["run", str(source), str(run_dir)])
+    resumed = run_pipeline(source, run_dir)
     assert resumed.exit_code == 0, resumed.output
     assert "new=3" in resumed.output
 
@@ -380,7 +492,7 @@ def test_changed_copy_bytes_are_rejected_before_publish(tmp_path, monkeypatch):
         destination.write(b"x" * len(source_file.read()))
 
     monkeypatch.setattr(inventory_module, "_copy_bytes", change_bytes)
-    failed = runner.invoke(app, ["run", str(source), str(run_dir)])
+    failed = run_pipeline(source, run_dir)
 
     assert failed.exit_code == 1
     assert "Copied bytes changed:" in failed.output
@@ -391,7 +503,7 @@ def test_corrupt_blob_fails_closed_without_overwrite(tmp_path):
     source = tmp_path / "source"
     run_dir = tmp_path / "run"
     write_capture(source, "recording")
-    first = runner.invoke(app, ["run", str(source), str(run_dir)])
+    first = run_pipeline(source, run_dir)
     assert first.exit_code == 0, first.output
     cache_path = rows(
         run_dir / "run.sqlite",
@@ -401,7 +513,7 @@ def test_corrupt_blob_fails_closed_without_overwrite(tmp_path):
     blob_size = blob.stat().st_size
     blob.write_bytes(b"X" * blob_size)
 
-    failed = runner.invoke(app, ["run", str(source), str(run_dir)])
+    failed = run_pipeline(source, run_dir)
 
     assert failed.exit_code == 1
     assert "Immutable cache blob changed:" in failed.output
@@ -420,7 +532,7 @@ def test_preservation_write_rolls_back_on_mid_insert_failure(tmp_path):
     inventory = inventory_module.inventory_local(str(source), run_dir)
     open_run(inventory.source_identity, run_dir)
     database_path = run_dir / "run.sqlite"
-    store_inventory(database_path, inventory)
+    store_inventory(database_path, inventory, inventory)
     file = PreservedFile("recording.imu", "a" * 64, "new")
     capture = (".", "recording", "b" * 64, True)
     broken = ((file,), (capture, capture), 0)

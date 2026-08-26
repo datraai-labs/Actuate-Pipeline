@@ -2,11 +2,11 @@ import json
 import sqlite3
 from hashlib import sha256
 
+import actuate_delivery.video as video_module
 import pyarrow.parquet as pq
 import pytest
-import trinet_delivery.video as video_module
-from trinet_delivery.inventory import FileFact, PreservedFile, SourceInventory, group_captures
-from trinet_delivery.run import (
+from actuate_delivery.inventory import FileFact, PreservedFile, SourceInventory, group_captures
+from actuate_delivery.run import (
     open_run,
     process_imus,
     process_sidecars,
@@ -14,7 +14,7 @@ from trinet_delivery.run import (
     store_inventory,
     store_preservation,
 )
-from trinet_delivery.video import VideoError, verify_video
+from actuate_delivery.video import VideoError, verify_video
 
 
 def probe_json(video_count=1):
@@ -127,11 +127,13 @@ def test_missing_tool_decode_failure_and_wrong_hash_publish_nothing(tmp_path, mo
 
 def test_duplicate_video_stream_fails_without_choosing_a_member(tmp_path):
     run_dir = tmp_path / "run"
-    first = FileFact("a.mp4", "a.mp4", ".", "video", "take", "left", 1, 1)
-    second = FileFact("b.mp4", "b.mp4", ".", "video", "take", "left", 1, 1)
+    first = FileFact("a.mp4", "a.mp4", ".", "video", "take", "left", 1, 1,
+                     "local", ".", "video/mp4", None, None, True)
+    second = FileFact("b.mp4", "b.mp4", ".", "video", "take", "left", 1, 1,
+                      "local", ".", "video/mp4", None, None, True)
     inventory = SourceInventory("file:///source", (first, second), group_captures((first, second)))
     open_run(inventory.source_identity, run_dir)
-    store_inventory(run_dir / "run.sqlite", inventory)
+    store_inventory(run_dir / "run.sqlite", inventory, inventory)
     preservation = (
         (PreservedFile("a.mp4", "a" * 64, "new"),
          PreservedFile("b.mp4", "b" * 64, "new")),

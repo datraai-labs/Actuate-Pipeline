@@ -7,7 +7,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from trinet_delivery.trinet import SidecarError, decode_vts
+from actuate_delivery.panoculon_trinet import SidecarError, decode_vts
 
 
 class TimingError(ValueError):
@@ -180,7 +180,7 @@ def build_timing(
         stereo_unmatched = len(set(by_stream["left"]) ^ set(by_stream["right"]))
 
     metadata = {
-        "schema_version": "trinet_delivery.frame_timing.v1",
+        "schema_version": "actuate_delivery.frame_timing.v1",
         "camera_time_basis": "native_vts_timestamp_v1_or_sof_timestamp_v2_plus",
         "video_vts_join": "outer_by_per_stream_row_order;native_identities_preserved",
         "imu_query": "Before<=t;After>=t;Closest=min_abs;exact_tie=Before",

@@ -3,13 +3,13 @@ import json
 import sqlite3
 from hashlib import sha256
 
+import actuate_delivery.package as package_module
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-import trinet_delivery.package as package_module
-from trinet_delivery.package import PackageError, build_delivery, project_supplier
-from trinet_delivery.qc import build_qc
-from trinet_delivery.video import VideoArtifact, VideoError
+from actuate_delivery.package import PackageError, build_delivery, project_supplier
+from actuate_delivery.qc import build_qc
+from actuate_delivery.video import VideoArtifact, VideoError
 
 
 def internal_qc(tmp_path, layout="single_video", partial=False, incomplete=False):
@@ -73,13 +73,27 @@ def internal_qc(tmp_path, layout="single_video", partial=False, incomplete=False
     return json.loads(path.read_text())
 
 
-def episode(internal, limitations=(), vendor_visualizations=()):
-    return {"internal_qc": internal, "source_relative_directory": "batch/device",
-            "source_group": "take", "vendor_calibration_references": [],
+def episode(internal, limitations=(), vendor_visualizations=(), episode_id="episode_000001"):
+    return {"episode_id": episode_id, "internal_qc": internal,
+            "source_relative_directory": "batch/device",
+            "source_group": "take",
             "vendor_visualizations": list(vendor_visualizations),
             "decision": {"status": "include", "decided_by": "owner",
                          "decided_at": "2026-08-23T12:00:00Z",
                          "limitations": list(limitations)}}
+
+
+def calibration(episode_ids=("episode_000001",)):
+    return {
+        "schema_version": "actuate_delivery.calibration.v1",
+        "calibration_id": "calibration_000001",
+        "rig_id": "rig_000001",
+        "applies_to_episode_ids": list(episode_ids),
+        "applied_by_pipeline": False,
+        "cameras": [{"stream_id": "left"}, {"stream_id": "right"}],
+        "transforms": {"baseline_m": 0.07},
+        "imu": {"update_rate_hz": 399.2},
+    }
 
 
 def read_manifest(path):
@@ -87,7 +101,7 @@ def read_manifest(path):
         return list(csv.DictReader(file))
 
 
-def delivery_input(tmp_path, monkeypatch, visualization=False):
+def delivery_input(tmp_path, monkeypatch, visualization=False, dataset_calibration=None):
     internal = internal_qc(tmp_path)
     contents = {
         "take.imu": b"native imu bytes",
@@ -118,7 +132,8 @@ def delivery_input(tmp_path, monkeypatch, visualization=False):
         cache = run_dir / "cache/blobs" / source_hash
         cache.write_bytes(content)
     projection = tmp_path / "projection"
-    project_supplier((episode(internal, vendor_visualizations=vendor_visualizations),), projection)
+    project_supplier((episode(internal, vendor_visualizations=vendor_visualizations),), projection,
+                     dataset_calibration)
 
     capture_id = internal["capture_id"]
     work = run_dir / "work" / capture_id
@@ -154,10 +169,13 @@ def delivery_input(tmp_path, monkeypatch, visualization=False):
             CREATE TABLE tel_artifact (
                 capture_id TEXT, source_sha256 TEXT, status TEXT,
                 parquet_relative_path TEXT, parquet_sha256 TEXT, record_count INTEGER, error TEXT);
-            PRAGMA user_version = 11;
+            CREATE TABLE delivery_episode (
+                capture_id TEXT PRIMARY KEY, episode_number INTEGER NOT NULL UNIQUE);
+            PRAGMA user_version = 14;
         """)
         database.execute("INSERT INTO capture_snapshot VALUES ('batch/device', 'take', ?, 1)",
                          (capture_id,))
+        database.execute("INSERT INTO delivery_episode VALUES (?, 1)", (capture_id,))
         for index, member in enumerate(internal["facts"]["source"]["members"]):
             source_item_id = str(index)
             database.execute("INSERT INTO capture_member VALUES ('batch/device', 'take', ?, ?)",
@@ -192,15 +210,19 @@ def test_mono_projection_is_episode_first_and_supplier_allowlisted(tmp_path):
     included = episode(internal_qc(tmp_path))
     artifact = project_supplier((included,), output)
     repeated = project_supplier((included,), tmp_path / "repeated")
-    row = read_manifest(output / "manifest.csv")[0]
-    meta = json.loads((output / f"episodes/{row['capture_id']}/meta.json").read_text())
-    qc = json.loads((output / row["qc_path"]).read_text())
+    row = read_manifest(output / "episodes.csv")[0]
+    meta = json.loads((output / f"episodes/{row['episode_id']}/meta.json").read_text())
+    qc = json.loads((output / f"episodes/{row['episode_id']}/derived/qc.json").read_text())
 
     assert artifact.capture_count == 1
     assert repeated == artifact
+    assert row["episode_id"] == "episode_000001"
+    assert meta["episode_id"] == "episode_000001"
+    assert meta["capture_id"] == row["capture_id"]
     assert row["capture_layout"] == "single_video"
     assert row["camera_stream_count"] == "1"
-    assert row["qc_result"] == "pass"
+    assert "qc_result" not in row
+    assert "limitation_count" not in row
     assert len(meta["camera_streams"]) == 1
     assert meta["shared_imu"]["declared_sample_rate_hz"] == 400
     assert "reserved_header_hex" not in meta["shared_imu"]
@@ -215,11 +237,11 @@ def test_stereo_has_one_manifest_row_stream_meta_and_declared_limitation(tmp_pat
     internal = internal_qc(tmp_path, "stereo_pair", partial=True)
     output = tmp_path / "projection"
     project_supplier((episode(internal, ("One left frame lies outside IMU coverage.",)),), output)
-    row = read_manifest(output / "manifest.csv")[0]
-    meta = json.loads((output / f"episodes/{row['capture_id']}/meta.json").read_text())
-    qc = json.loads((output / row["qc_path"]).read_text())
+    row = read_manifest(output / "episodes.csv")[0]
+    meta = json.loads((output / f"episodes/{row['episode_id']}/meta.json").read_text())
+    qc = json.loads((output / f"episodes/{row['episode_id']}/derived/qc.json").read_text())
 
-    assert len(read_manifest(output / "manifest.csv")) == 1
+    assert len(read_manifest(output / "episodes.csv")) == 1
     assert row["camera_stream_count"] == "2"
     assert row["camera_duration_min_s"] == "2.0"
     assert row["camera_duration_max_s"] == "3.0"
@@ -230,23 +252,20 @@ def test_stereo_has_one_manifest_row_stream_meta_and_declared_limitation(tmp_pat
     assert "stereo streams are not added together" in (output / "README.md").read_text()
 
 
-def test_projection_lists_present_vendor_visualization_as_raw(tmp_path):
+def test_projection_lists_present_visualization_as_neutral_preview(tmp_path):
     internal = internal_qc(tmp_path, "stereo_pair")
     visualization = {"relative_path": "batch/device/visualization.mp4",
                      "size_bytes": 50, "source_sha256": "9" * 64}
     output = tmp_path / "projection"
     project_supplier((episode(internal, vendor_visualizations=(visualization,)),), output)
-    row = read_manifest(output / "manifest.csv")[0]
-    meta = json.loads((output / f"episodes/{row['capture_id']}/meta.json").read_text())
-    qc = json.loads((output / row["qc_path"]).read_text())
+    row = read_manifest(output / "episodes.csv")[0]
+    meta = json.loads((output / f"episodes/{row['episode_id']}/meta.json").read_text())
 
-    member = next(item for item in meta["raw_members"]
-                  if item["role"] == "vendor_visualization")
-    assert member == {"role": "vendor_visualization", "camera_stream_id": None,
-                      "path": "raw/visualization.mp4", "byte_count": 50,
-                      "sha256": "9" * 64}
-    assert row["raw_file_count"] == "6"
-    assert qc["checks"][0]["evidence"]["raw_file_count"] == 6
+    assert meta["previews"] == [{"path": "previews/capture_preview.mp4",
+                                 "byte_count": 50, "sha256": "9" * 64}]
+    assert all(member["role"] != "vendor_visualization" for member in meta["raw_members"])
+    assert row["raw_file_count"] == "5"
+    assert row["preview_count"] == "1"
 
 
 def test_vendor_visualization_association_is_unambiguous(tmp_path):
@@ -289,6 +308,18 @@ def test_decision_blockers_duplicates_and_undeclared_limitations_refuse_projecti
                          tmp_path / "undeclared")
 
 
+def test_projection_rejects_duplicate_or_invalid_public_episode_ids(tmp_path):
+    first = internal_qc(tmp_path)
+    second = json.loads(json.dumps(first))
+    second["capture_id"] = "b" * 64
+    second["facts"]["capture_id"] = "b" * 64
+
+    with pytest.raises(PackageError, match="duplicate episode ID"):
+        project_supplier((episode(first), episode(second)), tmp_path / "duplicate-public-id")
+    with pytest.raises(PackageError, match="invalid episode ID"):
+        project_supplier((episode(first, episode_id="take-a"),), tmp_path / "invalid-public-id")
+
+
 def test_staged_json_mismatch_publishes_nothing(tmp_path, monkeypatch):
     output = tmp_path / "projection"
     included = episode(internal_qc(tmp_path))
@@ -303,43 +334,81 @@ def test_staged_json_mismatch_publishes_nothing(tmp_path, monkeypatch):
 def test_final_delivery_materializes_and_reopens_every_required_file(tmp_path, monkeypatch):
     run_dir, projection, output = delivery_input(tmp_path, monkeypatch)
     artifact = build_delivery(run_dir, projection, output)
-    row = read_manifest(output / "manifest.csv")[0]
-    episode_path = output / "episodes" / row["capture_id"]
+    row = read_manifest(output / "episodes.csv")[0]
+    episode_path = output / "episodes" / row["episode_id"]
 
     assert artifact.capture_count == 1
-    assert artifact.file_count == 9
+    assert artifact.file_count == 8
     assert sorted(path.name for path in (episode_path / "raw").iterdir()) == [
         "take.imu", "take_single.mp4", "take_single.vts"]
     assert (episode_path / "derived/imu.parquet").is_file()
     assert (episode_path / "derived/frame_timing.parquet").is_file()
-    assert json.loads((episode_path / "derived/qc.json").read_text())["result"] == "pass"
+    assert not (episode_path / "derived/qc.json").exists()
     assert not any(path.is_symlink() for path in output.rglob("*"))
 
 
-def test_final_delivery_accepts_decision_schema_12(tmp_path, monkeypatch):
+def test_final_delivery_requires_episode_identity_schema(tmp_path, monkeypatch):
     run_dir, projection, output = delivery_input(tmp_path, monkeypatch)
-    with sqlite3.connect(run_dir / "run.sqlite") as database:
-        database.execute("PRAGMA user_version = 12")
-
     assert build_delivery(run_dir, projection, output).capture_count == 1
+
+
+def test_final_delivery_includes_bound_calibration_without_customer_qc(tmp_path, monkeypatch):
+    expected = calibration()
+    run_dir, projection, output = delivery_input(
+        tmp_path, monkeypatch, dataset_calibration=expected)
+
+    artifact = build_delivery(run_dir, projection, output)
+    row = read_manifest(output / "episodes.csv")[0]
+    meta = json.loads((output / "episodes/episode_000001/meta.json").read_text())
+
+    assert artifact.file_count == 9
+    assert json.loads((output / "calibration/calibration_000001.json").read_text()) == expected
+    assert row["rig_id"] == "rig_000001"
+    assert row["calibration_id"] == "calibration_000001"
+    assert meta["rig_id"] == "rig_000001"
+    assert meta["calibration_id"] == "calibration_000001"
+    customer_text = "\n".join(
+        path.read_text() for path in output.rglob("*")
+        if path.is_file() and path.suffix in (".csv", ".json", ".md"))
+    assert "pass_with_declared_limitation" not in customer_text
+    assert "quality_notes" not in customer_text
+    assert "qc_result" not in customer_text
+
+
+def test_calibration_requires_exact_episode_binding(tmp_path):
+    included = episode(internal_qc(tmp_path))
+    wrong = calibration(("episode_000002",))
+
+    with pytest.raises(PackageError, match="episode binding"):
+        project_supplier((included,), tmp_path / "projection", wrong)
+
+
+def test_calibration_rejects_superseded_product_schema(tmp_path):
+    included = episode(internal_qc(tmp_path))
+    old = calibration()
+    old["schema_version"] = "trinet_delivery.calibration.v1"
+
+    with pytest.raises(PackageError, match="schema is unsupported"):
+        project_supplier((included,), tmp_path / "projection", old)
 
 
 def test_vendor_visualization_is_delivered_and_decode_failure_blocks_output(tmp_path, monkeypatch):
     run_dir, projection, output = delivery_input(tmp_path, monkeypatch, visualization=True)
     artifact = build_delivery(run_dir, projection, output)
-    row = read_manifest(output / "manifest.csv")[0]
-    episode_path = output / "episodes" / row["capture_id"]
+    row = read_manifest(output / "episodes.csv")[0]
+    episode_path = output / "episodes" / row["episode_id"]
 
-    assert artifact.file_count == 10
-    assert row["raw_file_count"] == "4"
-    assert (episode_path / "raw/visualization.mp4").read_bytes() == b"vendor visualization bytes"
+    assert artifact.file_count == 9
+    assert row["raw_file_count"] == "3"
+    assert row["preview_count"] == "1"
+    assert (episode_path / "previews/capture_preview.mp4").read_bytes() == b"vendor visualization bytes"
 
     run_dir, projection, output = delivery_input(tmp_path / "decode", monkeypatch,
                                                   visualization=True)
     verified_video = package_module.verify_video
 
     def fail_visualization(source, index, expected_sha256):
-        if source.name == "visualization.mp4":
+        if source.name == "capture_preview.mp4":
             raise VideoError("broken visualization")
         return verified_video(source, index, expected_sha256)
 
@@ -362,8 +431,7 @@ def test_changed_vendor_visualization_or_omission_blocks_output(tmp_path, monkey
                                                   visualization=True)
     meta_path = next(projection.rglob("meta.json"))
     meta = json.loads(meta_path.read_text())
-    meta["raw_members"] = [member for member in meta["raw_members"]
-                           if member["role"] != "vendor_visualization"]
+    meta["previews"] = []
     meta_path.write_text(json.dumps(meta))
     with pytest.raises(PackageError, match="run ledger"):
         build_delivery(run_dir, projection, output)
@@ -396,6 +464,13 @@ def test_changed_projection_or_parquet_facts_expose_no_delivery(tmp_path, monkey
     meta["capture_id"] = "b" * 64
     meta_path.write_text(json.dumps(meta))
     with pytest.raises(PackageError, match="cross-reference"):
+        build_delivery(run_dir, projection, output)
+    assert not output.exists()
+
+    run_dir, projection, output = delivery_input(tmp_path / "episode-id", monkeypatch)
+    with sqlite3.connect(run_dir / "run.sqlite") as database:
+        database.execute("UPDATE delivery_episode SET episode_number=2")
+    with pytest.raises(PackageError, match="episode ID changed"):
         build_delivery(run_dir, projection, output)
     assert not output.exists()
 

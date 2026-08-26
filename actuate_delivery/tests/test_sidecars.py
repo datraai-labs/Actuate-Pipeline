@@ -1,22 +1,27 @@
 import sqlite3
 import struct
 from hashlib import sha256
+from types import SimpleNamespace
 
 import pyarrow.parquet as pq
 import pytest
-from trinet_delivery.cli import app
-from trinet_delivery.inventory import FileFact, PreservedFile, SourceInventory, group_captures
-from trinet_delivery.run import (
+from actuate_delivery.inventory import FileFact, PreservedFile, SourceInventory, group_captures
+from actuate_delivery.panoculon_trinet import SidecarError, convert_tel, decode_vts
+from actuate_delivery.run import (
     open_run,
+    prepare_local_run,
     process_imus,
     process_sidecars,
     store_inventory,
     store_preservation,
 )
-from trinet_delivery.trinet import SidecarError, convert_tel, decode_vts
-from typer.testing import CliRunner
 
-runner = CliRunner()
+
+def run_pipeline(source, run_dir):
+    result = prepare_local_run(str(source), run_dir)
+    output = "\n".join(f"{key}={value}" for key, value in result.__dict__.items()) + "\n"
+    failed = sum(value for key, value in result.__dict__.items() if key.endswith("_failed"))
+    return SimpleNamespace(exit_code=int(bool(failed)), output=output)
 
 
 def vts_bytes(version=4, frames=(0, 1), timestamps=(100, 200)):
@@ -127,8 +132,8 @@ def test_run_reuses_sidecars_and_rejects_changed_tel_artifact(tmp_path):
     write(source / "take.vts", vts_bytes())
     write(source / "take.tel", tel_bytes())
 
-    first = runner.invoke(app, ["run", str(source), str(run_dir)])
-    second = runner.invoke(app, ["run", str(source), str(run_dir)])
+    first = run_pipeline(source, run_dir)
+    second = run_pipeline(source, run_dir)
     assert first.exit_code == second.exit_code == 0
     assert "vts_decoded=1" in first.output and "tel_decoded=1" in first.output
     assert "vts_reused=1" in second.output and "tel_reused=1" in second.output
@@ -138,7 +143,7 @@ def test_run_reuses_sidecars_and_rejects_changed_tel_artifact(tmp_path):
             "SELECT parquet_relative_path FROM tel_artifact WHERE status='decoded'"
         ).fetchone()[0]
     (run_dir / relative).write_bytes(b"changed")
-    third = runner.invoke(app, ["run", str(source), str(run_dir)])
+    third = run_pipeline(source, run_dir)
 
     assert third.exit_code == 1
     assert "vts_reused=1" in third.output and "tel_failed=1" in third.output
@@ -147,14 +152,18 @@ def test_run_reuses_sidecars_and_rejects_changed_tel_artifact(tmp_path):
 def test_duplicate_vts_and_tel_members_fail_without_selection(tmp_path):
     run_dir = tmp_path / "run"
     files = (
-        FileFact("a.vts", "a.vts", ".", "vts", "take", "left", 1, 1),
-        FileFact("b.vts", "b.vts", ".", "vts", "take", "left", 1, 1),
-        FileFact("a.tel", "a.tel", ".", "telemetry", "take", None, 1, 1),
-        FileFact("b.tel", "b.tel", ".", "telemetry", "take", None, 1, 1),
+        FileFact("a.vts", "a.vts", ".", "vts", "take", "left", 1, 1,
+                 "local", ".", "application/octet-stream", None, None, True),
+        FileFact("b.vts", "b.vts", ".", "vts", "take", "left", 1, 1,
+                 "local", ".", "application/octet-stream", None, None, True),
+        FileFact("a.tel", "a.tel", ".", "telemetry", "take", None, 1, 1,
+                 "local", ".", "application/octet-stream", None, None, True),
+        FileFact("b.tel", "b.tel", ".", "telemetry", "take", None, 1, 1,
+                 "local", ".", "application/octet-stream", None, None, True),
     )
     inventory = SourceInventory("file:///source", files, group_captures(files))
     open_run(inventory.source_identity, run_dir)
-    store_inventory(run_dir / "run.sqlite", inventory)
+    store_inventory(run_dir / "run.sqlite", inventory, inventory)
     preserved = tuple(
         PreservedFile(file.source_item_id, str(index) * 64, "new")
         for index, file in enumerate(files, 1)

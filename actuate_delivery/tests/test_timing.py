@@ -4,7 +4,7 @@ from hashlib import sha256
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from trinet_delivery.timing import TimingError, TimingStream, build_timing
+from actuate_delivery.timing import TimingError, TimingStream, build_timing
 
 
 def write_hash(path, content):

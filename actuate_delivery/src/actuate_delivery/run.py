@@ -7,21 +7,20 @@ from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
-from trinet_delivery.inventory import (
+from actuate_delivery.inventory import (
     Preservation,
     SourceInventory,
     inventory_local,
     preserve_inventory,
+    select_inventory,
 )
-from trinet_delivery.package import (
+from actuate_delivery.package import (
     PackageError,
     _vendor_visualizations,
     build_delivery,
     project_supplier,
 )
-from trinet_delivery.qc import QcError, build_qc, supplier_issues, timing_stream_facts
-from trinet_delivery.timing import TimingError, TimingStream, build_timing
-from trinet_delivery.trinet import (
+from actuate_delivery.panoculon_trinet import (
     ImuError,
     SidecarError,
     convert_imu,
@@ -29,7 +28,9 @@ from trinet_delivery.trinet import (
     decode_imu,
     decode_vts,
 )
-from trinet_delivery.video import VideoError, verify_video
+from actuate_delivery.qc import QcError, build_qc, supplier_issues, timing_stream_facts
+from actuate_delivery.timing import TimingError, TimingStream, build_timing
+from actuate_delivery.video import VideoError, verify_video
 
 
 class RunError(ValueError):
@@ -87,12 +88,12 @@ class DeliveryRunResult:
 
 
 REVIEW_FIELDS = (
-    "capture_id", "source_relative_directory", "source_group", "capture_layout",
+    "episode_id", "capture_id", "source_relative_directory", "source_group", "capture_layout",
     "grouping_status", "qc_sha256", "pass_count", "fail_count", "unknown_count",
     "not_applicable_count", "blocking_checks", "material_checks", "decision",
     "limitations_json", "decided_by", "decided_at",
 )
-REVIEW_FACT_FIELDS = REVIEW_FIELDS[:12]
+REVIEW_FACT_FIELDS = REVIEW_FIELDS[:13]
 
 
 def open_run(source: str, run_dir: Path) -> str:
@@ -122,7 +123,7 @@ def open_run(source: str, run_dir: Path) -> str:
             database.execute("INSERT INTO run VALUES (1, ?, ?, ?, ?)", (run_id, source, now, now))
             return run_id
 
-        if version not in range(1, 13):
+        if version not in range(1, 15):
             raise RuntimeError(f"Unsupported run database version: {version}")
         stored = database.execute(
             "SELECT run_id, source FROM run WHERE singleton = 1"
@@ -142,18 +143,36 @@ def open_run(source: str, run_dir: Path) -> str:
 
 def load_previous(database_path: Path) -> dict[str, tuple[bool, str | None]]:
     with sqlite3.connect(database_path) as database:
-        if database.execute("PRAGMA user_version").fetchone()[0] not in (6, 7, 8, 9, 10, 11, 12):
+        if database.execute("PRAGMA user_version").fetchone()[0] not in range(6, 15):
             return {}
         rows = database.execute(
             "SELECT source_item_id, present, source_sha256 FROM source_file"
         ).fetchall()
     return {item_id: (bool(present), source_hash) for item_id, present, source_hash in rows}
 
-def store_inventory(database_path: Path, inventory: SourceInventory) -> None:
+
+def load_previous_source_metadata(
+    database_path: Path,
+) -> dict[str, tuple[int, str | None, str | None]]:
+    with sqlite3.connect(database_path) as database:
+        columns = {row[1] for row in database.execute("PRAGMA table_info(source_file)")}
+        required = {"size_bytes", "source_checksum_algorithm", "source_checksum"}
+        if not required <= columns:
+            return {}
+        rows = database.execute(
+            "SELECT source_item_id, size_bytes, source_checksum_algorithm, source_checksum "
+            "FROM source_file WHERE present=1"
+        ).fetchall()
+    return {item_id: (size, algorithm, checksum)
+            for item_id, size, algorithm, checksum in rows}
+
+def store_inventory(
+    database_path: Path, inventory: SourceInventory, selected: SourceInventory
+) -> None:
     with sqlite3.connect(database_path) as database:
         database.execute("PRAGMA foreign_keys = ON")
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in range(1, 13)
+        assert version in range(1, 15)
         if version < 6:
             database.executescript(
                 """
@@ -176,7 +195,13 @@ def store_inventory(database_path: Path, inventory: SourceInventory) -> None:
                     source_sha256 TEXT CHECK (length(source_sha256) = 64 OR source_sha256 IS NULL),
                     cache_relative_path TEXT,
                     preservation_status TEXT CHECK (preservation_status IN
-                        ('new', 'changed', 'unchanged', 'removed') OR preservation_status IS NULL)
+                        ('new', 'changed', 'unchanged', 'removed') OR preservation_status IS NULL),
+                    source_type TEXT NOT NULL,
+                    parent_source_item_id TEXT NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    source_checksum_algorithm TEXT,
+                    source_checksum TEXT,
+                    can_download INTEGER NOT NULL CHECK (can_download IN (0, 1))
                 );
                 CREATE TABLE capture_candidate (
                     parent_path TEXT NOT NULL,
@@ -212,41 +237,79 @@ def store_inventory(database_path: Path, inventory: SourceInventory) -> None:
         else:
             database.execute("BEGIN IMMEDIATE")
 
+        columns = {row[1] for row in database.execute("PRAGMA table_info(source_file)")}
+        additions = {
+            "source_type": "TEXT NOT NULL DEFAULT 'local'",
+            "parent_source_item_id": "TEXT NOT NULL DEFAULT '.'",
+            "mime_type": "TEXT NOT NULL DEFAULT 'application/octet-stream'",
+            "source_checksum_algorithm": "TEXT",
+            "source_checksum": "TEXT",
+            "can_download": "INTEGER NOT NULL DEFAULT 1 CHECK (can_download IN (0, 1))",
+        }
+        for name, declaration in additions.items():
+            if name not in columns:
+                database.execute(f"ALTER TABLE source_file ADD COLUMN {name} {declaration}")
+        if version == 12:
+            database.execute("PRAGMA user_version = 13")
+
         database.execute(
             "UPDATE source_file SET present = 0, selected = 0, preservation_status = 'removed'"
         )
+        selected_ids = {file.source_item_id for file in selected.files}
         database.execute("DELETE FROM capture_snapshot")
         database.execute("DELETE FROM capture_member")
         database.execute("DELETE FROM capture_candidate")
         database.executemany(
             """
-            INSERT INTO source_file VALUES (?, ?, ?, ?, ?, ?, 1, 1, NULL, NULL, NULL)
+            INSERT INTO source_file (
+                source_item_id, relative_path, parent_path, role, size_bytes,
+                modified_time_ns, present, selected, source_sha256, cache_relative_path,
+                preservation_status, source_type, parent_source_item_id, mime_type,
+                source_checksum_algorithm, source_checksum, can_download
+            ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_item_id) DO UPDATE SET
                 relative_path=excluded.relative_path, parent_path=excluded.parent_path,
                 role=excluded.role, size_bytes=excluded.size_bytes,
-                modified_time_ns=excluded.modified_time_ns, present=1, selected=1,
-                source_sha256=NULL, cache_relative_path=NULL, preservation_status=NULL
+                modified_time_ns=excluded.modified_time_ns, present=1,
+                selected=excluded.selected, source_type=excluded.source_type,
+                parent_source_item_id=excluded.parent_source_item_id,
+                mime_type=excluded.mime_type,
+                source_checksum_algorithm=excluded.source_checksum_algorithm,
+                source_checksum=excluded.source_checksum, can_download=excluded.can_download,
+                source_sha256=CASE WHEN excluded.selected=0
+                    AND source_file.size_bytes=excluded.size_bytes
+                    AND source_file.modified_time_ns=excluded.modified_time_ns
+                    THEN source_file.source_sha256 END,
+                cache_relative_path=CASE WHEN excluded.selected=0
+                    AND source_file.size_bytes=excluded.size_bytes
+                    AND source_file.modified_time_ns=excluded.modified_time_ns
+                    THEN source_file.cache_relative_path END,
+                preservation_status=NULL
             """,
             [(file.source_item_id, file.relative_path, file.parent_path, file.role,
-              file.size_bytes, file.modified_time_ns) for file in inventory.files],
+              file.size_bytes, file.modified_time_ns,
+              int(file.source_item_id in selected_ids),
+              file.source_type, file.parent_source_item_id, file.mime_type,
+              file.source_checksum_algorithm, file.source_checksum, int(file.can_download))
+             for file in inventory.files],
         )
         database.executemany(
             "INSERT INTO capture_candidate VALUES (?, ?, ?, ?, ?)",
             [(capture.parent_path, capture.capture_key, capture.capture_layout,
-              capture.grouping_status, len(capture.members)) for capture in inventory.captures],
+              capture.grouping_status, len(capture.members)) for capture in selected.captures],
         )
         database.executemany(
             "INSERT INTO capture_member VALUES (?, ?, ?, ?)",
             [(file.source_item_id, capture.parent_path, capture.capture_key,
               file.camera_stream_id)
-             for capture in inventory.captures for file in capture.members],
+             for capture in selected.captures for file in capture.members],
         )
 
 def store_preservation(database_path: Path, preservation: Preservation) -> None:
     files, captures, _ = preservation
     with sqlite3.connect(database_path) as database:
         database.execute("PRAGMA foreign_keys = ON")
-        assert database.execute("PRAGMA user_version").fetchone()[0] in (6, 7, 8, 9, 10, 11, 12)
+        assert database.execute("PRAGMA user_version").fetchone()[0] in range(6, 15)
         database.execute("BEGIN IMMEDIATE")
         cursor = database.executemany(
             """UPDATE source_file
@@ -261,7 +324,7 @@ def store_preservation(database_path: Path, preservation: Preservation) -> None:
 def process_imus(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
     with sqlite3.connect(database_path) as database:
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in (6, 7, 8, 9, 10, 11, 12)
+        assert version in range(6, 15)
         if version == 6:
             database.execute(
                 """CREATE TABLE imu_artifact (
@@ -325,7 +388,7 @@ def process_imus(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
 def process_sidecars(database_path: Path, run_dir: Path) -> tuple[int, int, int, int, int, int]:
     with sqlite3.connect(database_path) as database:
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in (7, 8, 9, 10, 11, 12)
+        assert version in range(7, 15)
         if version == 7:
             database.executescript(
                 """BEGIN IMMEDIATE;
@@ -444,7 +507,7 @@ def process_sidecars(database_path: Path, run_dir: Path) -> tuple[int, int, int,
 def process_videos(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
     with sqlite3.connect(database_path) as database:
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in (8, 9, 10, 11, 12)
+        assert version in range(8, 15)
         if version == 8:
             database.executescript(
                 """BEGIN IMMEDIATE;
@@ -518,7 +581,7 @@ def process_videos(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
 def process_timing(database_path: Path, run_dir: Path) -> tuple[int, int, int, int]:
     with sqlite3.connect(database_path) as database:
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in (9, 10, 11, 12)
+        assert version in range(9, 15)
         if version == 9:
             database.executescript(
                 """BEGIN IMMEDIATE;
@@ -621,7 +684,7 @@ def process_qc(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
     with sqlite3.connect(database_path) as database:
         database.row_factory = sqlite3.Row
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in (10, 11, 12)
+        assert version in range(10, 15)
         if version == 10:
             database.executescript(
                 """BEGIN IMMEDIATE;
@@ -812,11 +875,29 @@ def _delivery_review(database_path: Path, run_dir: Path):
                     decided_by TEXT NOT NULL,
                     decided_at TEXT NOT NULL
                 );
-                PRAGMA user_version = 12;
+                CREATE TABLE delivery_episode (
+                    capture_id TEXT PRIMARY KEY CHECK (length(capture_id) = 64),
+                    episode_number INTEGER NOT NULL UNIQUE
+                        CHECK (episode_number BETWEEN 1 AND 999999)
+                );
+                PRAGMA user_version = 14;
                 COMMIT;"""
             )
-        elif version != 12:
-            raise RunError(f"Delivery review requires a schema-11 or schema-12 run ledger, not {version}")
+        elif version in (12, 13):
+            database.executescript(
+                """BEGIN IMMEDIATE;
+                CREATE TABLE delivery_episode (
+                    capture_id TEXT PRIMARY KEY CHECK (length(capture_id) = 64),
+                    episode_number INTEGER NOT NULL UNIQUE
+                        CHECK (episode_number BETWEEN 1 AND 999999)
+                );
+                PRAGMA user_version = 14;
+                COMMIT;"""
+            )
+        elif version != 14:
+            raise RunError(
+                f"Delivery review requires a schema-11 through schema-14 run ledger, not {version}"
+            )
 
         current = {}
         records = database.execute(
@@ -825,13 +906,28 @@ def _delivery_review(database_path: Path, run_dir: Path):
                       unknown_count, not_applicable_count
                FROM capture_snapshot JOIN capture_candidate USING (parent_path, capture_key)
                JOIN qc_artifact USING (capture_id)
-               WHERE is_canonical=1 AND status='ready' ORDER BY capture_id"""
+               WHERE is_canonical=1 AND status='ready'
+               ORDER BY CASE WHEN grouping_status='complete' THEN 0 ELSE 1 END,
+                        parent_path, capture_key, capture_id"""
         ).fetchall()
         current_count = database.execute(
             "SELECT COUNT(*) FROM capture_snapshot WHERE is_canonical=1"
         ).fetchone()[0]
         if len(records) != current_count:
             raise RunError("Every current capture must have ready QC before delivery review")
+        episode_numbers = dict(database.execute(
+            "SELECT capture_id, episode_number FROM delivery_episode"
+        ).fetchall())
+        next_episode_number = max(episode_numbers.values(), default=0)
+        for record in records:
+            if record["capture_id"] in episode_numbers:
+                continue
+            next_episode_number += 1
+            database.execute(
+                "INSERT INTO delivery_episode VALUES (?, ?)",
+                (record["capture_id"], next_episode_number),
+            )
+            episode_numbers[record["capture_id"]] = next_episode_number
         for record in records:
             relative = Path(record["json_relative_path"])
             if relative.is_absolute() or ".." in relative.parts:
@@ -842,6 +938,7 @@ def _delivery_review(database_path: Path, run_dir: Path):
             internal = json.loads(encoded)
             blocked, material = supplier_issues(internal)
             row = {
+                "episode_id": f"episode_{episode_numbers[record['capture_id']]:06d}",
                 "capture_id": record["capture_id"],
                 "source_relative_directory": record["parent_path"],
                 "source_group": record["capture_key"],
@@ -865,9 +962,13 @@ def _delivery_review(database_path: Path, run_dir: Path):
         if review_path.exists():
             with review_path.open(newline="") as file:
                 reader = csv.DictReader(file)
-                if tuple(reader.fieldnames or ()) != REVIEW_FIELDS:
+                fields = tuple(reader.fieldnames or ())
+                if fields not in (REVIEW_FIELDS, REVIEW_FIELDS[1:]):
                     raise RunError("Review sheet columns changed")
                 rows = list(reader)
+            if fields == REVIEW_FIELDS[1:]:
+                rows = [{"episode_id": current.get(row["capture_id"], {
+                    "row": {"episode_id": ""}})["row"]["episode_id"], **row} for row in rows]
             seen = set()
             for row in rows:
                 capture_id = row["capture_id"]
@@ -956,8 +1057,9 @@ def complete_local_delivery(source: str, run_dir: Path, output: Path) -> Deliver
         raise RunInputError(f"Delivery output already exists: {output}")
     try:
         review_path, entries = _delivery_review(run_dir / "run.sqlite", run_dir)
-        pending = sum(entry["decision"] is None for entry in entries)
-        included = [entry for entry in entries
+        eligible = [entry for entry in entries if entry["row"]["grouping_status"] == "complete"]
+        pending = sum(entry["decision"] is None for entry in eligible)
+        included = [entry for entry in eligible
                     if entry["decision"] and entry["decision"]["status"] == "include"]
         excluded = len(entries) - pending - len(included)
         if pending:
@@ -967,22 +1069,25 @@ def complete_local_delivery(source: str, run_dir: Path, output: Path) -> Deliver
         with sqlite3.connect(run_dir / "run.sqlite") as database:
             database.row_factory = sqlite3.Row
             episodes = tuple({
+                "episode_id": entry["row"]["episode_id"],
                 "internal_qc": entry["internal_qc"],
                 "source_relative_directory": entry["parent_path"],
                 "source_group": entry["capture_key"],
-                "vendor_calibration_references": [],
                 "vendor_visualizations": _vendor_visualizations(
                     database, entry["parent_path"], entry["capture_key"]),
                 "decision": entry["decision"],
             } for entry in included)
+        calibration_path = run_dir / "calibration.json"
+        calibration = json.loads(calibration_path.read_text()) if calibration_path.is_file() else None
         signature = sha256(json.dumps([
-            {"capture_id": entry["row"]["capture_id"],
+            {"episode_id": entry["row"]["episode_id"],
+             "capture_id": entry["row"]["capture_id"],
              "qc_sha256": entry["row"]["qc_sha256"], "decision": entry["decision"]}
             for entry in included
-        ], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        ] + [{"calibration": calibration}], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         projection = run_dir / "work/deliveries" / signature / "projection"
         if not projection.exists() and not projection.is_symlink():
-            project_supplier(episodes, projection)
+            project_supplier(episodes, projection, calibration)
         build_delivery(run_dir, projection, output)
         return DeliveryRunResult("complete", review_path, len(included), excluded, 0, output)
     except RunError:
@@ -992,24 +1097,10 @@ def complete_local_delivery(source: str, run_dir: Path, output: Path) -> Deliver
         raise RunError(str(error)) from error
 
 
-def prepare_local_run(source: str, run_dir: Path) -> RunResult:
-    try:
-        inventory = inventory_local(source, run_dir)
-    except (OSError, ValueError) as error:
-        raise RunInputError(str(error)) from error
-
-    run_id = open_run(inventory.source_identity, run_dir)
+def _finish_run(
+    run_id: str, run_dir: Path, inventory: SourceInventory, preservation: Preservation
+) -> RunResult:
     database_path = run_dir / "run.sqlite"
-    previous = load_previous(database_path)
-    store_inventory(database_path, inventory)
-    try:
-        preservation = preserve_inventory(
-            Path(source).expanduser().resolve(), run_dir.resolve(), inventory, previous
-        )
-        store_preservation(database_path, preservation)
-    except (OSError, ValueError) as error:
-        raise RunError(str(error)) from error
-
     imu_counts = process_imus(database_path, run_dir)
     sidecar_counts = process_sidecars(database_path, run_dir)
     video_counts = process_videos(database_path, run_dir)
@@ -1026,3 +1117,34 @@ def prepare_local_run(source: str, run_dir: Path) -> RunResult:
         removed, unique, len(captures) - unique,
         *imu_counts, *sidecar_counts, *video_counts, *timing_counts, *qc_counts,
     )
+
+
+def prepare_inventory(
+    source: str, run_dir: Path, source_item_ids: tuple[str, ...] | None = None
+):
+    try:
+        inventory = inventory_local(source, run_dir)
+        selected = select_inventory(inventory, source_item_ids)
+    except (OSError, ValueError) as error:
+        raise RunInputError(str(error)) from error
+
+    run_id = open_run(inventory.source_identity, run_dir)
+    database_path = run_dir / "run.sqlite"
+    previous = load_previous(database_path)
+    store_inventory(database_path, inventory, selected)
+    try:
+        preservation = preserve_inventory(
+            Path(source).expanduser().resolve(), run_dir.resolve(), selected, previous,
+            {file.source_item_id for file in inventory.files},
+        )
+        store_preservation(database_path, preservation)
+    except (OSError, ValueError) as error:
+        raise RunError(str(error)) from error
+    return run_id, selected, preservation
+
+
+def prepare_local_run(
+    source: str, run_dir: Path, source_item_ids: tuple[str, ...] | None = None
+) -> RunResult:
+    run_id, selected, preservation = prepare_inventory(source, run_dir, source_item_ids)
+    return _finish_run(run_id, run_dir, selected, preservation)

@@ -25,7 +25,8 @@ V3_DTYPE = np.dtype(V2_DTYPE.descr + [("trailing_value", "<f4")])
 DTYPES = {1: V1_DTYPE, 2: V2_DTYPE, 3: V3_DTYPE, 4: V3_DTYPE, 5: V3_DTYPE, 6: V3_DTYPE}
 COLUMNS = ["sample_index", "timestamp_ns",
     "accel_x_mps2", "accel_y_mps2", "accel_z_mps2",
-    "gyro_x_rad_s", "gyro_y_rad_s", "gyro_z_rad_s", "temperature_c"]
+    "gyro_x_rad_s", "gyro_y_rad_s", "gyro_z_rad_s",
+    "mag_x_ut", "mag_y_ut", "mag_z_ut", "temperature_c", "mag_age_us"]
 VTS_DTYPES = {
     1: np.dtype([("frame_number", "<u4"), ("timestamp_ns", "<u8")]),
     2: np.dtype([("frame_number", "<u4"), ("sof_timestamp_ns", "<u8"),
@@ -130,14 +131,14 @@ def decode_imu(source: Path, expected_sha256: str) -> ImuData:
 
 def _metadata(data: ImuData, source_sha256: str) -> dict[bytes, bytes]:
     values = {
-        "schema_version": "trinet_delivery.imu.v1",
+        "schema_version": "actuate_delivery.imu.v2",
         "source_sha256": source_sha256,
         "native_format": "TRIMU001",
         "native_version": str(data.version),
         "native_sample_rate_hz": str(data.sample_rate_hz),
         "native_sample_size": str(data.samples.dtype.itemsize),
         "native_sample_count": str(len(data.samples)),
-        "decoder": "trinet_delivery.trinet",
+        "decoder": "actuate_delivery.panoculon_trinet",
         "decoder_reference": f"Panoculon-Labs/Trinet-tools@{TOOLKIT_REVISION}",
         "write_parameters": "parquet=2.6;compression=zstd;dictionary=false;statistics=true",
         "numpy_version": np.__version__,
@@ -152,9 +153,11 @@ def _table(data: ImuData, source_sha256: str) -> pa.Table:
         pa.array(np.arange(len(samples), dtype=np.int64)),
         pa.array(samples["timestamp_ns"], type=pa.uint64()),
         *(pa.array(samples[field][:, axis], type=pa.float32())
-          for field in ("accel", "gyro") for axis in range(3)),
+          for field in ("accel", "gyro", "mag") for axis in range(3)),
         (pa.nulls(len(samples), type=pa.float32()) if data.version == 1
          else pa.array(samples["temperature_c"], type=pa.float32())),
+        (pa.array(samples["trailing_value"], type=pa.float32()) if data.version >= 5
+         else pa.nulls(len(samples), type=pa.float32())),
     ]
     return pa.Table.from_arrays(arrays, names=COLUMNS).replace_schema_metadata(
         _metadata(data, source_sha256))
@@ -172,14 +175,16 @@ def _verify_parquet(path: Path, data: ImuData, source_sha256: str) -> None:
         raise ImuError("IMU Parquet timestamps do not match native values")
 
     native_columns = [
-        *(data.samples[field][:, axis] for field in ("accel", "gyro") for axis in range(3)),
+        *(data.samples[field][:, axis]
+          for field in ("accel", "gyro", "mag") for axis in range(3)),
         None if data.version == 1 else data.samples["temperature_c"],
+        data.samples["trailing_value"] if data.version >= 5 else None,
     ]
     for name, native in zip(COLUMNS[2:], native_columns, strict=True):
         column = table[name]
         if native is None:
             if column.null_count != len(data.samples):
-                raise ImuError("IMU Parquet temperature must be null for native version 1")
+                raise ImuError(f"IMU Parquet field must be null for native version {data.version}: {name}")
             continue
         stored = column.to_numpy(zero_copy_only=False).astype(np.float32, copy=False)
         if not np.array_equal(stored.view(np.uint32), native.view(np.uint32)):
@@ -264,7 +269,7 @@ def convert_tel(source: Path, output: Path, expected_sha256: str) -> TelArtifact
         *(pa.array(records[name]) for name in TEL_DTYPE.names[2:]),
     ], names=TEL_COLUMNS)
     metadata = {
-        "schema_version": "trinet_delivery.telemetry.v1", "source_sha256": expected_sha256,
+        "schema_version": "actuate_delivery.telemetry.v1", "source_sha256": expected_sha256,
         "native_format": "TRTEL01", "native_version": str(version),
         "native_record_count": str(count), "native_device_id": raw[24:32].hex(),
         "temperature_conversion": "float32(temp_milli_c/1000)",

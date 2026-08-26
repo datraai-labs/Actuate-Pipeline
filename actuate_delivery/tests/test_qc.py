@@ -1,11 +1,11 @@
 import json
 from hashlib import sha256
 
+import actuate_delivery.qc as qc_module
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-import trinet_delivery.qc as qc_module
-from trinet_delivery.qc import QcError, build_qc, timing_stream_facts
+from actuate_delivery.qc import QcError, build_qc, timing_stream_facts
 
 
 def facts(layout="single_video"):

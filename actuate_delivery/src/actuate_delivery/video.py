@@ -113,7 +113,7 @@ def verify_video(source: Path, output: Path, expected_sha256: str) -> VideoArtif
         "ffmpeg_version": _run([ffmpeg, "-version"]).splitlines()[0],
     }
     facts_json = json.dumps(facts, sort_keys=True, separators=(",", ":"))
-    metadata = {"schema_version": "trinet_delivery.video_frames.v1",
+    metadata = {"schema_version": "actuate_delivery.video_frames.v1",
                 "source_sha256": expected_sha256,
                 "pts_ns_method": "exact_time_base_nearest_ns;half_ties_toward_positive_infinity",
                 "write_parameters": "parquet=2.6;compression=zstd;dictionary=false;statistics=true"}
