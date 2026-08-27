@@ -301,28 +301,34 @@ def _preservation_result(
 
 def preserve_inventory(source_root: Path, run_dir: Path, inventory: SourceInventory,
                        previous: dict[str, tuple[bool, str | None]],
-                       present_item_ids: set[str]) -> Preservation:
+                       present_item_ids: set[str], progress) -> Preservation:
     if source_root.is_relative_to((run_dir / "cache").resolve()):
         raise ValueError("Cannot preserve a source inside RUN_DIR/cache")
 
     hashes = {}
     for fact in inventory.files:
+        progress(fact, "running", None)
         source = source_root / fact.relative_path
-        if source.is_symlink() or not source.is_file():
-            raise ValueError(f"Source member changed: {fact.relative_path}")
-        prior = previous.get(fact.source_item_id)
-        if prior and prior[1]:
-            _check_source(source, fact)
-            source_hash = _hash_file(source)
-            _check_source(source, fact)
-            if source_hash == prior[1]:
-                _verify_blob(run_dir / f"cache/blobs/{source_hash}", fact.size_bytes, source_hash)
+        try:
+            if source.is_symlink() or not source.is_file():
+                raise ValueError(f"Source member changed: {fact.relative_path}")
+            prior = previous.get(fact.source_item_id)
+            if prior and prior[1]:
+                _check_source(source, fact)
+                source_hash = _hash_file(source)
+                _check_source(source, fact)
+                if source_hash == prior[1]:
+                    _verify_blob(run_dir / f"cache/blobs/{source_hash}", fact.size_bytes, source_hash)
+                else:
+                    copied_hash = _copy_to_blob(source, run_dir, fact)
+                    if copied_hash != source_hash:
+                        raise ValueError(f"Source member changed: {fact.relative_path}")
+                    source_hash = copied_hash
             else:
-                copied_hash = _copy_to_blob(source, run_dir, fact)
-                if copied_hash != source_hash:
-                    raise ValueError(f"Source member changed: {fact.relative_path}")
-                source_hash = copied_hash
-        else:
-            source_hash = _copy_to_blob(source, run_dir, fact)
+                source_hash = _copy_to_blob(source, run_dir, fact)
+        except (OSError, ValueError) as error:
+            progress(fact, "failed", str(error))
+            raise
         hashes[fact.source_item_id] = source_hash
+        progress(fact, "complete", None)
     return _preservation_result(inventory, hashes, previous, present_item_ids)

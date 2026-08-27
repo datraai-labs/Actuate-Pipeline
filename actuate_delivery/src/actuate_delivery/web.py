@@ -5,6 +5,7 @@ import sys
 import zipfile
 from datetime import datetime, timezone
 from hashlib import sha256
+from math import ceil
 from pathlib import Path, PurePosixPath
 from threading import Lock, Thread
 from time import monotonic
@@ -12,15 +13,20 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
+from pyarrow import parquet as pq
 from pydantic import BaseModel
 
 from actuate_delivery.package import _vendor_visualizations
+from actuate_delivery.qc import controlled_limitations
 from actuate_delivery.run import (
     RunError,
     _delivery_review,
     _write_review,
+    interrupt_progress,
+    telemetry_policy,
 )
 from actuate_delivery.workflow import (
+    _record,
     approve_stage,
     bind_calibration,
     invalidate_from,
@@ -33,13 +39,6 @@ class Decision(BaseModel):
     qc_sha256: str
     expected_revision: str
     status: str
-    limitations: list[str]
-    decided_by: str
-
-
-class BatchCreate(BaseModel):
-    name: str
-    use_configured_calibration: bool = False
 
 
 class SourceFile(BaseModel):
@@ -47,12 +46,26 @@ class SourceFile(BaseModel):
     size: int
 
 
+class SelectedSourceFile(SourceFile):
+    selected: bool
+
+
+class BatchCreate(BaseModel):
+    name: str
+    files: list[SelectedSourceFile]
+    use_configured_calibration: bool = False
+
+
 class BatchPreflight(BaseModel):
     files: list[SourceFile]
 
 
 class Approval(BaseModel):
-    approved_by: str
+    approved_by: str = ""
+
+
+class TelemetryChoice(BaseModel):
+    choice: str
 
 
 class WebRun:
@@ -88,6 +101,8 @@ class WebRun:
             self.job_status = "failed"
             self.job_error = "Processing was interrupted when the service restarted. Retry processing; uploaded files and completed artifacts are preserved."
             self.finished_at = datetime.now(timezone.utc).isoformat()
+            if self.job_stage:
+                interrupt_progress(self.run_dir / "run.sqlite", self.job_stage, self.job_error)
             self._save_job()
 
     def _save_job(self):
@@ -107,8 +122,10 @@ class WebRun:
         with self.lock:
             if self.job_status == "running":
                 raise HTTPException(409, "Processing is already running")
-            if self.output.exists():
+            if self.output.exists() and stage != "archive":
                 raise HTTPException(409, "This batch is already delivered and cannot be reprocessed")
+            if stage == "archive" and not self.output.is_dir():
+                raise HTTPException(409, "Build the customer folder before creating its ZIP")
             self.job_status = "running"
             self.job_stage = stage
             self.job_error = None
@@ -121,8 +138,23 @@ class WebRun:
 
     def _process(self, stage):
         try:
-            run_stage(str(self.source), self.run_dir, stage,
-                      self.output if stage == "delivery" else None)
+            if stage == "archive":
+                archive = self.build_archive()
+                records, _ = self.episodes()
+                _record(self.run_dir / "run.sqlite", "delivery", "complete", {
+                    "included": sum(item["decision"]["status"] == "include"
+                                    for item in records if item["decision"]),
+                    "excluded": sum(item["decision"]["status"] == "exclude"
+                                    for item in records if item["decision"]),
+                    "output": str(self.output), "archive": str(self.archive),
+                    "archive_bytes": archive["bytes"],
+                    "archive_sha256": archive["sha256"],
+                })
+            else:
+                run_stage(str(self.source), self.run_dir, stage,
+                          self.output if stage == "delivery" else None)
+                if stage == "delivery":
+                    self.record_archive()
             status, error = "complete", None
         except (OSError, RunError) as exc:
             status, error = "failed", str(exc)
@@ -140,7 +172,7 @@ class WebRun:
         failures = self.failure_count()
         error = self.job_error
         if status != "running" and self.output.is_dir():
-            status = "delivered" if self.archive.is_file() else "complete"
+            status = "delivered" if self.archive_record() else "complete"
             error = None
         elif status == "idle" and not self.source_files():
             status = "empty"
@@ -309,8 +341,10 @@ class WebRun:
              f"{qc} of {candidates} candidate reports ready"),
             ("Human review", "complete" if decisions == captures and captures > 0 else "pending",
              f"{decisions} of {captures} decisions saved"),
-            ("Build delivery", "complete" if self.output.exists() else "pending",
-             "Validated customer folder is ready" if self.output.exists() else "Not built"),
+            ("Build delivery", "complete" if self.archive_record() else "pending",
+             "Validated customer folder and ZIP are ready" if self.archive_record()
+             else "Customer folder is ready; ZIP still needs to be built"
+             if self.output.exists() else "Not built"),
         ]
         first_pending = next((index for index, item in enumerate(progress)
                               if item[1] == "pending"), None)
@@ -336,11 +370,19 @@ class WebRun:
             item["approved"] = checkpoint["approved"]
             item["summary"] = checkpoint["summary"]
             item["error"] = checkpoint["error"]
+            item["elapsed_seconds"] = checkpoint["elapsed_seconds"]
+            item["progress"] = checkpoint["progress"]
+        if self.job_status == "running" and self.job_stage == "archive":
+            result[-1].update(status="running", error=None)
         return result
 
     @property
     def archive(self):
         return self.output.with_suffix(".zip")
+
+    @property
+    def archive_record_path(self):
+        return self.run_dir / "delivery_archive.json"
 
     def delivery_files(self):
         return [path for path in sorted(self.output.rglob("*"))
@@ -354,20 +396,47 @@ class WebRun:
 
     def build_archive(self):
         if not self.output.is_dir():
-            raise HTTPException(409, "Build the delivery before preparing its download")
-        if self.archive.exists():
-            return
+            raise RunError("Build the delivery before preparing its download")
         staging = self.archive.with_name(f".{self.archive.name}.staging")
         staging.unlink(missing_ok=True)
         try:
             with zipfile.ZipFile(staging, "w", zipfile.ZIP_STORED, allowZip64=True) as archive:
                 for path in self.delivery_files():
                     archive.write(path, Path(self.output.name) / path.relative_to(self.output))
+            with zipfile.ZipFile(staging) as archive:
+                if archive.testzip() is not None:
+                    raise RunError("Delivery ZIP failed integrity verification")
             staging.replace(self.archive)
         finally:
             staging.unlink(missing_ok=True)
+        return self.record_archive()
+
+    def record_archive(self):
+        digest = sha256()
+        with self.archive.open("rb") as file:
+            while chunk := file.read(8 * 1024 * 1024):
+                digest.update(chunk)
+        stat = self.archive.stat()
+        record = {"bytes": stat.st_size, "modified_ns": stat.st_mtime_ns,
+                  "sha256": digest.hexdigest()}
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        staging = self.archive_record_path.with_suffix(".staging")
+        staging.write_text(json.dumps(record, indent=2) + "\n")
+        staging.replace(self.archive_record_path)
+        return record
+
+    def archive_record(self):
+        if not self.archive.is_file() or not self.archive_record_path.is_file():
+            return None
+        record = json.loads(self.archive_record_path.read_text())
+        stat = self.archive.stat()
+        if (record["bytes"] != stat.st_size
+                or record["modified_ns"] != stat.st_mtime_ns):
+            return None
+        return record
 
     def delivery_summary(self):
+        archive = self.archive_record()
         files = []
         if self.output.is_dir():
             for path in self.delivery_files():
@@ -379,8 +448,9 @@ class WebRun:
                 })
         return {
             "exists": self.output.is_dir(),
-            "downloadable": self.archive.is_file(),
-            "archive_bytes": self.archive.stat().st_size if self.archive.is_file() else None,
+            "downloadable": archive is not None,
+            "archive_bytes": archive["bytes"] if archive else None,
+            "archive_sha256": archive["sha256"] if archive else None,
             "file_count": len(files),
             "total_bytes": sum(item["bytes"] for item in files),
             "raw_files": sum(item["kind"] == "raw" for item in files),
@@ -397,6 +467,112 @@ class WebRun:
                 return bool(_vendor_visualizations(database, parent_path, capture_key))
         except sqlite3.Error:
             return False
+
+    def video_path(self, capture_id, stream):
+        with sqlite3.connect(self.run_dir / "run.sqlite") as database:
+            rows = database.execute(
+                """SELECT cache_relative_path FROM capture_snapshot
+                   JOIN capture_member USING (parent_path, capture_key)
+                   JOIN source_file USING (source_item_id)
+                   WHERE capture_id=? AND is_canonical=1 AND role='video'
+                         AND camera_stream_id=?""",
+                (capture_id, stream),
+            ).fetchall()
+        if len(rows) != 1:
+            raise HTTPException(404, "Verified camera stream is not available")
+        path = self.run_dir / rows[0][0]
+        if not path.is_file():
+            raise HTTPException(409, "Preserved camera stream is missing")
+        return path
+
+    def evidence(self, capture_id):
+        with sqlite3.connect(self.run_dir / "run.sqlite") as database:
+            database.row_factory = sqlite3.Row
+            timing = database.execute(
+                """SELECT parquet_relative_path, parquet_sha256 FROM timing_artifact
+                   WHERE capture_id=? AND status='ready'""", (capture_id,)
+            ).fetchone()
+            imu = database.execute(
+                """SELECT parquet_relative_path, parquet_sha256 FROM imu_artifact
+                   WHERE capture_id=? AND status='decoded'""", (capture_id,)
+            ).fetchone()
+        if timing is None or imu is None:
+            raise HTTPException(409, "Verified timing and IMU artifacts are required")
+        paths = [self.run_dir / timing[0], self.run_dir / imu[0]]
+        hashes = [timing[1], imu[1]]
+        for path, expected in zip(paths, hashes, strict=True):
+            if not path.is_file() or sha256(path.read_bytes()).hexdigest() != expected:
+                raise HTTPException(409, f"Verified artifact changed: {path.name}")
+        timing_rows = pq.read_table(paths[0]).to_pylist()
+        imu_table = pq.read_table(paths[1])
+        streams = sorted({row["camera_stream_id"] for row in timing_rows})
+        if not streams:
+            raise HTTPException(409, "Verified timing artifact contains no camera rows")
+        frame_fields = (
+            "camera_stream_id", "video_frame_index", "mp4_pts_ns", "vts_frame_number",
+            "venc_seq", "sof_timestamp_ns", "vts_match_status", "before_imu_index",
+            "before_imu_timestamp_ns", "before_delta_ns", "after_imu_index",
+            "after_imu_timestamp_ns", "after_delta_ns", "closest_imu_index",
+            "closest_imu_timestamp_ns", "closest_delta_ns", "within_imu_coverage",
+            "mapping_status", "stereo_peer_stream_id", "stereo_peer_video_frame_index",
+            "stereo_pair_status",
+        )
+        frames = [{key: row[key] for key in frame_fields} for row in timing_rows]
+        issues = []
+        conditions = (
+            ("camera_imu_coverage", lambda row: not row["within_imu_coverage"],
+             "Camera frame is outside the recorded IMU time extent"),
+            ("video_vts_accounting", lambda row: row["vts_match_status"] != "matched",
+             "Video frame and VTS row do not have a one-to-one row-order match"),
+            ("stereo_pairing", lambda row: row["stereo_pair_status"] not in
+             ("matched", "not_applicable"),
+             "Camera frame has no unique equal encoder-sequence peer"),
+        )
+        for stream in streams:
+            rows = [row for row in frames if row["camera_stream_id"] == stream]
+            for kind, predicate, message in conditions:
+                affected = [index for index, row in enumerate(rows) if predicate(row)]
+                groups = []
+                for index in affected:
+                    if not groups or index != groups[-1][-1] + 1:
+                        groups.append([index])
+                    else:
+                        groups[-1].append(index)
+                for group in groups:
+                    first, last = rows[group[0]], rows[group[-1]]
+                    position = ("start" if group[0] == 0 else "end"
+                                if group[-1] == len(rows) - 1 else "interior")
+                    issues.append({
+                        "kind": kind, "stream": stream, "position": position,
+                        "frame_count": len(group),
+                        "start_frame": first["video_frame_index"],
+                        "end_frame": last["video_frame_index"],
+                        "start_time_s": (first["mp4_pts_ns"] or 0) / 1e9,
+                        "end_time_s": (last["mp4_pts_ns"] or 0) / 1e9,
+                        "message": message, "evidence": first,
+                    })
+        primary = "left" if "left" in streams else streams[0]
+        mapped = [row for row in frames if row["camera_stream_id"] == primary
+                  and row["closest_imu_index"] is not None and row["mp4_pts_ns"] is not None]
+        sampled = mapped[::max(1, ceil(len(mapped) / 1500))]
+        columns = {name: imu_table[name].to_pylist() for name in (
+            "accel_x_mps2", "accel_y_mps2", "accel_z_mps2",
+            "gyro_x_rad_s", "gyro_y_rad_s", "gyro_z_rad_s",
+        )}
+        imu_plot = []
+        for row in sampled:
+            index = row["closest_imu_index"]
+            imu_plot.append({"time_s": row["mp4_pts_ns"] / 1e9, "imu_index": index,
+                             "closest_delta_ms": row["closest_delta_ns"] / 1e6,
+                             **{name: values[index] for name, values in columns.items()}})
+        frame_columns = {key: [row[key] for row in frames] for key in frame_fields}
+        return {"streams": streams, "frames": frame_columns, "imu_plot": imu_plot,
+                "issues": issues, "basis": {
+                    "camera_time": "native VTS SOF timestamp",
+                    "imu_query": "Before, After, and Closest native samples",
+                    "stereo_pairing": "unique equal encoder sequence",
+                    "physical_sync_certified": False,
+                }}
 
     def episodes(self):
         database_path = self.run_dir / "run.sqlite"
@@ -456,6 +632,8 @@ class WebRun:
                 },
                 "blocking_checks": row["blocking_checks"].split("|") if row["blocking_checks"] else [],
                 "material_checks": row["material_checks"].split("|") if row["material_checks"] else [],
+                "controlled_limitations": (controlled_limitations(entry["internal_qc"])
+                                           if row["grouping_status"] == "complete" else []),
                 "qc_sha256": row["qc_sha256"],
                 "decision": entry["decision"],
             })
@@ -470,7 +648,7 @@ class WebRun:
             if not next(item for item in workflow_state(self.run_dir)
                         if item["stage"] == "qc")["approved"]:
                 raise HTTPException(409, "Approve QC before reviewing episodes")
-            review_path, _ = _delivery_review(self.run_dir / "run.sqlite", self.run_dir)
+            review_path, entries = _delivery_review(self.run_dir / "run.sqlite", self.run_dir)
             with review_path.open(newline="") as file:
                 rows = list(csv.DictReader(file))
             row = next((row for row in rows if row["capture_id"] == capture_id), None)
@@ -481,10 +659,14 @@ class WebRun:
             if row["decided_at"] != decision.expected_revision:
                 raise HTTPException(409, "Decision changed; refresh before deciding")
             original = [dict(item) for item in rows]
+            entry = next(item for item in entries if item["row"]["capture_id"] == capture_id)
             row.update({
                 "decision": decision.status,
-                "limitations_json": json.dumps(decision.limitations, separators=(",", ":")),
-                "decided_by": decision.decided_by,
+                "limitations_json": json.dumps(
+                    controlled_limitations(entry["internal_qc"])
+                    if decision.status == "include" else [],
+                    separators=(",", ":"),
+                ),
                 "decided_at": decision.expected_revision,
             })
             try:
@@ -510,6 +692,22 @@ def _source_signature(files):
     return sorted((item["relative_path"], item["size"]) for item in files)
 
 
+def _selection_manifest(files):
+    manifest = [{
+        "relative_path": str(_safe_relative(item.relative_path)),
+        "size": item.size,
+        "selected": item.selected,
+    } for item in files]
+    paths = [item["relative_path"] for item in manifest]
+    if any(item["size"] < 0 for item in manifest):
+        raise HTTPException(400, "Selection contains a negative file size")
+    if len(paths) != len(set(paths)):
+        raise HTTPException(400, "Selection contains a duplicate relative path")
+    if not any(item["selected"] for item in manifest):
+        raise HTTPException(400, "Select at least one file")
+    return manifest
+
+
 def _bind_calibration(web_run: WebRun, template: dict):
     bind_calibration(web_run.run_dir, template)
 
@@ -526,24 +724,35 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
     initial_batch_id = "initial"
     runs = {initial_batch_id: WebRun(source, run_dir, output)}
     names = {initial_batch_id: "New dataset"}
+    selected_paths = {initial_batch_id: None}
     calibration_path = run_dir / "calibration.json"
     calibration = json.loads(calibration_path.read_text()) if calibration_path.is_file() else None
     calibration_selected = {initial_batch_id: calibration is not None}
     batch_root = run_dir.parent / "batches"
     batch_root.mkdir(parents=True, exist_ok=True)
-    for metadata_path in batch_root.glob("*/batch.json"):
+    for metadata_path in sorted(batch_root.glob("*/batch.json")):
         metadata = json.loads(metadata_path.read_text())
         batch_id = metadata_path.parent.name
         runs[batch_id] = WebRun(
             metadata_path.parent / "source", metadata_path.parent / "run",
             metadata_path.parent / "delivery")
         names[batch_id] = metadata["name"]
+        selection = metadata.get("selection")
+        selected_paths[batch_id] = ({item["relative_path"]: item["size"]
+                                     for item in selection if item["selected"]}
+                                    if selection else None)
         calibration_selected[batch_id] = metadata.get("use_configured_calibration", False)
 
     def batch(batch_id: str):
         if batch_id not in runs:
             raise HTTPException(404, "Batch does not exist")
         return runs[batch_id]
+
+    def selected_path(batch_id: str, relative: PurePosixPath):
+        allowed = selected_paths[batch_id]
+        if allowed is not None and str(relative) not in allowed:
+            raise HTTPException(409, "This file was not selected for this batch")
+        return allowed[str(relative)] if allowed is not None else None
     review_file = Path(__file__).parents[2] / "review/index.html"
     if not review_file.is_file():
         review_file = Path(sys.prefix) / "share/actuate_delivery/index.html"
@@ -566,7 +775,7 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
                 "episodes": sum(item["grouping_status"] == "complete" for item in records),
                 "incomplete": sum(item["grouping_status"] != "complete"
                                   for item in candidates),
-                "delivery_ready": web_run.archive.is_file(),
+                "delivery_ready": web_run.archive_record() is not None,
                 "source_files": len(source_files),
                 "source_bytes": sum(item["size"] for item in source_files),
             })
@@ -596,16 +805,20 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
         name = request.name.strip()
         if not name:
             raise HTTPException(400, "Batch name is required")
+        selection = _selection_manifest(request.files)
         batch_id = f"{datetime.now(timezone.utc):%Y%m%d-%H%M%S}-{uuid4().hex[:8]}"
         directory = batch_root / batch_id
         directory.mkdir()
         metadata = {
             "name": name,
             "use_configured_calibration": request.use_configured_calibration,
+            "selection": selection,
         }
-        (directory / "batch.json").write_text(json.dumps(metadata) + "\n")
+        (directory / "batch.json").write_text(json.dumps(metadata, indent=2) + "\n")
         runs[batch_id] = WebRun(directory / "source", directory / "run", directory / "delivery")
         names[batch_id] = name
+        selected_paths[batch_id] = {item["relative_path"]: item["size"]
+                                    for item in selection if item["selected"]}
         calibration_selected[batch_id] = request.use_configured_calibration
         return {"batch_id": batch_id, "name": name}
 
@@ -616,6 +829,9 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
         episodes = [item for item in records if item["grouping_status"] == "complete"]
         incomplete = [item for item in records if item["grouping_status"] != "complete"]
         source_files = web_run.source_files()
+        policy = None
+        if episodes and all(item["decision"] for item in episodes):
+            policy = telemetry_policy(web_run.run_dir)
         return {
             "batch": {"batch_id": batch_id, "name": names[batch_id]},
             "calibration": {
@@ -633,6 +849,7 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
             "episodes": episodes,
             "incomplete": incomplete,
             "review_error": review_error,
+            "telemetry_policy": policy,
             "delivery": web_run.delivery_summary(),
         }
 
@@ -641,6 +858,9 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
                      batch_id: str = initial_batch_id):
         web_run = batch(batch_id)
         relative = _safe_relative(relative_path)
+        expected_size = selected_path(batch_id, relative)
+        if expected_size is not None and size != expected_size:
+            raise HTTPException(400, "Upload size differs from the selected file")
         destination, staging = web_run.upload_paths(relative)
         if destination.exists() or destination.is_symlink():
             raise HTTPException(409, "Source file already exists and will not be overwritten")
@@ -666,6 +886,7 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
     def start_upload(relative_path: str, batch_id: str = initial_batch_id):
         web_run = batch(batch_id)
         relative = _safe_relative(relative_path)
+        selected_path(batch_id, relative)
         _, staging = web_run.upload_paths(relative)
         if web_run.output.exists():
             raise HTTPException(409, "This batch is already delivered. Upload into a new batch.")
@@ -679,6 +900,7 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
                             batch_id: str = initial_batch_id):
         web_run = batch(batch_id)
         relative = _safe_relative(relative_path)
+        selected_path(batch_id, relative)
         _, staging = web_run.upload_paths(relative)
         if not staging.is_file() or staging.stat().st_size != offset:
             raise HTTPException(409, "Upload offset changed; select the source again")
@@ -693,6 +915,9 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
     def finish_upload(relative_path: str, size: int, batch_id: str = initial_batch_id):
         web_run = batch(batch_id)
         relative = _safe_relative(relative_path)
+        expected_size = selected_path(batch_id, relative)
+        if expected_size is not None and size != expected_size:
+            raise HTTPException(400, "Upload size differs from the selected file")
         destination, staging = web_run.upload_paths(relative)
         if not staging.is_file() or staging.stat().st_size != size:
             raise HTTPException(400, "Uploaded byte count does not match the browser file")
@@ -772,6 +997,14 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
             media_type="video/mp4",
         )
 
+    @app.get("/api/episodes/{capture_id}/video/{stream}")
+    def episode_video(capture_id: str, stream: str, batch_id: str = initial_batch_id):
+        return FileResponse(batch(batch_id).video_path(capture_id, stream), media_type="video/mp4")
+
+    @app.get("/api/episodes/{capture_id}/evidence")
+    def episode_evidence(capture_id: str, batch_id: str = initial_batch_id):
+        return batch(batch_id).evidence(capture_id)
+
     @app.post("/api/delivery")
     def delivery(batch_id: str = initial_batch_id):
         web_run = batch(batch_id)
@@ -780,23 +1013,44 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
                           if item["stage"] == "review")
             if not review["approved"]:
                 raise RunError("Approve Human review before building delivery")
+            policy = telemetry_policy(web_run.run_dir)
+            if policy["requires_choice"]:
+                raise RunError("Choose how to handle partial telemetry before building delivery")
             if calibration and calibration_selected[batch_id]:
                 _bind_calibration(web_run, calibration)
-            web_run.start("delivery")
+            stage = "archive" if web_run.output.is_dir() else "delivery"
+            web_run.start(stage)
         except RunError as exc:
             raise HTTPException(400, str(exc)) from exc
-        return {"status": "running", "stage": "delivery"}
+        return {"status": "running", "stage": stage}
+
+    @app.post("/api/delivery/telemetry")
+    def choose_telemetry(request: TelemetryChoice, batch_id: str = initial_batch_id):
+        web_run = batch(batch_id)
+        if web_run.output.exists():
+            raise HTTPException(409, "This delivery is already built and cannot be changed")
+        review = next(item for item in workflow_state(web_run.run_dir)
+                      if item["stage"] == "review")
+        if not review["approved"]:
+            raise HTTPException(409, "Approve Human review before choosing delivery contents")
+        try:
+            return telemetry_policy(web_run.run_dir, request.choice)
+        except RunError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     @app.post("/api/delivery/archive")
     def archive_delivery(batch_id: str = initial_batch_id):
         web_run = batch(batch_id)
-        web_run.build_archive()
+        try:
+            web_run.build_archive()
+        except RunError as exc:
+            raise HTTPException(409, str(exc)) from exc
         return {"status": "ready", "bytes": web_run.archive.stat().st_size}
 
     @app.get("/api/delivery/download")
     def download_delivery(batch_id: str = initial_batch_id):
         web_run = batch(batch_id)
-        if not web_run.archive.is_file():
+        if web_run.archive_record() is None:
             raise HTTPException(404, "The delivery ZIP is not ready")
         return FileResponse(web_run.archive, media_type="application/zip",
                             filename=f"actuate-{batch_id}.zip")

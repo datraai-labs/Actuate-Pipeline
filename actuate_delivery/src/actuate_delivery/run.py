@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from time import monotonic
 from uuid import uuid4
 
 from actuate_delivery.inventory import (
@@ -28,7 +29,13 @@ from actuate_delivery.panoculon_trinet import (
     decode_imu,
     decode_vts,
 )
-from actuate_delivery.qc import QcError, build_qc, supplier_issues, timing_stream_facts
+from actuate_delivery.qc import (
+    QcError,
+    build_qc,
+    controlled_limitations,
+    supplier_issues,
+    timing_stream_facts,
+)
 from actuate_delivery.timing import TimingError, TimingStream, build_timing
 from actuate_delivery.video import VideoError, verify_video
 
@@ -91,9 +98,113 @@ REVIEW_FIELDS = (
     "episode_id", "capture_id", "source_relative_directory", "source_group", "capture_layout",
     "grouping_status", "qc_sha256", "pass_count", "fail_count", "unknown_count",
     "not_applicable_count", "blocking_checks", "material_checks", "decision",
-    "limitations_json", "decided_by", "decided_at",
+    "limitations_json", "decided_at",
 )
 REVIEW_FACT_FIELDS = REVIEW_FIELDS[:13]
+LEGACY_REVIEW_FIELDS = (*REVIEW_FIELDS[:-1], "decided_by", REVIEW_FIELDS[-1])
+
+
+def _ensure_progress(database):
+    database.execute(
+        """CREATE TABLE IF NOT EXISTS processing_item (
+               stage TEXT NOT NULL, item_key TEXT NOT NULL, label TEXT NOT NULL,
+               ordinal INTEGER NOT NULL, status TEXT NOT NULL,
+               outcome TEXT, started_at TEXT, completed_at TEXT,
+               elapsed_seconds REAL, error TEXT,
+               PRIMARY KEY (stage, item_key),
+               CHECK (status IN ('waiting', 'running', 'complete', 'failed', 'interrupted'))
+           )"""
+    )
+
+
+def prepare_progress(database_path: Path, stage: str, items):
+    with sqlite3.connect(database_path) as database:
+        _ensure_progress(database)
+        database.execute("DELETE FROM processing_item WHERE stage=?", (stage,))
+        database.executemany(
+            "INSERT INTO processing_item (stage, item_key, label, ordinal, status) "
+            "VALUES (?, ?, ?, ?, 'waiting')",
+            [(stage, key, label, index) for index, (key, label) in enumerate(items, 1)],
+        )
+
+
+def _start_progress(database, stage: str, item_key: str):
+    _ensure_progress(database)
+    database.execute(
+        """UPDATE processing_item SET status='running', outcome=NULL, started_at=?,
+                  completed_at=NULL, elapsed_seconds=NULL, error=NULL
+           WHERE stage=? AND item_key=?""",
+        (datetime.now(UTC).isoformat(), stage, item_key),
+    )
+    database.commit()
+    return monotonic()
+
+
+def _finish_progress(database, stage: str, item_key: str, started: float,
+                     outcome: str, error: str | None = None):
+    status = "failed" if error else "complete"
+    database.execute(
+        """UPDATE processing_item SET status=?, outcome=?, completed_at=?,
+                  elapsed_seconds=?, error=? WHERE stage=? AND item_key=?""",
+        (status, outcome, datetime.now(UTC).isoformat(), round(monotonic() - started, 3),
+         error, stage, item_key),
+    )
+    database.commit()
+
+
+def processing_progress(database_path: Path, stage: str):
+    if not database_path.is_file():
+        return {"completed": 0, "total": 0, "current": None, "items": []}
+    with sqlite3.connect(database_path) as database:
+        database.row_factory = sqlite3.Row
+        tables = {row[0] for row in database.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "processing_item" not in tables:
+            return {"completed": 0, "total": 0, "current": None, "items": []}
+        items = [dict(row) for row in database.execute(
+            "SELECT * FROM processing_item WHERE stage=? ORDER BY ordinal", (stage,))]
+    terminal = {"complete", "failed", "interrupted"}
+    current = next((item for item in items if item["status"] == "running"), None)
+    return {"completed": sum(item["status"] in terminal for item in items),
+            "total": len(items), "current": current, "items": items}
+
+
+def interrupt_progress(database_path: Path, stage: str, error: str):
+    if not database_path.is_file():
+        return
+    with sqlite3.connect(database_path) as database:
+        _ensure_progress(database)
+        database.execute(
+            """UPDATE processing_item SET status='interrupted', completed_at=?, error=?
+               WHERE stage=? AND status='running'""",
+            (datetime.now(UTC).isoformat(), error, stage),
+        )
+
+
+def stage_progress_items(database_path: Path, stage: str):
+    with sqlite3.connect(database_path) as database:
+        if stage in ("sensors", "video"):
+            roles = ("imu", "vts", "telemetry") if stage == "sensors" else ("video",)
+            placeholders = ",".join("?" for _ in roles)
+            rows = database.execute(
+                f"""SELECT role, capture_id, COALESCE(camera_stream_id, ''), relative_path
+                    FROM capture_snapshot JOIN capture_member USING (parent_path, capture_key)
+                    JOIN source_file USING (source_item_id)
+                    WHERE is_canonical=1 AND role IN ({placeholders})
+                    ORDER BY role, capture_id, camera_stream_id, relative_path""",
+                roles,
+            ).fetchall()
+            grouped = {}
+            for role, capture_id, stream, path in rows:
+                key = f"{role}:{capture_id}:{stream}"
+                grouped.setdefault(key, []).append(path)
+            return [(key, " + ".join(paths)) for key, paths in grouped.items()]
+        rows = database.execute(
+            """SELECT capture_id, parent_path, capture_key FROM capture_snapshot
+               WHERE is_canonical=1 ORDER BY parent_path, capture_key"""
+        ).fetchall()
+    return [(capture_id, f"{parent}/{key}" if parent else key)
+            for capture_id, parent, key in rows]
 
 
 def open_run(source: str, run_dir: Path) -> str:
@@ -123,7 +234,7 @@ def open_run(source: str, run_dir: Path) -> str:
             database.execute("INSERT INTO run VALUES (1, ?, ?, ?, ?)", (run_id, source, now, now))
             return run_id
 
-        if version not in range(1, 15):
+        if version not in range(1, 16):
             raise RuntimeError(f"Unsupported run database version: {version}")
         stored = database.execute(
             "SELECT run_id, source FROM run WHERE singleton = 1"
@@ -143,7 +254,7 @@ def open_run(source: str, run_dir: Path) -> str:
 
 def load_previous(database_path: Path) -> dict[str, tuple[bool, str | None]]:
     with sqlite3.connect(database_path) as database:
-        if database.execute("PRAGMA user_version").fetchone()[0] not in range(6, 15):
+        if database.execute("PRAGMA user_version").fetchone()[0] not in range(6, 16):
             return {}
         rows = database.execute(
             "SELECT source_item_id, present, source_sha256 FROM source_file"
@@ -172,7 +283,7 @@ def store_inventory(
     with sqlite3.connect(database_path) as database:
         database.execute("PRAGMA foreign_keys = ON")
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in range(1, 15)
+        assert version in range(1, 16)
         if version < 6:
             database.executescript(
                 """
@@ -309,7 +420,7 @@ def store_preservation(database_path: Path, preservation: Preservation) -> None:
     files, captures, _ = preservation
     with sqlite3.connect(database_path) as database:
         database.execute("PRAGMA foreign_keys = ON")
-        assert database.execute("PRAGMA user_version").fetchone()[0] in range(6, 15)
+        assert database.execute("PRAGMA user_version").fetchone()[0] in range(6, 16)
         database.execute("BEGIN IMMEDIATE")
         cursor = database.executemany(
             """UPDATE source_file
@@ -324,7 +435,7 @@ def store_preservation(database_path: Path, preservation: Preservation) -> None:
 def process_imus(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
     with sqlite3.connect(database_path) as database:
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in range(6, 15)
+        assert version in range(6, 16)
         if version == 6:
             database.execute(
                 """CREATE TABLE imu_artifact (
@@ -350,6 +461,8 @@ def process_imus(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
 
         decoded = reused = failed = 0
         for capture_id, imus in members.items():
+            item_key = f"imu:{capture_id}:"
+            started = _start_progress(database, "sensors", item_key)
             source_hash = imus[0][0] if len(imus) == 1 else None
             relative = f"work/{capture_id}/imu.parquet"
             try:
@@ -365,6 +478,7 @@ def process_imus(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
                     if not output.is_file() or sha256(output.read_bytes()).hexdigest() != prior[1]:
                         raise ImuError("Published IMU Parquet changed after verification")
                     reused += 1
+                    _finish_progress(database, "sensors", item_key, started, "reused")
                     continue
                 artifact = convert_imu(run_dir / imus[0][1], output, source_hash)
                 result = (source_hash, "decoded", relative, artifact.parquet_sha256,
@@ -382,13 +496,16 @@ def process_imus(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
                    sample_count=excluded.sample_count, error=excluded.error""",
                 (result[-1], *result[:-1]),
             )
+            _finish_progress(database, "sensors", item_key, started,
+                             "decoded" if result[1] == "decoded" else "failed",
+                             result[-2])
     return decoded, reused, failed
 
 
 def process_sidecars(database_path: Path, run_dir: Path) -> tuple[int, int, int, int, int, int]:
     with sqlite3.connect(database_path) as database:
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in range(7, 15)
+        assert version in range(7, 16)
         if version == 7:
             database.executescript(
                 """BEGIN IMMEDIATE;
@@ -421,6 +538,8 @@ def process_sidecars(database_path: Path, run_dir: Path) -> tuple[int, int, int,
             grouped.setdefault((capture_id, stream), []).append((source_hash, cache_path))
         vts_decoded = vts_reused = vts_failed = 0
         for (capture_id, stream), members in grouped.items():
+            item_key = f"vts:{capture_id}:{stream}"
+            started = _start_progress(database, "sensors", item_key)
             source_hash = members[0][0] if len(members) == 1 else None
             try:
                 if len(members) != 1:
@@ -431,6 +550,7 @@ def process_sidecars(database_path: Path, run_dir: Path) -> tuple[int, int, int,
                 ).fetchone()
                 if prior == (source_hash, "decoded"):
                     vts_reused += 1
+                    _finish_progress(database, "sensors", item_key, started, "reused")
                     continue
                 data = decode_vts(run_dir / members[0][1], source_hash)
                 field = "timestamp_ns" if data.version == 1 else "sof_timestamp_ns"
@@ -458,6 +578,9 @@ def process_sidecars(database_path: Path, run_dir: Path) -> tuple[int, int, int,
                    error=excluded.error""",
                 (capture_id, stream, *result),
             )
+            _finish_progress(database, "sensors", item_key, started,
+                             "decoded" if result[1] == "decoded" else "failed",
+                             result[-1])
 
         rows = database.execute(
             """SELECT capture_id, source_sha256, cache_relative_path
@@ -471,6 +594,8 @@ def process_sidecars(database_path: Path, run_dir: Path) -> tuple[int, int, int,
             grouped.setdefault(capture_id, []).append((source_hash, cache_path))
         tel_decoded = tel_reused = tel_failed = 0
         for capture_id, members in grouped.items():
+            item_key = f"telemetry:{capture_id}:"
+            started = _start_progress(database, "sensors", item_key)
             source_hash = members[0][0] if len(members) == 1 else None
             relative = f"work/{capture_id}/telemetry.parquet"
             try:
@@ -485,6 +610,7 @@ def process_sidecars(database_path: Path, run_dir: Path) -> tuple[int, int, int,
                     if not output.is_file() or sha256(output.read_bytes()).hexdigest() != prior[1]:
                         raise SidecarError("Published TEL Parquet changed after verification")
                     tel_reused += 1
+                    _finish_progress(database, "sensors", item_key, started, "reused")
                     continue
                 artifact = convert_tel(run_dir / members[0][1], output, source_hash)
                 result = (source_hash, "decoded", relative, artifact.parquet_sha256,
@@ -501,13 +627,16 @@ def process_sidecars(database_path: Path, run_dir: Path) -> tuple[int, int, int,
                    record_count=excluded.record_count, error=excluded.error""",
                 (capture_id, *result),
             )
+            _finish_progress(database, "sensors", item_key, started,
+                             "decoded" if result[1] == "decoded" else "failed",
+                             result[-1])
     return vts_decoded, vts_reused, vts_failed, tel_decoded, tel_reused, tel_failed
 
 
 def process_videos(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
     with sqlite3.connect(database_path) as database:
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in range(8, 15)
+        assert version in range(8, 16)
         if version == 8:
             database.executescript(
                 """BEGIN IMMEDIATE;
@@ -537,6 +666,8 @@ def process_videos(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
             grouped.setdefault((capture_id, stream), []).append((source_hash, cache_path))
         verified = reused = failed = 0
         for (capture_id, stream), members in grouped.items():
+            item_key = f"video:{capture_id}:{stream}"
+            started = _start_progress(database, "video", item_key)
             source_hash = members[0][0] if len(members) == 1 else None
             relative = f"work/{capture_id}/video_{stream}_frames.parquet"
             try:
@@ -551,6 +682,7 @@ def process_videos(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
                     if not output.is_file() or sha256(output.read_bytes()).hexdigest() != prior[1]:
                         raise VideoError("Published video frame index changed after verification")
                     reused += 1
+                    _finish_progress(database, "video", item_key, started, "reused")
                     continue
                 artifact = verify_video(run_dir / members[0][1], output, source_hash)
                 result = (source_hash, "verified", relative, artifact.parquet_sha256,
@@ -575,13 +707,16 @@ def process_videos(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
                    facts_json=excluded.facts_json, error=excluded.error""",
                 (capture_id, stream, *result),
             )
+            _finish_progress(database, "video", item_key, started,
+                             "verified" if result[1] == "verified" else "failed",
+                             result[-1])
     return verified, reused, failed
 
 
 def process_timing(database_path: Path, run_dir: Path) -> tuple[int, int, int, int]:
     with sqlite3.connect(database_path) as database:
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in range(9, 15)
+        assert version in range(9, 16)
         if version == 9:
             database.executescript(
                 """BEGIN IMMEDIATE;
@@ -602,6 +737,7 @@ def process_timing(database_path: Path, run_dir: Path) -> tuple[int, int, int, i
         ).fetchall()
         created = reused = unavailable = failed = 0
         for capture_id, layout in captures:
+            started = _start_progress(database, "timing", capture_id)
             expected = {"single_video": ("single",), "stereo_pair": ("left", "right")}.get(layout)
             inputs = database.execute(
                 "SELECT parquet_relative_path, parquet_sha256 FROM imu_artifact "
@@ -657,6 +793,7 @@ def process_timing(database_path: Path, run_dir: Path) -> tuple[int, int, int, i
                         if not output.is_file() or sha256(output.read_bytes()).hexdigest() != prior[1]:
                             raise TimingError("Published frame timing Parquet changed after verification")
                         reused += 1
+                        _finish_progress(database, "timing", capture_id, started, "reused")
                         continue
                     artifact = build_timing(
                         run_dir / inputs[0][0], inputs[0][1], tuple(streams), output)
@@ -677,6 +814,8 @@ def process_timing(database_path: Path, run_dir: Path) -> tuple[int, int, int, i
                    stereo_unmatched_rows=excluded.stereo_unmatched_rows, reason=excluded.reason""",
                 (capture_id, *values),
             )
+            _finish_progress(database, "timing", capture_id, started, values[1],
+                             values[-1] if values[1] == "failed" else None)
     return created, reused, unavailable, failed
 
 
@@ -684,7 +823,7 @@ def process_qc(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
     with sqlite3.connect(database_path) as database:
         database.row_factory = sqlite3.Row
         version = database.execute("PRAGMA user_version").fetchone()[0]
-        assert version in range(10, 15)
+        assert version in range(10, 16)
         if version == 10:
             database.executescript(
                 """BEGIN IMMEDIATE;
@@ -706,6 +845,7 @@ def process_qc(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
         created = reused = failed = 0
         for capture in captures:
             capture_id = capture["capture_id"]
+            started = _start_progress(database, "qc", capture_id)
             members = [dict(row) for row in database.execute(
                 """SELECT relative_path, role, camera_stream_id, size_bytes, source_sha256,
                           cache_relative_path
@@ -780,7 +920,7 @@ def process_qc(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
                 "timing": dict(timing_row) if timing_row else {"status": "unavailable", "reason": "not processed"},
             }
             encoded = json.dumps(facts, sort_keys=True, separators=(",", ":"), allow_nan=False)
-            signature = sha256(f"qc_internal.v2|{encoded}".encode()).hexdigest()
+            signature = sha256(f"qc_builder.v3|{encoded}".encode()).hexdigest()
             relative = f"work/{capture_id}/qc_internal.json"
             output = run_dir / relative
             prior = database.execute(
@@ -820,6 +960,7 @@ def process_qc(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
                     if not output.is_file() or sha256(output.read_bytes()).hexdigest() != prior["json_sha256"]:
                         raise QcError("Published internal QC JSON changed after verification")
                     reused += 1
+                    _finish_progress(database, "qc", capture_id, started, "reused")
                     continue
                 artifact = build_qc(facts, output)
                 values = (signature, "ready", relative, artifact.json_sha256, artifact.pass_count, artifact.fail_count,
@@ -838,6 +979,8 @@ def process_qc(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
                    not_applicable_count=excluded.not_applicable_count, reason=excluded.reason""",
                 (capture_id, *values),
             )
+            _finish_progress(database, "qc", capture_id, started, values[1],
+                             values[-1] if values[1] == "failed" else None)
     return created, reused, failed
 
 
@@ -872,7 +1015,6 @@ def _delivery_review(database_path: Path, run_dir: Path):
                     qc_sha256 TEXT NOT NULL CHECK (length(qc_sha256) = 64),
                     status TEXT NOT NULL CHECK (status IN ('include', 'exclude')),
                     limitations_json TEXT NOT NULL,
-                    decided_by TEXT NOT NULL,
                     decided_at TEXT NOT NULL
                 );
                 CREATE TABLE delivery_episode (
@@ -880,23 +1022,37 @@ def _delivery_review(database_path: Path, run_dir: Path):
                     episode_number INTEGER NOT NULL UNIQUE
                         CHECK (episode_number BETWEEN 1 AND 999999)
                 );
-                PRAGMA user_version = 14;
+                PRAGMA user_version = 15;
                 COMMIT;"""
             )
-        elif version in (12, 13):
-            database.executescript(
-                """BEGIN IMMEDIATE;
+        elif version in (12, 13, 14):
+            episode_migration = "" if version == 14 else """
                 CREATE TABLE delivery_episode (
                     capture_id TEXT PRIMARY KEY CHECK (length(capture_id) = 64),
                     episode_number INTEGER NOT NULL UNIQUE
                         CHECK (episode_number BETWEEN 1 AND 999999)
+                );"""
+            database.executescript(
+                f"""BEGIN IMMEDIATE;
+                ALTER TABLE delivery_decision RENAME TO delivery_decision_with_reviewer;
+                CREATE TABLE delivery_decision (
+                    capture_id TEXT PRIMARY KEY CHECK (length(capture_id) = 64),
+                    qc_sha256 TEXT NOT NULL CHECK (length(qc_sha256) = 64),
+                    status TEXT NOT NULL CHECK (status IN ('include', 'exclude')),
+                    limitations_json TEXT NOT NULL,
+                    decided_at TEXT NOT NULL
                 );
-                PRAGMA user_version = 14;
+                INSERT INTO delivery_decision
+                    SELECT capture_id, qc_sha256, status, limitations_json, decided_at
+                    FROM delivery_decision_with_reviewer;
+                DROP TABLE delivery_decision_with_reviewer;
+                {episode_migration}
+                PRAGMA user_version = 15;
                 COMMIT;"""
             )
-        elif version != 14:
+        elif version != 15:
             raise RunError(
-                f"Delivery review requires a schema-11 through schema-14 run ledger, not {version}"
+                f"Delivery review requires a schema-11 through schema-15 run ledger, not {version}"
             )
 
         current = {}
@@ -963,12 +1119,20 @@ def _delivery_review(database_path: Path, run_dir: Path):
             with review_path.open(newline="") as file:
                 reader = csv.DictReader(file)
                 fields = tuple(reader.fieldnames or ())
-                if fields not in (REVIEW_FIELDS, REVIEW_FIELDS[1:]):
+                accepted_fields = (
+                    REVIEW_FIELDS, REVIEW_FIELDS[1:],
+                    LEGACY_REVIEW_FIELDS, LEGACY_REVIEW_FIELDS[1:],
+                )
+                if fields not in accepted_fields:
                     raise RunError("Review sheet columns changed")
                 rows = list(reader)
-            if fields == REVIEW_FIELDS[1:]:
+            if fields in (REVIEW_FIELDS[1:], LEGACY_REVIEW_FIELDS[1:]):
                 rows = [{"episode_id": current.get(row["capture_id"], {
                     "row": {"episode_id": ""}})["row"]["episode_id"], **row} for row in rows]
+            legacy_review = "decided_by" in fields
+            if legacy_review:
+                for row in rows:
+                    row.pop("decided_by")
             seen = set()
             for row in rows:
                 capture_id = row["capture_id"]
@@ -977,16 +1141,18 @@ def _delivery_review(database_path: Path, run_dir: Path):
                 seen.add(capture_id)
                 if capture_id not in current:
                     raise RunError(f"Review sheet contains a capture that is no longer current: {capture_id}")
+                existing = prior.get(capture_id)
+                if (row["qc_sha256"] != current[capture_id]["row"]["qc_sha256"]
+                        and existing and row["qc_sha256"] == existing["qc_sha256"]):
+                    continue
                 if any(row[field] != current[capture_id]["row"][field]
                        for field in REVIEW_FACT_FIELDS):
                     raise RunError(f"Review sheet facts changed or became stale: {capture_id}")
-                existing = prior.get(capture_id)
                 expected_time = existing["decided_at"] if (
                     existing and existing["qc_sha256"] == row["qc_sha256"]) else ""
                 if row["decided_at"] != expected_time:
                     raise RunError(f"Review decision time was edited: {capture_id}")
                 status = row["decision"].strip()
-                decided_by = row["decided_by"].strip()
                 try:
                     limitations = json.loads(row["limitations_json"] or "[]")
                 except json.JSONDecodeError as error:
@@ -998,31 +1164,39 @@ def _delivery_review(database_path: Path, run_dir: Path):
                 if status not in ("", "include", "exclude"):
                     raise RunError(f"Invalid review decision for {capture_id}: {status!r}")
                 if not status:
-                    if decided_by or limitations:
+                    if limitations:
                         raise RunError(f"Pending decision has human fields: {capture_id}")
                     database.execute("DELETE FROM delivery_decision WHERE capture_id=?", (capture_id,))
                     continue
-                if not decided_by:
-                    raise RunError(f"Decision requires decided_by: {capture_id}")
                 if status == "include" and current[capture_id]["row"]["blocking_checks"]:
                     raise RunError(f"Blocking capture cannot be included: {capture_id}")
-                if (status == "include" and current[capture_id]["row"]["material_checks"]
-                        and not limitations):
-                    raise RunError(f"Material checks require declared limitations: {capture_id}")
-                if status == "exclude" and limitations:
-                    raise RunError(f"Excluded capture cannot have supplier limitations: {capture_id}")
-                values = (status, json.dumps(limitations, separators=(",", ":")), decided_by)
+                expected_limitations = (controlled_limitations(
+                    current[capture_id]["internal_qc"]) if status == "include" else [])
+                if legacy_review:
+                    limitations = expected_limitations
+                elif limitations != expected_limitations:
+                    raise RunError(f"Review limitations are pipeline-controlled: {capture_id}")
+                values = (status, json.dumps(limitations, separators=(",", ":")))
                 unchanged = (existing and existing["qc_sha256"] == row["qc_sha256"]
-                             and values == (existing["status"], existing["limitations_json"],
-                                             existing["decided_by"]))
+                             and status == existing["status"])
                 decided_at = existing["decided_at"] if unchanged else datetime.now(UTC).isoformat()
                 database.execute(
-                    """INSERT INTO delivery_decision VALUES (?, ?, ?, ?, ?, ?)
+                    """INSERT INTO delivery_decision VALUES (?, ?, ?, ?, ?)
                        ON CONFLICT(capture_id) DO UPDATE SET qc_sha256=excluded.qc_sha256,
                        status=excluded.status, limitations_json=excluded.limitations_json,
-                       decided_by=excluded.decided_by, decided_at=excluded.decided_at""",
+                       decided_at=excluded.decided_at""",
                     (capture_id, row["qc_sha256"], *values, decided_at),
                 )
+        for capture_id, existing in prior.items():
+            entry = current.get(capture_id)
+            if not entry or existing["qc_sha256"] != entry["row"]["qc_sha256"]:
+                continue
+            limitations = (controlled_limitations(entry["internal_qc"])
+                           if existing["status"] == "include" else [])
+            database.execute(
+                "UPDATE delivery_decision SET limitations_json=? WHERE capture_id=?",
+                (json.dumps(limitations, separators=(",", ":")), capture_id),
+            )
         decisions = {row["capture_id"]: dict(row) for row in database.execute(
             "SELECT * FROM delivery_decision")}
         output_rows = []
@@ -1030,22 +1204,79 @@ def _delivery_review(database_path: Path, run_dir: Path):
             decision = decisions.get(capture_id)
             if decision and decision["qc_sha256"] == entry["row"]["qc_sha256"]:
                 entry["decision"] = {
-                    "status": decision["status"], "decided_by": decision["decided_by"],
-                    "decided_at": decision["decided_at"],
+                    "status": decision["status"], "decided_at": decision["decided_at"],
                     "limitations": json.loads(decision["limitations_json"]),
                 }
                 human = {
                     "decision": decision["status"],
                     "limitations_json": decision["limitations_json"],
-                    "decided_by": decision["decided_by"], "decided_at": decision["decided_at"],
+                    "decided_at": decision["decided_at"],
                 }
             else:
                 entry["decision"] = None
-                human = {"decision": "", "limitations_json": "[]", "decided_by": "", "decided_at": ""}
+                human = {"decision": "", "limitations_json": "[]", "decided_at": ""}
             output_rows.append(entry["row"] | human)
         _write_review(review_path, output_rows)
         database.commit()
     return review_path, tuple(current.values())
+
+
+def _telemetry_policy(database_path: Path, included, choice=None):
+    capture_ids = sorted(entry["row"]["capture_id"] for entry in included)
+    with sqlite3.connect(database_path) as database:
+        database.execute(
+            """CREATE TABLE IF NOT EXISTS telemetry_policy (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton=1),
+                   input_signature TEXT NOT NULL CHECK (length(input_signature)=64),
+                   choice TEXT NOT NULL CHECK (choice IN ('include_available', 'exclude_all')),
+                   decided_at TEXT NOT NULL
+               )"""
+        )
+        artifacts = []
+        for capture_id in capture_ids:
+            row = database.execute(
+                """SELECT status, source_sha256, parquet_sha256 FROM tel_artifact
+                   WHERE capture_id=?""", (capture_id,),
+            ).fetchone()
+            artifacts.append((capture_id, *(row or ("absent", None, None))))
+        signature = sha256(json.dumps(
+            artifacts, separators=(",", ":")).encode()).hexdigest()
+        available = sum(row[1] == "decoded" for row in artifacts)
+        coverage = "all" if available == len(capture_ids) else "none" if not available else "partial"
+        if coverage != "partial":
+            database.execute("DELETE FROM telemetry_policy")
+            return {
+                "coverage": coverage, "included_episodes": len(capture_ids),
+                "episodes_with_telemetry": available, "requires_choice": False,
+                "choice": "include_available" if coverage == "all" else "exclude_all",
+            }
+        if choice is not None:
+            if choice not in ("include_available", "exclude_all"):
+                raise RunError(f"Invalid telemetry policy: {choice}")
+            database.execute(
+                """INSERT INTO telemetry_policy VALUES (1, ?, ?, ?)
+                   ON CONFLICT(singleton) DO UPDATE SET
+                       input_signature=excluded.input_signature, choice=excluded.choice,
+                       decided_at=excluded.decided_at""",
+                (signature, choice, datetime.now(UTC).isoformat()),
+            )
+        stored = database.execute(
+            "SELECT input_signature, choice FROM telemetry_policy WHERE singleton=1"
+        ).fetchone()
+        effective = stored[1] if stored and stored[0] == signature else None
+        return {
+            "coverage": coverage, "included_episodes": len(capture_ids),
+            "episodes_with_telemetry": available, "requires_choice": effective is None,
+            "choice": effective,
+        }
+
+
+def telemetry_policy(run_dir: Path, choice=None):
+    _, entries = _delivery_review(run_dir / "run.sqlite", run_dir)
+    included = [entry for entry in entries
+                if entry["row"]["grouping_status"] == "complete"
+                and entry["decision"] and entry["decision"]["status"] == "include"]
+    return _telemetry_policy(run_dir / "run.sqlite", included, choice)
 
 
 def complete_local_delivery(source: str, run_dir: Path, output: Path) -> DeliveryRunResult:
@@ -1066,6 +1297,10 @@ def complete_local_delivery(source: str, run_dir: Path, output: Path) -> Deliver
             return DeliveryRunResult("review_required", review_path, len(included), excluded, pending, None)
         if not included:
             return DeliveryRunResult("no_captures_included", review_path, 0, excluded, 0, None)
+        policy = _telemetry_policy(run_dir / "run.sqlite", included)
+        if policy["requires_choice"]:
+            return DeliveryRunResult(
+                "telemetry_choice_required", review_path, len(included), excluded, 0, None)
         with sqlite3.connect(run_dir / "run.sqlite") as database:
             database.row_factory = sqlite3.Row
             episodes = tuple({
@@ -1084,10 +1319,12 @@ def complete_local_delivery(source: str, run_dir: Path, output: Path) -> Deliver
              "capture_id": entry["row"]["capture_id"],
              "qc_sha256": entry["row"]["qc_sha256"], "decision": entry["decision"]}
             for entry in included
-        ] + [{"calibration": calibration}], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        ] + [{"projection_builder": "customer_facts.v1",
+              "calibration": calibration, "telemetry_policy": policy}],
+            sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         projection = run_dir / "work/deliveries" / signature / "projection"
         if not projection.exists() and not projection.is_symlink():
-            project_supplier(episodes, projection, calibration)
+            project_supplier(episodes, projection, calibration, policy["choice"])
         build_delivery(run_dir, projection, output)
         return DeliveryRunResult("complete", review_path, len(included), excluded, 0, output)
     except RunError:
@@ -1132,10 +1369,26 @@ def prepare_inventory(
     database_path = run_dir / "run.sqlite"
     previous = load_previous(database_path)
     store_inventory(database_path, inventory, selected)
+    prepare_progress(database_path, "inventory", [
+        (file.source_item_id, file.relative_path) for file in selected.files
+    ])
+    started = {}
+
+    def progress(file, status, error):
+        with sqlite3.connect(database_path) as database:
+            if status == "running":
+                started[file.source_item_id] = _start_progress(
+                    database, "inventory", file.source_item_id)
+                return
+            _finish_progress(
+                database, "inventory", file.source_item_id,
+                started.pop(file.source_item_id), "preserved", error,
+            )
     try:
         preservation = preserve_inventory(
             Path(source).expanduser().resolve(), run_dir.resolve(), selected, previous,
             {file.source_item_id for file in inventory.files},
+            progress,
         )
         store_preservation(database_path, preservation)
     except (OSError, ValueError) as error:

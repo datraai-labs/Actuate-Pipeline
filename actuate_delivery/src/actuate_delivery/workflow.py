@@ -12,11 +12,14 @@ from actuate_delivery.run import (
     _delivery_review,
     complete_local_delivery,
     prepare_inventory,
+    prepare_progress,
     process_imus,
     process_qc,
     process_sidecars,
     process_timing,
     process_videos,
+    processing_progress,
+    stage_progress_items,
 )
 
 STAGES = (
@@ -144,13 +147,16 @@ def workflow_state(run_dir: Path):
     database_path = run_dir / "run.sqlite"
     if not database_path.is_file():
         return [{"stage": stage, "name": name, "status": "waiting", "approved": False,
-                 "summary": None, "error": None} for stage, name in STAGES]
+                 "summary": None, "error": None, "elapsed_seconds": None,
+                 "progress": {"completed": 0, "total": 0, "current": None, "items": []}}
+                for stage, name in STAGES]
     _ensure_table(database_path)
     with sqlite3.connect(database_path) as database:
         database.row_factory = sqlite3.Row
         rows = {row["stage"]: row for row in database.execute(
             "SELECT * FROM stage_checkpoint")}
-    return [{
+    now = datetime.now(UTC)
+    result = [{
         "stage": stage,
         "name": name,
         "status": rows[stage]["status"],
@@ -162,7 +168,17 @@ def workflow_state(run_dir: Path):
         "approved_at": rows[stage]["approved_at"],
         "started_at": rows[stage]["started_at"],
         "completed_at": rows[stage]["completed_at"],
+        "progress": processing_progress(database_path, stage),
     } for stage, name in STAGES]
+    for item in result:
+        started = item["started_at"]
+        completed = item["completed_at"]
+        item["elapsed_seconds"] = (round((datetime.fromisoformat(completed) -
+                                           datetime.fromisoformat(started)).total_seconds(), 1)
+                                   if started and completed else
+                                   round((now - datetime.fromisoformat(started)).total_seconds(), 1)
+                                   if started else None)
+    return result
 
 
 def artifact_failures(run_dir: Path, workflow_stage: str | None = None):
@@ -208,12 +224,10 @@ def artifact_failures(run_dir: Path, workflow_stage: str | None = None):
     return failures
 
 
-def approve_stage(run_dir: Path, stage: str, approved_by: str):
+def approve_stage(run_dir: Path, stage: str, approved_by: str = ""):
     if stage not in APPROVAL_STAGES:
         raise RunError(f"Stage does not require approval: {stage}")
     approved_by = approved_by.strip()
-    if not approved_by:
-        raise RunError("Approval requires a reviewer name")
     states = workflow_state(run_dir)
     current = next(item for item in states if item["stage"] == stage)
     if current["status"] != "complete":
@@ -246,6 +260,13 @@ def invalidate_from(run_dir: Path, stage: str):
                WHERE stage=?""",
             [(item[0],) for item in STAGES[index:]],
         )
+        tables = {row[0] for row in database.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "processing_item" in tables:
+            database.executemany(
+                "DELETE FROM processing_item WHERE stage=?",
+                [(item[0],) for item in STAGES[index:]],
+            )
 
 
 def _require_previous(run_dir: Path, stage: str):
@@ -314,6 +335,7 @@ def run_stage(source: str, run_dir: Path, stage: str, output: Path | None = None
                 **statuses,
             }
         elif stage == "sensors":
+            prepare_progress(database_path, stage, stage_progress_items(database_path, stage))
             imu = process_imus(database_path, run_dir)
             sidecars = process_sidecars(database_path, run_dir)
             summary = dict(zip(("imu_decoded", "imu_reused", "imu_failed",
@@ -331,6 +353,7 @@ def run_stage(source: str, run_dir: Path, stage: str, output: Path | None = None
             summary.update(dict(zip(
                 ("imu_samples", "camera_timestamps", "telemetry_records"), totals)))
         elif stage == "video":
+            prepare_progress(database_path, stage, stage_progress_items(database_path, stage))
             values = process_videos(database_path, run_dir)
             summary = dict(zip(("verified", "reused", "failed"), values))
             with sqlite3.connect(database_path) as database:
@@ -340,6 +363,7 @@ def run_stage(source: str, run_dir: Path, stage: str, output: Path | None = None
                 ).fetchone()
             summary.update({"verified_streams": streams, "decoded_frames": frames})
         elif stage == "timing":
+            prepare_progress(database_path, stage, stage_progress_items(database_path, stage))
             values = process_timing(database_path, run_dir)
             summary = dict(zip(("created", "reused", "unavailable", "failed"), values))
             with sqlite3.connect(database_path) as database:
@@ -353,6 +377,7 @@ def run_stage(source: str, run_dir: Path, stage: str, output: Path | None = None
             summary.update(dict(zip(("frame_rows", "matched_rows", "imu_coverage_rows",
                                      "stereo_pairs", "unmatched_stereo_frames"), totals)))
         elif stage == "qc":
+            prepare_progress(database_path, stage, stage_progress_items(database_path, stage))
             values = process_qc(database_path, run_dir)
             summary = dict(zip(("created", "reused", "failed"), values))
             if summary["failed"]:

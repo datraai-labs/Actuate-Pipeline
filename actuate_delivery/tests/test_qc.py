@@ -114,18 +114,32 @@ def test_timing_stream_facts_reverify_and_count_each_stream(tmp_path):
     path = tmp_path / "timing.parquet"
     pq.write_table(pa.table({
         "camera_stream_id": ["left", "left", "right"],
+        "video_frame_index": [0, 1, 0],
+        "mp4_pts_ns": [0, 33_000_000, 0],
         "vts_match_status": ["matched", "video_only", "matched"],
         "mapping_status": ["outside_imu_coverage", "no_vts", "mapped"],
+        "stereo_pair_status": ["unmatched", "unmatched", "matched"],
     }), path)
     source_hash = sha256(path.read_bytes()).hexdigest()
 
     assert timing_stream_facts(path, source_hash) == [
         {"camera_stream_id": "left", "row_count": 2, "matched_rows": 1,
          "coverage_rows": 0, "outside_imu_coverage_rows": 1, "missing_sof_rows": 0,
-         "video_only_rows": 1, "vts_only_rows": 0},
+         "video_only_rows": 1, "vts_only_rows": 0,
+         "outside_imu_coverage_ranges": [{"position": "start", "frame_count": 1,
+                                           "start_frame": 0, "end_frame": 0,
+                                           "start_time_s": 0.0, "end_time_s": 0.0}],
+         "video_vts_mismatch_ranges": [{"position": "end", "frame_count": 1,
+                                         "start_frame": 1, "end_frame": 1,
+                                         "start_time_s": 0.033, "end_time_s": 0.033}],
+         "stereo_unmatched_ranges": [{"position": "start", "frame_count": 2,
+                                       "start_frame": 0, "end_frame": 1,
+                                       "start_time_s": 0.0, "end_time_s": 0.033}]},
         {"camera_stream_id": "right", "row_count": 1, "matched_rows": 1,
          "coverage_rows": 1, "outside_imu_coverage_rows": 0, "missing_sof_rows": 0,
-         "video_only_rows": 0, "vts_only_rows": 0},
+         "video_only_rows": 0, "vts_only_rows": 0,
+         "outside_imu_coverage_ranges": [], "video_vts_mismatch_ranges": [],
+         "stereo_unmatched_ranges": []},
     ]
     with pytest.raises(QcError, match="SHA-256"):
         timing_stream_facts(path, "0" * 64)

@@ -51,6 +51,9 @@ def insert_capture(run_dir, capture_id, group, grouping="complete", partial=Fals
                     json_relative_path TEXT, json_sha256 TEXT, pass_count INTEGER,
                     fail_count INTEGER, unknown_count INTEGER,
                     not_applicable_count INTEGER, reason TEXT);
+                CREATE TABLE tel_artifact (
+                    capture_id TEXT PRIMARY KEY, status TEXT, source_sha256 TEXT,
+                    parquet_sha256 TEXT);
                 PRAGMA user_version = 11;
             """)
         database.execute(
@@ -83,8 +86,9 @@ def write_rows(path, rows):
 
 
 def fake_package(monkeypatch, captured):
-    def project(episodes, output, calibration=None):
+    def project(episodes, output, calibration=None, telemetry_mode="automatic"):
         assert calibration is None
+        assert telemetry_mode == "exclude_all"
         captured.extend(episodes)
         output.mkdir(parents=True)
 
@@ -108,7 +112,7 @@ def test_review_resume_appends_new_capture_and_builds_only_included(tmp_path, mo
     assert (first.status, first.included, first.excluded, first.pending) == (
         "review_required", 0, 0, 1)
     rows = review_rows(first.review_path)
-    rows[0].update(decision="include", decided_by="owner")
+    rows[0].update(decision="include")
     write_rows(first.review_path, rows)
     insert_capture(run_dir, "b" * 64, "take2")
 
@@ -117,7 +121,7 @@ def test_review_resume_appends_new_capture_and_builds_only_included(tmp_path, mo
         "review_required", 1, 0, 1)
     rows = review_rows(second.review_path)
     assert [row["source_group"] for row in rows] == ["take1", "take2"]
-    rows[1].update(decision="exclude", decided_by="owner")
+    rows[1].update(decision="exclude")
     write_rows(second.review_path, rows)
     captured = []
     fake_package(monkeypatch, captured)
@@ -129,13 +133,13 @@ def test_review_resume_appends_new_capture_and_builds_only_included(tmp_path, mo
     assert len(captured) == 1
     assert captured[0]["internal_qc"]["capture_id"] == "a" * 64
     with sqlite3.connect(run_dir / "run.sqlite") as database:
-        assert database.execute("PRAGMA user_version").fetchone()[0] == 14
+        assert database.execute("PRAGMA user_version").fetchone()[0] == 15
         decisions = database.execute(
-            "SELECT capture_id, status, decided_by, decided_at FROM delivery_decision ORDER BY 1"
+            "SELECT capture_id, status, decided_at FROM delivery_decision ORDER BY 1"
         ).fetchall()
-        assert [(row[0], row[1], row[2]) for row in decisions] == [
-            ("a" * 64, "include", "owner"), ("b" * 64, "exclude", "owner")]
-        assert all(row[3] for row in decisions)
+        assert [(row[0], row[1]) for row in decisions] == [
+            ("a" * 64, "include"), ("b" * 64, "exclude")]
+        assert all(row[2] for row in decisions)
 
 
 def test_episode_ids_are_allocated_once_and_new_captures_append(tmp_path):
@@ -165,6 +169,45 @@ def test_episode_ids_are_allocated_once_and_new_captures_append(tmp_path):
         ).fetchall() == [(first_capture, 1), (second_capture, 2)]
 
 
+def test_schema_14_review_migrates_without_episode_reviewer_or_free_text(tmp_path):
+    run_dir = tmp_path / "run"
+    capture_id = "a" * 64
+    insert_capture(run_dir, capture_id, "take", partial=True)
+    with sqlite3.connect(run_dir / "run.sqlite") as database:
+        database.executescript("""
+            CREATE TABLE delivery_decision (
+                capture_id TEXT PRIMARY KEY, qc_sha256 TEXT NOT NULL,
+                status TEXT NOT NULL, limitations_json TEXT NOT NULL,
+                decided_by TEXT NOT NULL, decided_at TEXT NOT NULL);
+            CREATE TABLE delivery_episode (
+                capture_id TEXT PRIMARY KEY, episode_number INTEGER NOT NULL UNIQUE);
+            PRAGMA user_version = 14;
+        """)
+        qc_sha256 = database.execute(
+            "SELECT json_sha256 FROM qc_artifact WHERE capture_id=?", (capture_id,)
+        ).fetchone()[0]
+        database.execute(
+            "INSERT INTO delivery_decision VALUES (?, ?, 'include', ?, 'old reviewer', ?)",
+            (capture_id, qc_sha256, '["operator text"]', "2026-08-26T00:00:00Z"),
+        )
+
+    _, entries = run_module._delivery_review(run_dir / "run.sqlite", run_dir)
+
+    with sqlite3.connect(run_dir / "run.sqlite") as database:
+        assert database.execute("PRAGMA user_version").fetchone()[0] == 15
+        columns = [row[1] for row in database.execute("PRAGMA table_info(delivery_decision)")]
+        decision = database.execute(
+            "SELECT limitations_json, decided_at FROM delivery_decision"
+        ).fetchone()
+    assert "decided_by" not in columns
+    assert json.loads(decision[0]) == [
+        "1 camera frame is outside IMU coverage (single: 1)."
+    ]
+    assert decision[1] == "2026-08-26T00:00:00Z"
+    assert "decided_by" not in review_rows(run_dir / "review.csv")[0]
+    assert entries[0]["decision"]["limitations"] == json.loads(decision[0])
+
+
 def test_complete_episodes_receive_ids_before_incomplete_candidates(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
@@ -187,11 +230,10 @@ def test_complete_episodes_receive_ids_before_incomplete_candidates(tmp_path):
 @pytest.mark.parametrize(("changes", "message"), [
     ({"capture_layout": "stereo_pair"}, "facts changed or became stale"),
     ({"qc_sha256": "0" * 64}, "facts changed or became stale"),
-    ({"decision": "maybe", "decided_by": "owner"}, "Invalid review decision"),
-    ({"decision": "include"}, "requires decided_by"),
+    ({"decision": "maybe"}, "Invalid review decision"),
     ({"limitations_json": "{"}, "Invalid limitations JSON"),
-    ({"decision": "exclude", "decided_by": "owner",
-      "limitations_json": '["not delivered"]'}, "cannot have supplier limitations"),
+    ({"decision": "exclude", "limitations_json": '["not delivered"]'},
+     "pipeline-controlled"),
 ])
 def test_review_rejects_invalid_or_edited_rows(tmp_path, changes, message):
     source = tmp_path / "source"
@@ -206,6 +248,35 @@ def test_review_rejects_invalid_or_edited_rows(tmp_path, changes, message):
 
     with pytest.raises(RunError, match=message):
         complete_local_delivery(str(source), run_dir, output)
+
+
+def test_changed_qc_replaces_stale_saved_decision_with_pending_review(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    run_dir = tmp_path / "run"
+    output = tmp_path / "delivery"
+    capture_id = "a" * 64
+    insert_capture(run_dir, capture_id, "take")
+    complete_local_delivery(str(source), run_dir, output)
+    rows = review_rows(run_dir / "review.csv")
+    rows[0]["decision"] = "include"
+    write_rows(run_dir / "review.csv", rows)
+    run_module._delivery_review(run_dir / "run.sqlite", run_dir)
+
+    path = run_dir / f"work/{capture_id}/qc_internal.json"
+    changed = build_qc(facts(capture_id, partial=True), path)
+    with sqlite3.connect(run_dir / "run.sqlite") as database:
+        database.execute(
+            """UPDATE qc_artifact SET json_sha256=?, pass_count=?, fail_count=?,
+                      unknown_count=?, not_applicable_count=? WHERE capture_id=?""",
+            (changed.json_sha256, changed.pass_count, changed.fail_count,
+             changed.unknown_count, changed.not_applicable_count, capture_id),
+        )
+
+    result = complete_local_delivery(str(source), run_dir, output)
+
+    assert result.status == "review_required"
+    assert review_rows(run_dir / "review.csv")[0]["decision"] == ""
     assert not output.exists()
 
 
@@ -234,13 +305,13 @@ def test_review_rejects_duplicate_removed_and_blocking_rows(tmp_path):
     complete_local_delivery(str(source), blocked_run, tmp_path / "blocked-output")
     rows = review_rows(blocked_run / "review.csv")
     assert "capture_structure" in rows[0]["blocking_checks"]
-    rows[0].update(decision="include", decided_by="owner")
+    rows[0].update(decision="include")
     write_rows(blocked_run / "review.csv", rows)
     with pytest.raises(RunError, match="Blocking capture cannot be included"):
         complete_local_delivery(str(source), blocked_run, tmp_path / "blocked-output")
 
 
-def test_material_include_requires_human_limitation(tmp_path, monkeypatch):
+def test_material_include_requires_controlled_limitation(tmp_path, monkeypatch):
     source = tmp_path / "source"
     source.mkdir()
     run_dir = tmp_path / "run"
@@ -249,13 +320,14 @@ def test_material_include_requires_human_limitation(tmp_path, monkeypatch):
     complete_local_delivery(str(source), run_dir, output)
     rows = review_rows(run_dir / "review.csv")
     assert "camera_imu_coverage" in rows[0]["material_checks"]
-    rows[0].update(decision="include", decided_by="owner")
+    rows[0].update(decision="include", limitations_json='["operator text"]')
     write_rows(run_dir / "review.csv", rows)
-    with pytest.raises(RunError, match="require declared limitations"):
+    with pytest.raises(RunError, match="pipeline-controlled"):
         complete_local_delivery(str(source), run_dir, output)
 
     rows = review_rows(run_dir / "review.csv")
-    rows[0]["limitations_json"] = '["One camera row is outside native IMU coverage."]'
+    rows[0]["limitations_json"] = (
+        '["1 camera frame is outside IMU coverage (single: 1)."]')
     write_rows(run_dir / "review.csv", rows)
     fake_package(monkeypatch, [])
     assert complete_local_delivery(str(source), run_dir, output).status == "complete"
@@ -309,7 +381,7 @@ def test_review_write_failure_rolls_back_decision_and_can_retry(tmp_path, monkey
     insert_capture(run_dir, "a" * 64, "take")
     complete_local_delivery(str(source), run_dir, tmp_path / "delivery")
     rows = review_rows(run_dir / "review.csv")
-    rows[0].update(decision="exclude", decided_by="owner")
+    rows[0].update(decision="exclude")
     write_rows(run_dir / "review.csv", rows)
     replace = Path.replace
 

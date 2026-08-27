@@ -6,7 +6,15 @@ from typing import Annotated
 
 import typer
 
-from actuate_delivery.run import RunError, RunInputError, _delivery_review, _write_review
+from actuate_delivery.qc import controlled_limitations
+from actuate_delivery.run import (
+    RunError,
+    RunInputError,
+    _delivery_review,
+    _write_review,
+    processing_progress,
+    telemetry_policy,
+)
 from actuate_delivery.workflow import (
     STAGES,
     approve_stage,
@@ -50,10 +58,21 @@ def _show(stage, summary, run_dir):
     if stage == "qc" and (summary["blocking_checks"] or summary["material_checks"]):
         checks = summary["blocking_checks"] + summary["material_checks"]
         typer.echo(f"  Attention required: {', '.join(checks)}")
+    progress = processing_progress(run_dir / "run.sqlite", stage)
+    if progress["total"]:
+        typer.echo(f"  Items: {progress['completed']} of {progress['total']} processed")
+        for item in progress["items"]:
+            elapsed = (f" in {item['elapsed_seconds']:.3f}s"
+                       if item["elapsed_seconds"] is not None else "")
+            typer.echo(f"    {item['label']}: {item['outcome'] or item['status']}{elapsed}")
 
 
-def _review_in_terminal(run_dir: Path, reviewer: str):
-    review_path, _ = _delivery_review(run_dir / "run.sqlite", run_dir)
+def _review_in_terminal(run_dir: Path):
+    review_path, entries = _delivery_review(run_dir / "run.sqlite", run_dir)
+    limitations = {
+        entry["row"]["capture_id"]: controlled_limitations(entry["internal_qc"])
+        for entry in entries
+    }
     with review_path.open(newline="") as file:
         rows = list(csv.DictReader(file))
     for row in rows:
@@ -72,15 +91,14 @@ def _review_in_terminal(run_dir: Path, reviewer: str):
             break
         if decision not in ("include", "exclude"):
             raise RunError(f"Invalid review decision: {decision}")
-        limitation = ""
-        if decision == "include" and row["material_checks"]:
-            limitation = typer.prompt("Supplier-visible limitation").strip()
-            if not limitation:
-                raise RunError("A material QC issue requires a supplier-visible limitation")
+        if decision == "include" and limitations[row["capture_id"]]:
+            typer.echo("  Measured issues recorded automatically:")
+            for limitation in limitations[row["capture_id"]]:
+                typer.echo(f"    - {limitation}")
         row.update({
             "decision": decision,
-            "limitations_json": json.dumps([limitation] if limitation else []),
-            "decided_by": reviewer,
+            "limitations_json": json.dumps(
+                limitations[row["capture_id"]] if decision == "include" else []),
         })
     _write_review(review_path, rows)
     _delivery_review(run_dir / "run.sqlite", run_dir)
@@ -110,9 +128,6 @@ def run(
         raise typer.BadParameter("Required for the final delivery", param_hint="--output")
     if calibration is not None and not calibration.is_file():
         raise typer.BadParameter("Calibration file does not exist", param_hint="--calibration")
-    reviewer = typer.prompt("Operator name").strip()
-    if not reviewer:
-        raise typer.BadParameter("Operator name is required")
     try:
         for stage, name in STAGES:
             current = next(item for item in workflow_state(run_dir) if item["stage"] == stage)
@@ -128,7 +143,7 @@ def run(
                     typer.echo("  Previously approved evidence remains unchanged.")
                     continue
                 if stage == "review" and result.summary["pending"]:
-                    _review_in_terminal(run_dir, reviewer)
+                    _review_in_terminal(run_dir)
                     result = run_stage(source, run_dir, stage)
                     _show(stage, result.summary, run_dir)
                     if result.summary["pending"]:
@@ -137,8 +152,30 @@ def run(
                 if not typer.confirm(f"Approve {name} and continue?", default=False):
                     typer.echo(f"Stopped safely. Resume with the same RUN_DIR: {run_dir}")
                     return
-                approve_stage(run_dir, stage, reviewer)
+                approved_by = ""
+                if stage == "review":
+                    approved_by = typer.prompt(
+                        "Reviewer name (optional, press Enter to skip)",
+                        default="", show_default=False,
+                    ).strip()
+                approve_stage(run_dir, stage, approved_by)
                 continue
+            policy = telemetry_policy(run_dir)
+            if policy["requires_choice"]:
+                typer.echo(
+                    f"Telemetry is available for {policy['episodes_with_telemetry']} of "
+                    f"{policy['included_episodes']} included episodes."
+                )
+                choice = typer.prompt(
+                    "Telemetry [include available/exclude all/stop]", default="stop"
+                ).strip().lower()
+                if choice == "stop":
+                    typer.echo(f"Stopped safely before delivery. Resume with the same RUN_DIR: {run_dir}")
+                    return
+                choices = {"include available": "include_available", "exclude all": "exclude_all"}
+                if choice not in choices:
+                    raise RunError(f"Invalid telemetry choice: {choice}")
+                telemetry_policy(run_dir, choices[choice])
             if not typer.confirm("Build and validate the customer delivery now?", default=False):
                 typer.echo(f"Stopped safely before delivery. Resume with the same RUN_DIR: {run_dir}")
                 return
@@ -164,6 +201,15 @@ def status(run_dir: Path) -> None:
         if item["summary"]:
             for key, value in item["summary"].items():
                 typer.echo(f"  {key.replace('_', ' ')}: {value}")
+        progress = item["progress"]
+        if progress["total"]:
+            typer.echo(f"  progress: {progress['completed']} of {progress['total']}")
+            if progress["current"]:
+                typer.echo(f"  current: {progress['current']['label']}")
+            for work in progress["items"]:
+                elapsed = (f" ({work['elapsed_seconds']:.3f}s)"
+                           if work["elapsed_seconds"] is not None else "")
+                typer.echo(f"    {work['label']}: {work['outcome'] or work['status']}{elapsed}")
     failures = artifact_failures(run_dir)
     if failures:
         typer.echo("failures:")

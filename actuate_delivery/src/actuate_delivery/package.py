@@ -34,9 +34,9 @@ class DeliveryArtifact:
 
 
 EPISODE_FIELDS = (
-    "episode_id", "capture_id", "source_relative_directory", "source_group", "capture_layout",
+    "episode_id", "capture_layout",
     "camera_stream_count", "raw_file_count", "raw_bytes", "preview_count", "preview_bytes",
-    "rig_id", "calibration_id", "native_device_id", "imu_sha256",
+    "native_device_id", "imu_sha256",
     "tel_sha256", "imu_samples", "imu_rate_hz", "camera_duration_min_s",
     "camera_duration_max_s", "timing_coverage_pct_min", "camera_frames_without_imu_mapping",
     "stereo_paired_frames", "stereo_unmatched_frames",
@@ -49,6 +49,11 @@ META_IMU_FIELDS = (
     "first_sample_timestamp_ns", "last_sample_timestamp_ns",
 )
 
+CUSTOMER_QC_FIELDS = {
+    "schema_version", "episode_id", "integrity", "imu", "camera_streams", "timing_basis",
+    "stereo", "telemetry",
+}
+
 
 def _percentage(part, whole):
     return None if not whole else round(part * 100 / whole, 6)
@@ -60,6 +65,28 @@ def _file_hash(path: Path) -> str:
         while block := file.read(1024 * 1024):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _validate_customer_qc(document):
+    required = CUSTOMER_QC_FIELDS - {"stereo", "telemetry"}
+    if set(document) - CUSTOMER_QC_FIELDS or not required <= set(document):
+        raise PackageError("Customer QC contains unsupported fields")
+    if document["schema_version"] != "actuate_delivery.qc_facts.v1":
+        raise PackageError("Customer QC schema is unsupported")
+    forbidden = {"capture_id", "result", "status", "limitations", "human_decision",
+                 "reviewer", "transformations", "tool_versions", "source_path"}
+
+    def inspect(value):
+        if isinstance(value, dict):
+            if forbidden & set(value):
+                raise PackageError("Customer QC contains internal verdict or provenance fields")
+            for child in value.values():
+                inspect(child)
+        elif isinstance(value, list):
+            for child in value:
+                inspect(child)
+
+    inspect(document)
 
 
 def _materialize(source: Path, target: Path, expected_hash: str, expected_size=None) -> None:
@@ -118,7 +145,8 @@ def _calibration(calibration, episode_ids):
 
 
 def project_supplier(
-    episodes: tuple[dict, ...], output: Path, calibration: dict | None = None
+    episodes: tuple[dict, ...], output: Path, calibration: dict | None = None,
+    telemetry_mode: str = "automatic",
 ) -> ProjectionArtifact:
     if not episodes:
         raise PackageError("Supplier projection requires at least one included capture")
@@ -136,6 +164,15 @@ def project_supplier(
     calibration = _calibration(calibration, episode_ids)
     calibration_id = calibration["calibration_id"] if calibration else None
     rig_id = calibration["rig_id"] if calibration else None
+    telemetry_count = sum(
+        episode["internal_qc"]["facts"]["telemetry"]["status"] == "decoded"
+        for episode in episodes)
+    if telemetry_mode == "automatic":
+        if telemetry_count not in (0, len(episodes)):
+            raise PackageError("Partial telemetry requires an explicit dataset policy")
+        telemetry_mode = "include_available" if telemetry_count else "exclude_all"
+    if telemetry_mode not in ("include_available", "exclude_all"):
+        raise PackageError(f"Unsupported telemetry mode: {telemetry_mode}")
 
     rows = []
     documents = {}
@@ -143,6 +180,8 @@ def project_supplier(
     for episode in sorted(episodes, key=lambda item: item["episode_id"]):
         internal = episode["internal_qc"]
         facts = internal["facts"]
+        include_telemetry = (telemetry_mode == "include_available"
+                             and facts["telemetry"]["status"] == "decoded")
         try:
             supplier_qc = _supplier_qc(internal, episode["decision"])
         except (KeyError, StopIteration, QcError) as error:
@@ -151,11 +190,16 @@ def project_supplier(
         capture_id = internal["capture_id"]
         raw_members = []
         for member in facts["source"]["members"]:
-            raw_members.append({
-                "role": member["role"], "camera_stream_id": member["camera_stream_id"],
+            if member["role"] == "telemetry" and not include_telemetry:
+                continue
+            projected = {
+                "role": member["role"],
                 "path": f"raw/{Path(member['relative_path']).name}",
                 "byte_count": member["size_bytes"], "sha256": member["source_sha256"],
-            })
+            }
+            if member["camera_stream_id"] is not None:
+                projected["camera_stream_id"] = member["camera_stream_id"]
+            raw_members.append(projected)
         raw_members.sort(key=lambda member: member["path"])
         if len({member["path"] for member in raw_members}) != len(raw_members):
             raise PackageError(f"Capture has duplicate raw destination names: {capture_id}")
@@ -169,22 +213,24 @@ def project_supplier(
                 "sha256": member["source_sha256"],
             })
 
-        source_integrity = next(check for check in supplier_qc["checks"]
-                                if check["check"] == "source_integrity")
-        source_integrity["evidence"] = {
+        supplier_qc["episode_id"] = episode_id
+        supplier_qc["integrity"] = {
             "raw_file_count": len(raw_members),
             "raw_bytes": sum(member["byte_count"] for member in raw_members),
+            "raw_files": raw_members,
         }
+        if not include_telemetry:
+            supplier_qc.pop("telemetry", None)
 
         camera_streams = []
         for stream in facts["streams"]:
             stream_id = stream["camera_stream_id"]
             video_members = [member for member in raw_members
                              if member["role"] == "video"
-                             and member["camera_stream_id"] == stream_id]
+                             and member.get("camera_stream_id") == stream_id]
             vts_members = [member for member in raw_members
                            if member["role"] == "vts"
-                           and member["camera_stream_id"] == stream_id]
+                           and member.get("camera_stream_id") == stream_id]
             if len(video_members) != 1 or len(vts_members) != 1:
                 raise PackageError(f"Stream is not supplier-complete: {capture_id}/{stream_id}")
             timing = next(item for item in facts["timing"]["streams"]
@@ -212,38 +258,36 @@ def project_supplier(
         imu_member = next(member for member in raw_members if member["role"] == "imu")
         telemetry = facts["telemetry"]
         meta = {
-            "schema_version": "actuate_delivery.meta.v2", "episode_id": episode_id,
-            "capture_id": capture_id,
-            "rig_id": rig_id, "calibration_id": calibration_id,
+            "schema_version": "actuate_delivery.meta.v3", "episode_id": episode_id,
             "capture_layout": facts["capture_layout"],
-            "source": {"relative_directory": episode["source_relative_directory"],
-                       "group": episode["source_group"]},
-            "raw_members": raw_members, "previews": previews, "camera_streams": camera_streams,
+            "raw_members": raw_members, "camera_streams": camera_streams,
             "shared_imu": {"raw_path": imu_member["path"], "sha256": imu_member["sha256"],
                            "sample_count": facts["imu"]["sample_count"], **supplier_native},
-            "telemetry": {"present": telemetry["status"] == "decoded",
-                          "record_count": telemetry.get("record_count")},
-            "stereo": {
+        }
+        if calibration:
+            meta.update(rig_id=rig_id, calibration_id=calibration_id)
+        if previews:
+            meta["previews"] = previews
+        if include_telemetry:
+            meta["telemetry"] = {"record_count": telemetry["record_count"]}
+        if facts["capture_layout"] == "stereo_pair":
+            meta["stereo"] = {
                 "association_basis": "unique_equal_venc_seq",
                 "paired_frames": facts["timing"]["stereo_pair_count"],
                 "unmatched_frames": facts["timing"]["stereo_unmatched_rows"],
-            } if facts["capture_layout"] == "stereo_pair" else None,
-        }
+            }
         durations = [stream["duration_s"] for stream in camera_streams]
         coverage = [stream["timing_coverage_pct"] for stream in camera_streams]
         episode_durations.append(max(durations))
         rows.append({
-            "episode_id": episode_id, "capture_id": capture_id,
-            "source_relative_directory": episode["source_relative_directory"],
-            "source_group": episode["source_group"], "capture_layout": facts["capture_layout"],
+            "episode_id": episode_id, "capture_layout": facts["capture_layout"],
             "camera_stream_count": len(camera_streams), "raw_file_count": len(raw_members),
             "raw_bytes": sum(member["byte_count"] for member in raw_members),
             "preview_count": len(previews),
             "preview_bytes": sum(preview["byte_count"] for preview in previews),
-            "rig_id": rig_id or "", "calibration_id": calibration_id or "",
             "native_device_id": "" if set(native["device_id_hex"]) == {"0"} else native["device_id_hex"],
             "imu_sha256": imu_member["sha256"],
-            "tel_sha256": telemetry.get("source_sha256") or "",
+            "tel_sha256": telemetry.get("source_sha256") if include_telemetry else "",
             "imu_samples": facts["imu"]["sample_count"],
             "imu_rate_hz": native["measured_sample_rate_hz"],
             "camera_duration_min_s": min(durations), "camera_duration_max_s": max(durations),
@@ -257,32 +301,47 @@ def project_supplier(
         documents[episode_id] = (meta, supplier_qc)
 
     layouts = sorted({row["capture_layout"] for row in rows})
-    calibration_text = (
-        f"All episodes reference `{calibration_id}` for `{rig_id}`. The supplied parameters "
-        "are provided for downstream use and were not applied to raw files or timing tables.\n"
-        if calibration else "No calibration file is included in this delivery.\n")
+    layout_text = {"single_video": "monocular", "stereo_pair": "stereo"}
+    preview_section = (
+        "\n## Previews\n\nPreview videos are supplied informational views. Numeric depth or derived "
+        "orientation shown in a preview is not a dataset signal.\n"
+        if any(row["preview_count"] for row in rows) else "")
+    calibration_section = (
+        f"\n## Calibration\n\nAll episodes reference `{calibration_id}` for `{rig_id}`. The supplied "
+        "parameters are provided for downstream use and were not applied to raw files or "
+        "timing tables.\n" if calibration else "")
+    delivered_telemetry = sum(bool(row["tel_sha256"]) for row in rows)
+    telemetry_section = (
+        "Native telemetry is included for every episode.\n\n"
+        if delivered_telemetry == len(rows) else
+        f"Native telemetry is included for {delivered_telemetry} of {len(rows)} episodes. "
+        "Episodes without decoded telemetry contain no telemetry files.\n\n"
+        if delivered_telemetry else "")
+    video_validation = ("Every camera video and every preview video was fully decoded"
+                        if any(row["preview_count"] for row in rows)
+                        else "Every camera video was fully decoded")
+    duration_note = (" (maximum stream duration per episode; stereo streams are not added "
+                     "together)" if "stereo_pair" in layouts else "")
+    measured_facts = ("IMU coverage and stereo association measurements"
+                      if "stereo_pair" in layouts else "IMU coverage measurements")
     readme = (
-        "# Verified stereo dataset\n\n"
+        "# Actuate dataset\n\n"
         f"Episodes: {len(rows)}\n\n"
-        f"Capture layouts: {', '.join(layouts)}\n\n"
+        f"Capture layouts: {', '.join(layout_text[item] for item in layouts)}\n\n"
         f"Raw bytes: {sum(row['raw_bytes'] for row in rows)}\n\n"
-        f"Total camera-duration seconds: {round(sum(episode_durations), 9)} "
-        "(maximum stream duration per episode; stereo streams are not added together)\n\n"
+        f"Total camera-duration seconds: {round(sum(episode_durations), 9)}{duration_note}\n\n"
         "## Contents\n\n"
         "`episodes.csv` is the dataset index. Each episode contains byte-identical source "
-        "files under `raw/`, readable sensor/timing tables under `derived/`, and an optional "
-        "informational video under `previews/`.\n\n"
+        "files under `raw/` and readable sensor, timing, and factual validation files under "
+        "`derived/`.\n\n"
+        + telemetry_section +
         "## Validation\n\n"
-        "Every source file was SHA-256 verified, every camera and preview video was fully "
-        "decoded, and every CSV, JSON, and Parquet output was reopened and cross-checked. "
-        "`episodes.csv`, `meta.json`, and `frame_timing.parquet` retain factual IMU coverage "
-        "and stereo-unmatched-frame measurements. IMU remains at native rate. Timing uses "
+        f"Every source file was SHA-256 verified. {video_validation}, and every CSV, JSON, "
+        "and Parquet output was reopened and cross-checked. "
+        "`episodes.csv`, `meta.json`, `derived/qc.json`, and `frame_timing.parquet` retain factual "
+        f"{measured_facts}. IMU remains at native rate. Timing uses "
         "hardware SOF with Before, After, and Closest IMU references; it is not physical "
-        "synchronization certification.\n\n"
-        "## Calibration\n\n" + calibration_text + "\n"
-        "## Previews\n\n"
-        "Preview videos show stereo views, rendered disparity depth, and IMU orientation. "
-        "They are informational; numeric depth and derived orientation are not dataset signals.\n"
+        "synchronization certification.\n" + calibration_section + preview_section
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=f".{output.name}.", dir=output.parent) as temporary:
@@ -331,9 +390,6 @@ def build_delivery(run_dir: Path, projection: Path, output: Path) -> DeliveryArt
             rows = list(reader)
         if not rows:
             raise PackageError("Supplier projection has no episodes")
-        capture_ids = [row["capture_id"] for row in rows]
-        if len(capture_ids) != len(set(capture_ids)):
-            raise PackageError("Supplier projection contains duplicate capture IDs")
         episode_ids = [row["episode_id"] for row in rows]
         if len(episode_ids) != len(set(episode_ids)):
             raise PackageError("Supplier projection contains duplicate episode IDs")
@@ -373,41 +429,48 @@ def build_delivery(run_dir: Path, projection: Path, output: Path) -> DeliveryArt
                 expected_files.add(relative.as_posix())
             with sqlite3.connect(run_dir / "run.sqlite") as database:
                 database.row_factory = sqlite3.Row
-                if database.execute("PRAGMA user_version").fetchone()[0] != 14:
-                    raise PackageError("Delivery requires a schema-14 run ledger")
+                if database.execute("PRAGMA user_version").fetchone()[0] != 15:
+                    raise PackageError("Delivery requires a schema-15 run ledger")
                 for row in rows:
                     episode_id = row["episode_id"]
-                    capture_id = row["capture_id"]
+                    episode_number = int(episode_id.removeprefix("episode_"))
+                    episode_record = database.execute(
+                        "SELECT capture_id FROM delivery_episode WHERE episode_number=?",
+                        (episode_number,),
+                    ).fetchone()
+                    if episode_record is None:
+                        raise PackageError(f"Supplier episode ID is not in the run ledger: {episode_id}")
+                    capture_id = episode_record[0]
                     source_episode = projection / "episodes" / episode_id
                     meta = json.loads((source_episode / "meta.json").read_text())
                     qc = json.loads((source_episode / "derived/qc.json").read_text())
-                    if meta["schema_version"] != "actuate_delivery.meta.v2":
+                    _validate_customer_qc(qc)
+                    if meta["schema_version"] != "actuate_delivery.meta.v3":
                         raise PackageError(f"Unsupported supplier meta schema: {capture_id}")
-                    if (meta["episode_id"] != episode_id or meta["capture_id"] != capture_id
-                            or qc["capture_id"] != capture_id):
-                        raise PackageError(f"Supplier capture cross-reference changed: {capture_id}")
-                    if (meta["rig_id"] != (calibration["rig_id"] if calibration else None)
-                            or meta["calibration_id"] != (
-                                calibration["calibration_id"] if calibration else None)):
+                    if meta["episode_id"] != episode_id or qc["episode_id"] != episode_id:
+                        raise PackageError(f"Supplier episode cross-reference changed: {episode_id}")
+                    binding = ({"rig_id": calibration["rig_id"],
+                                "calibration_id": calibration["calibration_id"]}
+                               if calibration else {})
+                    if {key: meta[key] for key in binding} != binding or (
+                            not calibration and ({"rig_id", "calibration_id"} & set(meta))):
                         raise PackageError(f"Supplier calibration binding changed: {capture_id}")
-                    episode_number = database.execute(
-                        "SELECT episode_number FROM delivery_episode WHERE capture_id=?",
-                        (capture_id,),
-                    ).fetchone()
-                    if episode_number is None or episode_id != f"episode_{episode_number[0]:06d}":
+                    if episode_id != f"episode_{episode_number:06d}":
                         raise PackageError(f"Supplier episode ID changed from the run ledger: {capture_id}")
-                    if qc["human_decision"]["status"] != "include" or qc["transformations"]:
-                        raise PackageError(f"Delivery requires included untransformed input: {capture_id}")
-                    if (row["source_relative_directory"] != meta["source"]["relative_directory"]
-                            or row["source_group"] != meta["source"]["group"]
-                            or row["capture_layout"] != meta["capture_layout"]):
-                        raise PackageError(f"Supplier source metadata changed: {capture_id}")
+                    decision = database.execute(
+                        "SELECT status FROM delivery_decision WHERE capture_id=?", (capture_id,)
+                    ).fetchone()
+                    if not decision or decision[0] != "include" or row["capture_layout"] != meta["capture_layout"]:
+                        raise PackageError(f"Delivery requires an included episode: {capture_id}")
 
                     target_episode = staging / "episodes" / episode_id
                     (target_episode / "derived").mkdir(parents=True)
                     (target_episode / "meta.json").write_bytes(
                         (source_episode / "meta.json").read_bytes())
                     expected_files.add(f"episodes/{episode_id}/meta.json")
+                    (target_episode / "derived/qc.json").write_bytes(
+                        (source_episode / "derived/qc.json").read_bytes())
+                    expected_files.add(f"episodes/{episode_id}/derived/qc.json")
 
                     members = meta["raw_members"]
                     source_members = [dict(member) for member in database.execute(
@@ -417,11 +480,18 @@ def build_delivery(run_dir: Path, projection: Path, output: Path) -> DeliveryArt
                            JOIN source_file USING (source_item_id)
                            WHERE capture_id=? AND is_canonical=1 ORDER BY relative_path""",
                         (capture_id,))]
-                    expected_members = [{
-                        "role": member["role"], "camera_stream_id": member["camera_stream_id"],
-                        "path": f"raw/{Path(member['relative_path']).name}",
-                        "byte_count": member["size_bytes"], "sha256": member["source_sha256"],
-                    } for member in source_members]
+                    expected_members = []
+                    for member in source_members:
+                        if member["role"] == "telemetry" and "telemetry" not in meta:
+                            continue
+                        expected = {
+                            "role": member["role"],
+                            "path": f"raw/{Path(member['relative_path']).name}",
+                            "byte_count": member["size_bytes"], "sha256": member["source_sha256"],
+                        }
+                        if member["camera_stream_id"] is not None:
+                            expected["camera_stream_id"] = member["camera_stream_id"]
+                        expected_members.append(expected)
                     source_capture = database.execute(
                         """SELECT parent_path, capture_key FROM capture_snapshot
                            WHERE capture_id=? AND is_canonical=1""", (capture_id,)).fetchone()
@@ -460,17 +530,16 @@ def build_delivery(run_dir: Path, projection: Path, output: Path) -> DeliveryArt
                         verify_video(target, index, preview["sha256"])
                         index.unlink()
                         expected_files.add(f"episodes/{episode_id}/{preview['path']}")
-                    if meta["previews"] != expected_previews:
+                    if meta.get("previews", []) != expected_previews:
                         raise PackageError(f"Supplier previews changed from the run ledger: {capture_id}")
                     if (int(row["preview_count"]) != len(expected_previews)
                             or int(row["preview_bytes"]) != sum(
                                 item["byte_count"] for item in expected_previews)):
                         raise PackageError(f"Supplier preview summary changed: {capture_id}")
-                    source_integrity = next(check for check in qc["checks"]
-                                            if check["check"] == "source_integrity")
-                    if source_integrity["evidence"] != {
+                    if qc["integrity"] != {
                             "raw_file_count": len(members),
-                            "raw_bytes": sum(member["byte_count"] for member in members)}:
+                            "raw_bytes": sum(member["byte_count"] for member in members),
+                            "raw_files": members}:
                         raise PackageError(f"Supplier source integrity summary changed: {capture_id}")
 
                     imu = database.execute(
@@ -489,7 +558,7 @@ def build_delivery(run_dir: Path, projection: Path, output: Path) -> DeliveryArt
                         _materialize(run_dir / relative, target_episode / "derived" / name,
                                      artifact["parquet_sha256"])
                         expected_files.add(f"episodes/{episode_id}/derived/{name}")
-                    if meta["telemetry"]["present"]:
+                    if "telemetry" in meta:
                         if not telemetry or telemetry["status"] != "decoded":
                             raise PackageError(f"Supplier telemetry is not ready: {capture_id}")
                         relative = Path(telemetry["parquet_relative_path"])
@@ -511,6 +580,12 @@ def build_delivery(run_dir: Path, projection: Path, output: Path) -> DeliveryArt
                             or imu_metadata[b"source_sha256"].decode() != shared_imu["sha256"]
                             or row["imu_sha256"] != shared_imu["sha256"]):
                         raise PackageError(f"Supplier IMU facts do not match Parquet: {capture_id}")
+                    if qc["imu"] != {
+                            "sample_count": shared_imu["sample_count"],
+                            "measured_sample_rate_hz": shared_imu["measured_sample_rate_hz"],
+                            "first_sample_timestamp_ns": shared_imu["first_sample_timestamp_ns"],
+                            "last_sample_timestamp_ns": shared_imu["last_sample_timestamp_ns"]}:
+                        raise PackageError(f"Customer QC IMU facts changed: {capture_id}")
 
                     timing_path = target_episode / "derived/frame_timing.parquet"
                     stream_facts = {item["camera_stream_id"]: item for item in timing_stream_facts(
@@ -519,12 +594,27 @@ def build_delivery(run_dir: Path, projection: Path, output: Path) -> DeliveryArt
                         raise PackageError(f"Supplier timing row count changed: {capture_id}")
                     if int(row["camera_stream_count"]) != len(meta["camera_streams"]):
                         raise PackageError(f"Supplier camera stream count changed: {capture_id}")
+                    qc_streams = {item["camera_stream_id"]: item for item in qc["camera_streams"]}
                     for stream in meta["camera_streams"]:
                         stream_id = stream["camera_stream_id"]
                         facts = stream_facts.get(stream_id)
                         if (facts is None or facts["matched_rows"] != stream["timing_matched_frames"]
                                 or facts["coverage_rows"] != stream["timing_covered_frames"]):
                             raise PackageError(f"Supplier timing facts changed: {capture_id}/{stream_id}")
+                        qc_stream = qc_streams.get(stream_id)
+                        if qc_stream is None or qc_stream["video"] != {
+                                "codec": stream["codec"], "width": stream["width"],
+                                "height": stream["height"], "fps": stream["fps"],
+                                "duration_s": stream["duration_s"],
+                                "decoded_frames": stream["decoded_frames"],
+                                "full_decode_completed": True} or qc_stream["vts_frames"] != stream["vts_frames"]:
+                            raise PackageError(f"Customer QC video facts changed: {capture_id}/{stream_id}")
+                        expected_timing = {key: facts[key] for key in (
+                            "row_count", "matched_rows", "coverage_rows",
+                            "outside_imu_coverage_rows", "video_only_rows", "vts_only_rows",
+                            "outside_imu_coverage_ranges", "video_vts_mismatch_ranges")}
+                        if qc_stream["timing"] != expected_timing:
+                            raise PackageError(f"Customer QC timing facts changed: {capture_id}/{stream_id}")
                         if (stream["raw_video_path"] not in member_paths
                                 or stream["preferred_video_path"] != stream["raw_video_path"]):
                             raise PackageError(f"Supplier preferred video path changed: {capture_id}/{stream_id}")
@@ -538,15 +628,32 @@ def build_delivery(run_dir: Path, projection: Path, output: Path) -> DeliveryArt
                                 or round(video.duration_ns / 1e9, 9) != stream["duration_s"]
                                 or video.audio_stream_count != stream["audio"]["stream_count"]):
                             raise PackageError(f"Supplier video facts changed: {capture_id}/{stream_id}")
-                    if meta["telemetry"]["present"]:
+                    if "telemetry" in meta:
                         tel_rows = pq.read_metadata(
                             target_episode / "derived/telemetry.parquet").num_rows
                         if (tel_rows != telemetry["record_count"]
                                 or tel_rows != meta["telemetry"]["record_count"]
                                 or row["tel_sha256"] != telemetry["source_sha256"]):
                             raise PackageError(f"Supplier telemetry facts changed: {capture_id}")
+                        if qc.get("telemetry") != {"record_count": tel_rows}:
+                            raise PackageError(f"Customer QC telemetry facts changed: {capture_id}")
                     elif row["tel_sha256"]:
                         raise PackageError(f"Supplier manifest has unexpected telemetry: {capture_id}")
+                    elif "telemetry" in qc:
+                        raise PackageError(f"Customer QC has unexpected telemetry: {capture_id}")
+                    if "stereo" in meta:
+                        expected_stereo = {
+                            "association_basis": meta["stereo"]["association_basis"],
+                            "paired_frames": meta["stereo"]["paired_frames"],
+                            "unmatched_frames": meta["stereo"]["unmatched_frames"],
+                            "unmatched_ranges": {
+                                stream_id: stream_facts[stream_id]["stereo_unmatched_ranges"]
+                                for stream_id in sorted(stream_facts)},
+                        }
+                        if qc.get("stereo") != expected_stereo:
+                            raise PackageError(f"Customer QC stereo facts changed: {capture_id}")
+                    elif "stereo" in qc:
+                        raise PackageError(f"Customer QC has unexpected stereo facts: {capture_id}")
 
             actual_files = {
                 path.relative_to(staging).as_posix()
