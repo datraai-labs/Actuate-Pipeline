@@ -45,7 +45,9 @@ def _show(stage, summary, run_dir):
                 f"    {failure['episode']} - {failure['stage']}{stream}: {failure['message']}"
             )
     if stage == "inventory" and summary["incomplete_captures"]:
-        typer.echo(f"  Attention required: {summary['incomplete_captures']} incomplete candidate(s)")
+        typer.echo(
+            f"  Attention required: {summary['incomplete_captures']} incomplete candidate(s)"
+        )
     if stage == "timing" and (summary["unavailable"] or summary["failed"]):
         typer.echo(
             f"  Attention required: {summary['unavailable']} unavailable and "
@@ -62,8 +64,9 @@ def _show(stage, summary, run_dir):
     if progress["total"]:
         typer.echo(f"  Items: {progress['completed']} of {progress['total']} processed")
         for item in progress["items"]:
-            elapsed = (f" in {item['elapsed_seconds']:.3f}s"
-                       if item["elapsed_seconds"] is not None else "")
+            elapsed = (
+                f" in {item['elapsed_seconds']:.3f}s" if item["elapsed_seconds"] is not None else ""
+            )
             typer.echo(f"    {item['label']}: {item['outcome'] or item['status']}{elapsed}")
 
 
@@ -78,10 +81,14 @@ def _review_in_terminal(run_dir: Path):
     for row in rows:
         if row["grouping_status"] != "complete" or row["decision"]:
             continue
-        typer.echo(f"\n{row['episode_id']} - {row['source_relative_directory']}/{row['source_group']}")
+        typer.echo(
+            f"\n{row['episode_id']} - {row['source_relative_directory']}/{row['source_group']}"
+        )
         typer.echo(f"  layout: {row['capture_layout']}")
-        typer.echo(f"  QC: {row['pass_count']} pass, {row['fail_count']} fail, "
-                   f"{row['unknown_count']} unknown")
+        typer.echo(
+            f"  QC: {row['pass_count']} pass, {row['fail_count']} fail, "
+            f"{row['unknown_count']} unknown"
+        )
         if row["blocking_checks"]:
             typer.echo(f"  blocking checks: {row['blocking_checks']}")
         if row["material_checks"]:
@@ -95,11 +102,14 @@ def _review_in_terminal(run_dir: Path):
             typer.echo("  Measured issues recorded automatically:")
             for limitation in limitations[row["capture_id"]]:
                 typer.echo(f"    - {limitation}")
-        row.update({
-            "decision": decision,
-            "limitations_json": json.dumps(
-                limitations[row["capture_id"]] if decision == "include" else []),
-        })
+        row.update(
+            {
+                "decision": decision,
+                "limitations_json": json.dumps(
+                    limitations[row["capture_id"]] if decision == "include" else []
+                ),
+            }
+        )
     _write_review(review_path, rows)
     _delivery_review(run_dir / "run.sqlite", run_dir)
 
@@ -137,8 +147,7 @@ def run(
             if stage != "delivery":
                 result = run_stage(source, run_dir, stage)
                 _show(stage, result.summary, run_dir)
-                current = next(item for item in workflow_state(run_dir)
-                               if item["stage"] == stage)
+                current = next(item for item in workflow_state(run_dir) if item["stage"] == stage)
                 if current["approved"]:
                     typer.echo("  Previously approved evidence remains unchanged.")
                     continue
@@ -156,7 +165,8 @@ def run(
                 if stage == "review":
                     approved_by = typer.prompt(
                         "Reviewer name (optional, press Enter to skip)",
-                        default="", show_default=False,
+                        default="",
+                        show_default=False,
                     ).strip()
                 approve_stage(run_dir, stage, approved_by)
                 continue
@@ -166,18 +176,24 @@ def run(
                     f"Telemetry is available for {policy['episodes_with_telemetry']} of "
                     f"{policy['included_episodes']} included episodes."
                 )
-                choice = typer.prompt(
-                    "Telemetry [include available/exclude all/stop]", default="stop"
-                ).strip().lower()
+                choice = (
+                    typer.prompt("Telemetry [include available/exclude all/stop]", default="stop")
+                    .strip()
+                    .lower()
+                )
                 if choice == "stop":
-                    typer.echo(f"Stopped safely before delivery. Resume with the same RUN_DIR: {run_dir}")
+                    typer.echo(
+                        f"Stopped safely before delivery. Resume with the same RUN_DIR: {run_dir}"
+                    )
                     return
                 choices = {"include available": "include_available", "exclude all": "exclude_all"}
                 if choice not in choices:
                     raise RunError(f"Invalid telemetry choice: {choice}")
                 telemetry_policy(run_dir, choices[choice])
             if not typer.confirm("Build and validate the customer delivery now?", default=False):
-                typer.echo(f"Stopped safely before delivery. Resume with the same RUN_DIR: {run_dir}")
+                typer.echo(
+                    f"Stopped safely before delivery. Resume with the same RUN_DIR: {run_dir}"
+                )
                 return
             if calibration is not None:
                 bind_calibration(run_dir, json.loads(calibration.read_text()))
@@ -207,8 +223,11 @@ def status(run_dir: Path) -> None:
             if progress["current"]:
                 typer.echo(f"  current: {progress['current']['label']}")
             for work in progress["items"]:
-                elapsed = (f" ({work['elapsed_seconds']:.3f}s)"
-                           if work["elapsed_seconds"] is not None else "")
+                elapsed = (
+                    f" ({work['elapsed_seconds']:.3f}s)"
+                    if work["elapsed_seconds"] is not None
+                    else ""
+                )
                 typer.echo(f"    {work['label']}: {work['outcome'] or work['status']}{elapsed}")
     failures = artifact_failures(run_dir)
     if failures:

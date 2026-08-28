@@ -18,25 +18,37 @@ def write_imu(path, timestamps=(100, 200, 300)):
 
 
 def write_video(path, count):
-    pq.write_table(pa.table({
-        "video_frame_index": range(count),
-        "mp4_pts_ns": [index * 10 for index in range(count)],
-    }), path)
+    pq.write_table(
+        pa.table(
+            {
+                "video_frame_index": range(count),
+                "mp4_pts_ns": [index * 10 for index in range(count)],
+            }
+        ),
+        path,
+    )
     return sha256(path.read_bytes()).hexdigest()
 
 
 def write_vts(path, sequences, timestamps):
     header = struct.pack("<8sIIqiHH", b"TRIVTS01", 4, 30000, 0, 0, 0, 0)
-    rows = [struct.pack("<IQIQIII", frame, timestamp, sequence, frame * 10, 5000, 15, 26000)
-            for frame, (sequence, timestamp) in enumerate(zip(sequences, timestamps, strict=True))]
+    rows = [
+        struct.pack("<IQIQIII", frame, timestamp, sequence, frame * 10, 5000, 15, 26000)
+        for frame, (sequence, timestamp) in enumerate(zip(sequences, timestamps, strict=True))
+    ]
     return write_hash(path, header + b"".join(rows))
 
 
 def stream(tmp_path, name, sequences, timestamps, video_count=None):
     vts = tmp_path / f"{name}.vts"
     video = tmp_path / f"{name}.parquet"
-    return TimingStream(name, vts, write_vts(vts, sequences, timestamps),
-                        video, write_video(video, video_count or len(sequences)))
+    return TimingStream(
+        name,
+        vts,
+        write_vts(vts, sequences, timestamps),
+        video,
+        write_video(video, video_count or len(sequences)),
+    )
 
 
 def test_before_after_closest_coverage_and_outer_rows(tmp_path):
@@ -49,13 +61,27 @@ def test_before_after_closest_coverage_and_outer_rows(tmp_path):
 
     assert (artifact.row_count, artifact.matched_rows, artifact.coverage_rows) == (5, 4, 2)
     assert [row["mapping_status"] for row in rows] == [
-        "outside_imu_coverage", "mapped", "mapped", "outside_imu_coverage", "no_vts"]
-    assert (rows[0]["before_imu_index"], rows[0]["after_delta_ns"],
-            rows[0]["closest_imu_index"]) == (None, 50, 0)
-    assert (rows[1]["before_delta_ns"], rows[1]["after_delta_ns"],
-            rows[1]["closest_imu_index"]) == (-50, 50, 0)
-    assert (rows[2]["before_imu_index"], rows[2]["after_imu_index"],
-            rows[2]["closest_delta_ns"]) == (1, 1, 0)
+        "outside_imu_coverage",
+        "mapped",
+        "mapped",
+        "outside_imu_coverage",
+        "no_vts",
+    ]
+    assert (
+        rows[0]["before_imu_index"],
+        rows[0]["after_delta_ns"],
+        rows[0]["closest_imu_index"],
+    ) == (None, 50, 0)
+    assert (
+        rows[1]["before_delta_ns"],
+        rows[1]["after_delta_ns"],
+        rows[1]["closest_imu_index"],
+    ) == (-50, 50, 0)
+    assert (
+        rows[2]["before_imu_index"],
+        rows[2]["after_imu_index"],
+        rows[2]["closest_delta_ns"],
+    ) == (1, 1, 0)
     assert rows[4]["vts_match_status"] == "video_only"
 
 

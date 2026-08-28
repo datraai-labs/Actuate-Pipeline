@@ -33,8 +33,11 @@ def vts_bytes(version=4, frames=(0, 1), timestamps=(100, 200)):
         elif version in (2, 3):
             rows.append(struct.pack("<IQIQ", frame, timestamp, frame + 3, timestamp // 1000))
         else:
-            rows.append(struct.pack(
-                "<IQIQIII", frame, timestamp, frame + 3, timestamp // 1000, 5000, 15, 26000))
+            rows.append(
+                struct.pack(
+                    "<IQIQIII", frame, timestamp, frame + 3, timestamp // 1000, 5000, 15, 26000
+                )
+            )
     return header + b"".join(rows)
 
 
@@ -43,8 +46,10 @@ def tel_bytes(timestamps=(100, 200), declared=None):
     header = bytearray(32)
     struct.pack_into("<8sIII", header, 0, b"TRTEL01\0", 1, 32, count)
     header[24:32] = b"device01"
-    rows = [struct.pack("<QiIIHBB", timestamp, 33910 + row, 0, 10240, 30, 0, 1)
-            for row, timestamp in enumerate(timestamps)]
+    rows = [
+        struct.pack("<QiIIHBB", timestamp, 33910 + row, 0, 10240, 30, 0, 1)
+        for row, timestamp in enumerate(timestamps)
+    ]
     return bytes(header) + b"".join(rows)
 
 
@@ -65,8 +70,12 @@ def test_every_documented_vts_version_decodes(tmp_path, version):
     assert data.frame_rate_milli == 30000
     assert data.entries["frame_number"].tolist() == [0, 1]
     if version >= 3:
-        assert (data.master_clock_offset_ns, data.clock_skew_ppb,
-                data.sync_quality_us, data.sync_flags) == (-9, 4, 2, 3)
+        assert (
+            data.master_clock_offset_ns,
+            data.clock_skew_ppb,
+            data.sync_quality_us,
+            data.sync_flags,
+        ) == (-9, 4, 2, 3)
     else:
         assert (data.master_clock_offset_ns, data.sync_flags) == (0, 0)
 
@@ -152,14 +161,70 @@ def test_run_reuses_sidecars_and_rejects_changed_tel_artifact(tmp_path):
 def test_duplicate_vts_and_tel_members_fail_without_selection(tmp_path):
     run_dir = tmp_path / "run"
     files = (
-        FileFact("a.vts", "a.vts", ".", "vts", "take", "left", 1, 1,
-                 "local", ".", "application/octet-stream", None, None, True),
-        FileFact("b.vts", "b.vts", ".", "vts", "take", "left", 1, 1,
-                 "local", ".", "application/octet-stream", None, None, True),
-        FileFact("a.tel", "a.tel", ".", "telemetry", "take", None, 1, 1,
-                 "local", ".", "application/octet-stream", None, None, True),
-        FileFact("b.tel", "b.tel", ".", "telemetry", "take", None, 1, 1,
-                 "local", ".", "application/octet-stream", None, None, True),
+        FileFact(
+            "a.vts",
+            "a.vts",
+            ".",
+            "vts",
+            "take",
+            "left",
+            1,
+            1,
+            "local",
+            ".",
+            "application/octet-stream",
+            None,
+            None,
+            True,
+        ),
+        FileFact(
+            "b.vts",
+            "b.vts",
+            ".",
+            "vts",
+            "take",
+            "left",
+            1,
+            1,
+            "local",
+            ".",
+            "application/octet-stream",
+            None,
+            None,
+            True,
+        ),
+        FileFact(
+            "a.tel",
+            "a.tel",
+            ".",
+            "telemetry",
+            "take",
+            None,
+            1,
+            1,
+            "local",
+            ".",
+            "application/octet-stream",
+            None,
+            None,
+            True,
+        ),
+        FileFact(
+            "b.tel",
+            "b.tel",
+            ".",
+            "telemetry",
+            "take",
+            None,
+            1,
+            1,
+            "local",
+            ".",
+            "application/octet-stream",
+            None,
+            None,
+            True,
+        ),
     )
     inventory = SourceInventory("file:///source", files, group_captures(files))
     open_run(inventory.source_identity, run_dir)
@@ -168,8 +233,7 @@ def test_duplicate_vts_and_tel_members_fail_without_selection(tmp_path):
         PreservedFile(file.source_item_id, str(index) * 64, "new")
         for index, file in enumerate(files, 1)
     )
-    store_preservation(
-        run_dir / "run.sqlite", (preserved, ((".", "take", "f" * 64, True),), 0))
+    store_preservation(run_dir / "run.sqlite", (preserved, ((".", "take", "f" * 64, True),), 0))
     process_imus(run_dir / "run.sqlite", run_dir)
 
     assert process_sidecars(run_dir / "run.sqlite", run_dir) == (0, 0, 1, 0, 0, 1)

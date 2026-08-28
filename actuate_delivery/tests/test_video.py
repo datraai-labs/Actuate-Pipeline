@@ -18,14 +18,32 @@ from actuate_delivery.video import VideoError, verify_video
 
 
 def probe_json(video_count=1):
-    videos = [{"index": index, "codec_type": "video", "codec_name": "hevc",
-               "width": 1920, "height": 1080, "pix_fmt": "yuv420p",
-               "time_base": "1/1000", "avg_frame_rate": "30/1",
-               "nb_frames": "3", "duration": "0.067"}
-              for index in range(video_count)]
-    audio = {"index": video_count, "codec_type": "audio", "codec_name": "aac",
-             "sample_rate": "48000", "channels": 2, "channel_layout": "stereo",
-             "time_base": "1/48000", "duration_ts": 3216, "duration": "0.067"}
+    videos = [
+        {
+            "index": index,
+            "codec_type": "video",
+            "codec_name": "hevc",
+            "width": 1920,
+            "height": 1080,
+            "pix_fmt": "yuv420p",
+            "time_base": "1/1000",
+            "avg_frame_rate": "30/1",
+            "nb_frames": "3",
+            "duration": "0.067",
+        }
+        for index in range(video_count)
+    ]
+    audio = {
+        "index": video_count,
+        "codec_type": "audio",
+        "codec_name": "aac",
+        "sample_rate": "48000",
+        "channels": 2,
+        "channel_layout": "stereo",
+        "time_base": "1/48000",
+        "duration_ts": 3216,
+        "duration": "0.067",
+    }
     return json.dumps({"streams": [*videos, audio], "format": {"format_name": "mov,mp4"}})
 
 
@@ -79,7 +97,8 @@ def test_declared_frame_count_is_preserved_but_enumerated_frames_are_used(tmp_pa
     install_fake_tools(monkeypatch, json.dumps(probe))
 
     artifact = verify_video(
-        source, tmp_path / "frames.parquet", sha256(source.read_bytes()).hexdigest())
+        source, tmp_path / "frames.parquet", sha256(source.read_bytes()).hexdigest()
+    )
     facts = json.loads(artifact.facts_json)
 
     assert artifact.frame_count == 3
@@ -127,16 +146,43 @@ def test_missing_tool_decode_failure_and_wrong_hash_publish_nothing(tmp_path, mo
 
 def test_duplicate_video_stream_fails_without_choosing_a_member(tmp_path):
     run_dir = tmp_path / "run"
-    first = FileFact("a.mp4", "a.mp4", ".", "video", "take", "left", 1, 1,
-                     "local", ".", "video/mp4", None, None, True)
-    second = FileFact("b.mp4", "b.mp4", ".", "video", "take", "left", 1, 1,
-                      "local", ".", "video/mp4", None, None, True)
+    first = FileFact(
+        "a.mp4",
+        "a.mp4",
+        ".",
+        "video",
+        "take",
+        "left",
+        1,
+        1,
+        "local",
+        ".",
+        "video/mp4",
+        None,
+        None,
+        True,
+    )
+    second = FileFact(
+        "b.mp4",
+        "b.mp4",
+        ".",
+        "video",
+        "take",
+        "left",
+        1,
+        1,
+        "local",
+        ".",
+        "video/mp4",
+        None,
+        None,
+        True,
+    )
     inventory = SourceInventory("file:///source", (first, second), group_captures((first, second)))
     open_run(inventory.source_identity, run_dir)
     store_inventory(run_dir / "run.sqlite", inventory, inventory)
     preservation = (
-        (PreservedFile("a.mp4", "a" * 64, "new"),
-         PreservedFile("b.mp4", "b" * 64, "new")),
+        (PreservedFile("a.mp4", "a" * 64, "new"), PreservedFile("b.mp4", "b" * 64, "new")),
         ((".", "take", "c" * 64, True),),
         0,
     )
@@ -145,7 +191,9 @@ def test_duplicate_video_stream_fails_without_choosing_a_member(tmp_path):
     process_sidecars(run_dir / "run.sqlite", run_dir)
 
     assert process_videos(run_dir / "run.sqlite", run_dir) == (0, 0, 1)
-    error = sqlite3.connect(run_dir / "run.sqlite").execute(
-        "SELECT error FROM video_artifact"
-    ).fetchone()[0]
+    error = (
+        sqlite3.connect(run_dir / "run.sqlite")
+        .execute("SELECT error FROM video_artifact")
+        .fetchone()[0]
+    )
     assert error == "Camera stream has 2 video members; expected one"

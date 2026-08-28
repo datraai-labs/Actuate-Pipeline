@@ -95,10 +95,22 @@ class DeliveryRunResult:
 
 
 REVIEW_FIELDS = (
-    "episode_id", "capture_id", "source_relative_directory", "source_group", "capture_layout",
-    "grouping_status", "qc_sha256", "pass_count", "fail_count", "unknown_count",
-    "not_applicable_count", "blocking_checks", "material_checks", "decision",
-    "limitations_json", "decided_at",
+    "episode_id",
+    "capture_id",
+    "source_relative_directory",
+    "source_group",
+    "capture_layout",
+    "grouping_status",
+    "qc_sha256",
+    "pass_count",
+    "fail_count",
+    "unknown_count",
+    "not_applicable_count",
+    "blocking_checks",
+    "material_checks",
+    "decision",
+    "limitations_json",
+    "decided_at",
 )
 REVIEW_FACT_FIELDS = REVIEW_FIELDS[:13]
 LEGACY_REVIEW_FIELDS = (*REVIEW_FIELDS[:-1], "decided_by", REVIEW_FIELDS[-1])
@@ -140,14 +152,22 @@ def _start_progress(database, stage: str, item_key: str):
     return monotonic()
 
 
-def _finish_progress(database, stage: str, item_key: str, started: float,
-                     outcome: str, error: str | None = None):
+def _finish_progress(
+    database, stage: str, item_key: str, started: float, outcome: str, error: str | None = None
+):
     status = "failed" if error else "complete"
     database.execute(
         """UPDATE processing_item SET status=?, outcome=?, completed_at=?,
                   elapsed_seconds=?, error=? WHERE stage=? AND item_key=?""",
-        (status, outcome, datetime.now(UTC).isoformat(), round(monotonic() - started, 3),
-         error, stage, item_key),
+        (
+            status,
+            outcome,
+            datetime.now(UTC).isoformat(),
+            round(monotonic() - started, 3),
+            error,
+            stage,
+            item_key,
+        ),
     )
     database.commit()
 
@@ -157,16 +177,25 @@ def processing_progress(database_path: Path, stage: str):
         return {"completed": 0, "total": 0, "current": None, "items": []}
     with sqlite3.connect(database_path) as database:
         database.row_factory = sqlite3.Row
-        tables = {row[0] for row in database.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {
+            row[0] for row in database.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
         if "processing_item" not in tables:
             return {"completed": 0, "total": 0, "current": None, "items": []}
-        items = [dict(row) for row in database.execute(
-            "SELECT * FROM processing_item WHERE stage=? ORDER BY ordinal", (stage,))]
+        items = [
+            dict(row)
+            for row in database.execute(
+                "SELECT * FROM processing_item WHERE stage=? ORDER BY ordinal", (stage,)
+            )
+        ]
     terminal = {"complete", "failed", "interrupted"}
     current = next((item for item in items if item["status"] == "running"), None)
-    return {"completed": sum(item["status"] in terminal for item in items),
-            "total": len(items), "current": current, "items": items}
+    return {
+        "completed": sum(item["status"] in terminal for item in items),
+        "total": len(items),
+        "current": current,
+        "items": items,
+    }
 
 
 def interrupt_progress(database_path: Path, stage: str, error: str):
@@ -203,8 +232,7 @@ def stage_progress_items(database_path: Path, stage: str):
             """SELECT capture_id, parent_path, capture_key FROM capture_snapshot
                WHERE is_canonical=1 ORDER BY parent_path, capture_key"""
         ).fetchall()
-    return [(capture_id, f"{parent}/{key}" if parent else key)
-            for capture_id, parent, key in rows]
+    return [(capture_id, f"{parent}/{key}" if parent else key) for capture_id, parent, key in rows]
 
 
 def open_run(source: str, run_dir: Path) -> str:
@@ -236,15 +264,11 @@ def open_run(source: str, run_dir: Path) -> str:
 
         if version not in range(1, 16):
             raise RuntimeError(f"Unsupported run database version: {version}")
-        stored = database.execute(
-            "SELECT run_id, source FROM run WHERE singleton = 1"
-        ).fetchone()
+        stored = database.execute("SELECT run_id, source FROM run WHERE singleton = 1").fetchone()
         assert stored is not None
         run_id, stored_source = stored
         if stored_source != source:
-            raise SourceMismatchError(
-                f"Run directory belongs to {stored_source!r}, not {source!r}"
-            )
+            raise SourceMismatchError(f"Run directory belongs to {stored_source!r}, not {source!r}")
         database.execute(
             "UPDATE run SET last_resumed_at = ? WHERE singleton = 1",
             (datetime.now(UTC).isoformat(),),
@@ -274,8 +298,8 @@ def load_previous_source_metadata(
             "SELECT source_item_id, size_bytes, source_checksum_algorithm, source_checksum "
             "FROM source_file WHERE present=1"
         ).fetchall()
-    return {item_id: (size, algorithm, checksum)
-            for item_id, size, algorithm, checksum in rows}
+    return {item_id: (size, algorithm, checksum) for item_id, size, algorithm, checksum in rows}
+
 
 def store_inventory(
     database_path: Path, inventory: SourceInventory, selected: SourceInventory
@@ -397,24 +421,52 @@ def store_inventory(
                     THEN source_file.cache_relative_path END,
                 preservation_status=NULL
             """,
-            [(file.source_item_id, file.relative_path, file.parent_path, file.role,
-              file.size_bytes, file.modified_time_ns,
-              int(file.source_item_id in selected_ids),
-              file.source_type, file.parent_source_item_id, file.mime_type,
-              file.source_checksum_algorithm, file.source_checksum, int(file.can_download))
-             for file in inventory.files],
+            [
+                (
+                    file.source_item_id,
+                    file.relative_path,
+                    file.parent_path,
+                    file.role,
+                    file.size_bytes,
+                    file.modified_time_ns,
+                    int(file.source_item_id in selected_ids),
+                    file.source_type,
+                    file.parent_source_item_id,
+                    file.mime_type,
+                    file.source_checksum_algorithm,
+                    file.source_checksum,
+                    int(file.can_download),
+                )
+                for file in inventory.files
+            ],
         )
         database.executemany(
             "INSERT INTO capture_candidate VALUES (?, ?, ?, ?, ?)",
-            [(capture.parent_path, capture.capture_key, capture.capture_layout,
-              capture.grouping_status, len(capture.members)) for capture in selected.captures],
+            [
+                (
+                    capture.parent_path,
+                    capture.capture_key,
+                    capture.capture_layout,
+                    capture.grouping_status,
+                    len(capture.members),
+                )
+                for capture in selected.captures
+            ],
         )
         database.executemany(
             "INSERT INTO capture_member VALUES (?, ?, ?, ?)",
-            [(file.source_item_id, capture.parent_path, capture.capture_key,
-              file.camera_stream_id)
-             for capture in selected.captures for file in capture.members],
+            [
+                (
+                    file.source_item_id,
+                    capture.parent_path,
+                    capture.capture_key,
+                    file.camera_stream_id,
+                )
+                for capture in selected.captures
+                for file in capture.members
+            ],
         )
+
 
 def store_preservation(database_path: Path, preservation: Preservation) -> None:
     files, captures, _ = preservation
@@ -426,11 +478,19 @@ def store_preservation(database_path: Path, preservation: Preservation) -> None:
             """UPDATE source_file
                SET source_sha256 = ?, cache_relative_path = ?, preservation_status = ?
                WHERE source_item_id = ? AND present = 1 AND selected = 1""",
-            [(file.source_sha256, f"cache/blobs/{file.source_sha256}", file.change,
-              file.source_item_id) for file in files],
+            [
+                (
+                    file.source_sha256,
+                    f"cache/blobs/{file.source_sha256}",
+                    file.change,
+                    file.source_item_id,
+                )
+                for file in files
+            ],
         )
         assert cursor.rowcount == len(files)
         database.executemany("INSERT INTO capture_snapshot VALUES (?, ?, ?, ?)", captures)
+
 
 def process_imus(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
     with sqlite3.connect(database_path) as database:
@@ -481,8 +541,15 @@ def process_imus(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
                     _finish_progress(database, "sensors", item_key, started, "reused")
                     continue
                 artifact = convert_imu(run_dir / imus[0][1], output, source_hash)
-                result = (source_hash, "decoded", relative, artifact.parquet_sha256,
-                          artifact.sample_count, None, capture_id)
+                result = (
+                    source_hash,
+                    "decoded",
+                    relative,
+                    artifact.parquet_sha256,
+                    artifact.sample_count,
+                    None,
+                    capture_id,
+                )
                 decoded += 1
             except (OSError, ImuError) as error:
                 result = (source_hash, "failed", None, None, None, str(error), capture_id)
@@ -496,9 +563,14 @@ def process_imus(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
                    sample_count=excluded.sample_count, error=excluded.error""",
                 (result[-1], *result[:-1]),
             )
-            _finish_progress(database, "sensors", item_key, started,
-                             "decoded" if result[1] == "decoded" else "failed",
-                             result[-2])
+            _finish_progress(
+                database,
+                "sensors",
+                item_key,
+                started,
+                "decoded" if result[1] == "decoded" else "failed",
+                result[-2],
+            )
     return decoded, reused, failed
 
 
@@ -543,7 +615,9 @@ def process_sidecars(database_path: Path, run_dir: Path) -> tuple[int, int, int,
             source_hash = members[0][0] if len(members) == 1 else None
             try:
                 if len(members) != 1:
-                    raise SidecarError(f"Camera stream has {len(members)} VTS members; expected one")
+                    raise SidecarError(
+                        f"Camera stream has {len(members)} VTS members; expected one"
+                    )
                 prior = database.execute(
                     "SELECT source_sha256, status FROM vts_artifact WHERE capture_id=? AND camera_stream_id=?",
                     (capture_id, stream),
@@ -555,15 +629,36 @@ def process_sidecars(database_path: Path, run_dir: Path) -> tuple[int, int, int,
                 data = decode_vts(run_dir / members[0][1], source_hash)
                 field = "timestamp_ns" if data.version == 1 else "sof_timestamp_ns"
                 usable = data.entries[field][data.entries[field] != 0]
-                result = (source_hash, "decoded", data.version, data.frame_rate_milli,
-                          len(data.entries), int(usable[0]) if len(usable) else None,
-                          int(usable[-1]) if len(usable) else None,
-                          data.master_clock_offset_ns, data.clock_skew_ppb,
-                          data.sync_quality_us, data.sync_flags, None)
+                result = (
+                    source_hash,
+                    "decoded",
+                    data.version,
+                    data.frame_rate_milli,
+                    len(data.entries),
+                    int(usable[0]) if len(usable) else None,
+                    int(usable[-1]) if len(usable) else None,
+                    data.master_clock_offset_ns,
+                    data.clock_skew_ppb,
+                    data.sync_quality_us,
+                    data.sync_flags,
+                    None,
+                )
                 vts_decoded += 1
             except (OSError, SidecarError) as error:
-                result = (source_hash, "failed", None, None, None, None, None,
-                          None, None, None, None, str(error))
+                result = (
+                    source_hash,
+                    "failed",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    str(error),
+                )
                 vts_failed += 1
             database.execute(
                 """INSERT INTO vts_artifact VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -578,9 +673,14 @@ def process_sidecars(database_path: Path, run_dir: Path) -> tuple[int, int, int,
                    error=excluded.error""",
                 (capture_id, stream, *result),
             )
-            _finish_progress(database, "sensors", item_key, started,
-                             "decoded" if result[1] == "decoded" else "failed",
-                             result[-1])
+            _finish_progress(
+                database,
+                "sensors",
+                item_key,
+                started,
+                "decoded" if result[1] == "decoded" else "failed",
+                result[-1],
+            )
 
         rows = database.execute(
             """SELECT capture_id, source_sha256, cache_relative_path
@@ -613,8 +713,14 @@ def process_sidecars(database_path: Path, run_dir: Path) -> tuple[int, int, int,
                     _finish_progress(database, "sensors", item_key, started, "reused")
                     continue
                 artifact = convert_tel(run_dir / members[0][1], output, source_hash)
-                result = (source_hash, "decoded", relative, artifact.parquet_sha256,
-                          artifact.record_count, None)
+                result = (
+                    source_hash,
+                    "decoded",
+                    relative,
+                    artifact.parquet_sha256,
+                    artifact.record_count,
+                    None,
+                )
                 tel_decoded += 1
             except (OSError, SidecarError) as error:
                 result = (source_hash, "failed", None, None, None, str(error))
@@ -627,9 +733,14 @@ def process_sidecars(database_path: Path, run_dir: Path) -> tuple[int, int, int,
                    record_count=excluded.record_count, error=excluded.error""",
                 (capture_id, *result),
             )
-            _finish_progress(database, "sensors", item_key, started,
-                             "decoded" if result[1] == "decoded" else "failed",
-                             result[-1])
+            _finish_progress(
+                database,
+                "sensors",
+                item_key,
+                started,
+                "decoded" if result[1] == "decoded" else "failed",
+                result[-1],
+            )
     return vts_decoded, vts_reused, vts_failed, tel_decoded, tel_reused, tel_failed
 
 
@@ -672,10 +783,13 @@ def process_videos(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
             relative = f"work/{capture_id}/video_{stream}_frames.parquet"
             try:
                 if len(members) != 1:
-                    raise VideoError(f"Camera stream has {len(members)} video members; expected one")
+                    raise VideoError(
+                        f"Camera stream has {len(members)} video members; expected one"
+                    )
                 prior = database.execute(
                     "SELECT source_sha256, frame_index_sha256, status FROM video_artifact "
-                    "WHERE capture_id=? AND camera_stream_id=?", (capture_id, stream),
+                    "WHERE capture_id=? AND camera_stream_id=?",
+                    (capture_id, stream),
                 ).fetchone()
                 output = run_dir / relative
                 if prior and prior[0] == source_hash and prior[2] == "verified":
@@ -685,14 +799,38 @@ def process_videos(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
                     _finish_progress(database, "video", item_key, started, "reused")
                     continue
                 artifact = verify_video(run_dir / members[0][1], output, source_hash)
-                result = (source_hash, "verified", relative, artifact.parquet_sha256,
-                          artifact.frame_count, artifact.codec, artifact.width, artifact.height,
-                          artifact.average_frame_rate, artifact.duration_ns,
-                          artifact.audio_stream_count, artifact.facts_json, None)
+                result = (
+                    source_hash,
+                    "verified",
+                    relative,
+                    artifact.parquet_sha256,
+                    artifact.frame_count,
+                    artifact.codec,
+                    artifact.width,
+                    artifact.height,
+                    artifact.average_frame_rate,
+                    artifact.duration_ns,
+                    artifact.audio_stream_count,
+                    artifact.facts_json,
+                    None,
+                )
                 verified += 1
             except (OSError, VideoError) as error:
-                result = (source_hash, "failed", None, None, None, None, None, None,
-                          None, None, None, None, str(error))
+                result = (
+                    source_hash,
+                    "failed",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    str(error),
+                )
                 failed += 1
             database.execute(
                 """INSERT INTO video_artifact VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -707,9 +845,14 @@ def process_videos(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
                    facts_json=excluded.facts_json, error=excluded.error""",
                 (capture_id, stream, *result),
             )
-            _finish_progress(database, "video", item_key, started,
-                             "verified" if result[1] == "verified" else "failed",
-                             result[-1])
+            _finish_progress(
+                database,
+                "video",
+                item_key,
+                started,
+                "verified" if result[1] == "verified" else "failed",
+                result[-1],
+            )
     return verified, reused, failed
 
 
@@ -741,7 +884,8 @@ def process_timing(database_path: Path, run_dir: Path) -> tuple[int, int, int, i
             expected = {"single_video": ("single",), "stereo_pair": ("left", "right")}.get(layout)
             inputs = database.execute(
                 "SELECT parquet_relative_path, parquet_sha256 FROM imu_artifact "
-                "WHERE capture_id=? AND status='decoded'", (capture_id,),
+                "WHERE capture_id=? AND status='decoded'",
+                (capture_id,),
             ).fetchall()
             streams = []
             reason = None if expected else "capture layout is incomplete or ambiguous"
@@ -769,40 +913,73 @@ def process_timing(database_path: Path, run_dir: Path) -> tuple[int, int, int, i
                     if len(video) != 1 or video[0][2] != "verified":
                         reason = f"verified video artifact is unavailable for {stream_id}"
                         break
-                    streams.append(TimingStream(
-                        stream_id, run_dir / vts[0][1], vts[0][0],
-                        run_dir / video[0][0], video[0][1],
-                    ))
+                    streams.append(
+                        TimingStream(
+                            stream_id,
+                            run_dir / vts[0][1],
+                            vts[0][0],
+                            run_dir / video[0][0],
+                            video[0][1],
+                        )
+                    )
             values = (None, "unavailable", None, None, None, None, None, None, None, reason)
             if reason is not None:
                 unavailable += 1
             else:
                 parts = ["frame_timing.v1", inputs[0][1]]
                 for stream in streams:
-                    parts.extend((stream.camera_stream_id, stream.vts_sha256,
-                                  stream.video_index_sha256))
+                    parts.extend(
+                        (stream.camera_stream_id, stream.vts_sha256, stream.video_index_sha256)
+                    )
                 signature = sha256("|".join(parts).encode()).hexdigest()
                 relative = f"work/{capture_id}/frame_timing.parquet"
                 output = run_dir / relative
                 prior = database.execute(
                     "SELECT input_signature, parquet_sha256, status FROM timing_artifact "
-                    "WHERE capture_id=?", (capture_id,),
+                    "WHERE capture_id=?",
+                    (capture_id,),
                 ).fetchone()
                 try:
                     if prior and prior[0] == signature and prior[2] == "ready":
-                        if not output.is_file() or sha256(output.read_bytes()).hexdigest() != prior[1]:
-                            raise TimingError("Published frame timing Parquet changed after verification")
+                        if (
+                            not output.is_file()
+                            or sha256(output.read_bytes()).hexdigest() != prior[1]
+                        ):
+                            raise TimingError(
+                                "Published frame timing Parquet changed after verification"
+                            )
                         reused += 1
                         _finish_progress(database, "timing", capture_id, started, "reused")
                         continue
                     artifact = build_timing(
-                        run_dir / inputs[0][0], inputs[0][1], tuple(streams), output)
-                    values = (signature, "ready", relative, artifact.parquet_sha256,
-                              artifact.row_count, artifact.matched_rows, artifact.coverage_rows,
-                              artifact.stereo_pair_count, artifact.stereo_unmatched_rows, None)
+                        run_dir / inputs[0][0], inputs[0][1], tuple(streams), output
+                    )
+                    values = (
+                        signature,
+                        "ready",
+                        relative,
+                        artifact.parquet_sha256,
+                        artifact.row_count,
+                        artifact.matched_rows,
+                        artifact.coverage_rows,
+                        artifact.stereo_pair_count,
+                        artifact.stereo_unmatched_rows,
+                        None,
+                    )
                     created += 1
                 except (OSError, TimingError) as error:
-                    values = (signature, "failed", None, None, None, None, None, None, None, str(error))
+                    values = (
+                        signature,
+                        "failed",
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        str(error),
+                    )
                     failed += 1
             database.execute(
                 """INSERT INTO timing_artifact VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -814,8 +991,14 @@ def process_timing(database_path: Path, run_dir: Path) -> tuple[int, int, int, i
                    stereo_unmatched_rows=excluded.stereo_unmatched_rows, reason=excluded.reason""",
                 (capture_id, *values),
             )
-            _finish_progress(database, "timing", capture_id, started, values[1],
-                             values[-1] if values[1] == "failed" else None)
+            _finish_progress(
+                database,
+                "timing",
+                capture_id,
+                started,
+                values[1],
+                values[-1] if values[1] == "failed" else None,
+            )
     return created, reused, unavailable, failed
 
 
@@ -846,14 +1029,17 @@ def process_qc(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
         for capture in captures:
             capture_id = capture["capture_id"]
             started = _start_progress(database, "qc", capture_id)
-            members = [dict(row) for row in database.execute(
-                """SELECT relative_path, role, camera_stream_id, size_bytes, source_sha256,
+            members = [
+                dict(row)
+                for row in database.execute(
+                    """SELECT relative_path, role, camera_stream_id, size_bytes, source_sha256,
                           cache_relative_path
                    FROM capture_snapshot JOIN capture_member USING (parent_path, capture_key)
                    JOIN source_file USING (source_item_id)
                    WHERE capture_id=? AND is_canonical=1 ORDER BY relative_path""",
-                (capture_id,),
-            )]
+                    (capture_id,),
+                )
+            ]
             verified = sum(
                 len(member["source_sha256"] or "") == 64
                 and member["cache_relative_path"] == f"cache/blobs/{member['source_sha256']}"
@@ -875,12 +1061,19 @@ def process_qc(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
                           stereo_unmatched_rows, reason FROM timing_artifact WHERE capture_id=?""",
                 (capture_id,),
             ).fetchone()
-            expected = {"single_video": ("single",), "stereo_pair": ("left", "right")}.get(capture["capture_layout"])
-            stream_ids = expected or tuple(row[0] for row in database.execute(
-                """SELECT DISTINCT camera_stream_id FROM capture_snapshot
+            expected = {"single_video": ("single",), "stereo_pair": ("left", "right")}.get(
+                capture["capture_layout"]
+            )
+            stream_ids = expected or tuple(
+                row[0]
+                for row in database.execute(
+                    """SELECT DISTINCT camera_stream_id FROM capture_snapshot
                    JOIN capture_member USING (parent_path, capture_key)
                    WHERE capture_id=? AND is_canonical=1 AND camera_stream_id IS NOT NULL
-                   ORDER BY camera_stream_id""", (capture_id,)))
+                   ORDER BY camera_stream_id""",
+                    (capture_id,),
+                )
+            )
             streams = []
             for stream_id in stream_ids:
                 vts_row = database.execute(
@@ -902,22 +1095,30 @@ def process_qc(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
                 video = dict(video_row) if video_row else {"status": "missing"}
                 if video.get("facts_json") is not None:
                     video["probe"] = json.loads(video.pop("facts_json"))
-                streams.append({"camera_stream_id": stream_id,
-                                "vts": dict(vts_row) if vts_row else {"status": "missing"},
-                                "video": video})
+                streams.append(
+                    {
+                        "camera_stream_id": stream_id,
+                        "vts": dict(vts_row) if vts_row else {"status": "missing"},
+                        "video": video,
+                    }
+                )
             facts = {
                 "capture_id": capture_id,
                 "capture_layout": capture["capture_layout"],
                 "grouping_status": capture["grouping_status"],
-                "source": {"file_count": len(members),
-                           "bytes": sum(member["size_bytes"] for member in members),
-                           "verified_members": verified,
-                           "all_hashes_verified_in_current_run": verified == len(members),
-                           "members": members},
+                "source": {
+                    "file_count": len(members),
+                    "bytes": sum(member["size_bytes"] for member in members),
+                    "verified_members": verified,
+                    "all_hashes_verified_in_current_run": verified == len(members),
+                    "members": members,
+                },
                 "imu": dict(imu_row) if imu_row else {"status": "missing"},
                 "streams": streams,
                 "telemetry": dict(tel_row) if tel_row else {"status": "absent"},
-                "timing": dict(timing_row) if timing_row else {"status": "unavailable", "reason": "not processed"},
+                "timing": dict(timing_row)
+                if timing_row
+                else {"status": "unavailable", "reason": "not processed"},
             }
             encoded = json.dumps(facts, sort_keys=True, separators=(",", ":"), allow_nan=False)
             signature = sha256(f"qc_builder.v3|{encoded}".encode()).hexdigest()
@@ -926,46 +1127,67 @@ def process_qc(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
             prior = database.execute(
                 """SELECT input_signature, json_sha256, status, pass_count, fail_count,
                           unknown_count, not_applicable_count FROM qc_artifact
-                   WHERE capture_id=?""", (capture_id,),
+                   WHERE capture_id=?""",
+                (capture_id,),
             ).fetchone()
             try:
                 if facts["imu"]["status"] == "decoded":
                     imu_members = [member for member in members if member["role"] == "imu"]
                     if len(imu_members) != 1:
-                        raise QcError("Decoded IMU artifact does not have exactly one source member")
+                        raise QcError(
+                            "Decoded IMU artifact does not have exactly one source member"
+                        )
                     member = imu_members[0]
-                    native = decode_imu(run_dir / member["cache_relative_path"], member["source_sha256"])
+                    native = decode_imu(
+                        run_dir / member["cache_relative_path"], member["source_sha256"]
+                    )
                     first = int(native.samples["timestamp_ns"][0])
                     last = int(native.samples["timestamp_ns"][-1])
                     if len(native.samples) != facts["imu"]["sample_count"]:
                         raise QcError("Decoded IMU sample count changed before QC")
                     facts["imu"]["native"] = {
-                        "version": native.version, "declared_sample_rate_hz": native.sample_rate_hz,
+                        "version": native.version,
+                        "declared_sample_rate_hz": native.sample_rate_hz,
                         "accel_full_scale_code": native.accel_fs,
                         "gyro_full_scale_code": native.gyro_fs,
                         "header_start_time_ns": native.start_time_ns,
-                        "video_start_time_ns": native.video_start_ns, "flags": native.flags,
+                        "video_start_time_ns": native.video_start_ns,
+                        "flags": native.flags,
                         "device_id_hex": native.device_id.hex(),
                         "ios_clock_offset_ns": native.ios_host_offset_ns,
                         "reserved_header_hex": native.reserved_header.hex(),
-                        "first_sample_timestamp_ns": first, "last_sample_timestamp_ns": last,
-                        "measured_sample_rate_hz": None if len(native.samples) == 1 else round(
-                            (len(native.samples) - 1) * 1_000_000_000 / (last - first), 6),
+                        "first_sample_timestamp_ns": first,
+                        "last_sample_timestamp_ns": last,
+                        "measured_sample_rate_hz": None
+                        if len(native.samples) == 1
+                        else round((len(native.samples) - 1) * 1_000_000_000 / (last - first), 6),
                     }
                 if facts["timing"]["status"] == "ready":
                     facts["timing"]["streams"] = timing_stream_facts(
                         run_dir / facts["timing"]["parquet_relative_path"],
-                        facts["timing"]["parquet_sha256"])
+                        facts["timing"]["parquet_sha256"],
+                    )
                 if prior and prior["input_signature"] == signature and prior["status"] == "ready":
-                    if not output.is_file() or sha256(output.read_bytes()).hexdigest() != prior["json_sha256"]:
+                    if (
+                        not output.is_file()
+                        or sha256(output.read_bytes()).hexdigest() != prior["json_sha256"]
+                    ):
                         raise QcError("Published internal QC JSON changed after verification")
                     reused += 1
                     _finish_progress(database, "qc", capture_id, started, "reused")
                     continue
                 artifact = build_qc(facts, output)
-                values = (signature, "ready", relative, artifact.json_sha256, artifact.pass_count, artifact.fail_count,
-                          artifact.unknown_count,
-                          artifact.not_applicable_count, None)
+                values = (
+                    signature,
+                    "ready",
+                    relative,
+                    artifact.json_sha256,
+                    artifact.pass_count,
+                    artifact.fail_count,
+                    artifact.unknown_count,
+                    artifact.not_applicable_count,
+                    None,
+                )
                 created += 1
             except (OSError, TypeError, ValueError) as error:
                 values = (signature, "failed", None, None, None, None, None, None, str(error))
@@ -979,8 +1201,14 @@ def process_qc(database_path: Path, run_dir: Path) -> tuple[int, int, int]:
                    not_applicable_count=excluded.not_applicable_count, reason=excluded.reason""",
                 (capture_id, *values),
             )
-            _finish_progress(database, "qc", capture_id, started, values[1],
-                             values[-1] if values[1] == "failed" else None)
+            _finish_progress(
+                database,
+                "qc",
+                capture_id,
+                started,
+                values[1],
+                values[-1] if values[1] == "failed" else None,
+            )
     return created, reused, failed
 
 
@@ -1026,12 +1254,16 @@ def _delivery_review(database_path: Path, run_dir: Path):
                 COMMIT;"""
             )
         elif version in (12, 13, 14):
-            episode_migration = "" if version == 14 else """
+            episode_migration = (
+                ""
+                if version == 14
+                else """
                 CREATE TABLE delivery_episode (
                     capture_id TEXT PRIMARY KEY CHECK (length(capture_id) = 64),
                     episode_number INTEGER NOT NULL UNIQUE
                         CHECK (episode_number BETWEEN 1 AND 999999)
                 );"""
+            )
             database.executescript(
                 f"""BEGIN IMMEDIATE;
                 ALTER TABLE delivery_decision RENAME TO delivery_decision_with_reviewer;
@@ -1071,9 +1303,9 @@ def _delivery_review(database_path: Path, run_dir: Path):
         ).fetchone()[0]
         if len(records) != current_count:
             raise RunError("Every current capture must have ready QC before delivery review")
-        episode_numbers = dict(database.execute(
-            "SELECT capture_id, episode_number FROM delivery_episode"
-        ).fetchall())
+        episode_numbers = dict(
+            database.execute("SELECT capture_id, episode_number FROM delivery_episode").fetchall()
+        )
         next_episode_number = max(episode_numbers.values(), default=0)
         for record in records:
             if record["capture_id"] in episode_numbers:
@@ -1109,26 +1341,39 @@ def _delivery_review(database_path: Path, run_dir: Path):
                 "material_checks": "|".join(material),
             }
             current[record["capture_id"]] = {
-                "row": row, "internal_qc": internal,
-                "parent_path": record["parent_path"], "capture_key": record["capture_key"],
+                "row": row,
+                "internal_qc": internal,
+                "parent_path": record["parent_path"],
+                "capture_key": record["capture_key"],
             }
 
-        prior = {row["capture_id"]: dict(row) for row in database.execute(
-            "SELECT * FROM delivery_decision")}
+        prior = {
+            row["capture_id"]: dict(row)
+            for row in database.execute("SELECT * FROM delivery_decision")
+        }
         if review_path.exists():
             with review_path.open(newline="") as file:
                 reader = csv.DictReader(file)
                 fields = tuple(reader.fieldnames or ())
                 accepted_fields = (
-                    REVIEW_FIELDS, REVIEW_FIELDS[1:],
-                    LEGACY_REVIEW_FIELDS, LEGACY_REVIEW_FIELDS[1:],
+                    REVIEW_FIELDS,
+                    REVIEW_FIELDS[1:],
+                    LEGACY_REVIEW_FIELDS,
+                    LEGACY_REVIEW_FIELDS[1:],
                 )
                 if fields not in accepted_fields:
                     raise RunError("Review sheet columns changed")
                 rows = list(reader)
             if fields in (REVIEW_FIELDS[1:], LEGACY_REVIEW_FIELDS[1:]):
-                rows = [{"episode_id": current.get(row["capture_id"], {
-                    "row": {"episode_id": ""}})["row"]["episode_id"], **row} for row in rows]
+                rows = [
+                    {
+                        "episode_id": current.get(row["capture_id"], {"row": {"episode_id": ""}})[
+                            "row"
+                        ]["episode_id"],
+                        **row,
+                    }
+                    for row in rows
+                ]
             legacy_review = "decided_by" in fields
             if legacy_review:
                 for row in rows:
@@ -1140,16 +1385,25 @@ def _delivery_review(database_path: Path, run_dir: Path):
                     raise RunError(f"Review sheet has duplicate capture: {capture_id}")
                 seen.add(capture_id)
                 if capture_id not in current:
-                    raise RunError(f"Review sheet contains a capture that is no longer current: {capture_id}")
+                    raise RunError(
+                        f"Review sheet contains a capture that is no longer current: {capture_id}"
+                    )
                 existing = prior.get(capture_id)
-                if (row["qc_sha256"] != current[capture_id]["row"]["qc_sha256"]
-                        and existing and row["qc_sha256"] == existing["qc_sha256"]):
+                if (
+                    row["qc_sha256"] != current[capture_id]["row"]["qc_sha256"]
+                    and existing
+                    and row["qc_sha256"] == existing["qc_sha256"]
+                ):
                     continue
-                if any(row[field] != current[capture_id]["row"][field]
-                       for field in REVIEW_FACT_FIELDS):
+                if any(
+                    row[field] != current[capture_id]["row"][field] for field in REVIEW_FACT_FIELDS
+                ):
                     raise RunError(f"Review sheet facts changed or became stale: {capture_id}")
-                expected_time = existing["decided_at"] if (
-                    existing and existing["qc_sha256"] == row["qc_sha256"]) else ""
+                expected_time = (
+                    existing["decided_at"]
+                    if (existing and existing["qc_sha256"] == row["qc_sha256"])
+                    else ""
+                )
                 if row["decided_at"] != expected_time:
                     raise RunError(f"Review decision time was edited: {capture_id}")
                 status = row["decision"].strip()
@@ -1157,28 +1411,39 @@ def _delivery_review(database_path: Path, run_dir: Path):
                     limitations = json.loads(row["limitations_json"] or "[]")
                 except json.JSONDecodeError as error:
                     raise RunError(f"Invalid limitations JSON for {capture_id}: {error}") from error
-                if (not isinstance(limitations, list)
-                        or any(not isinstance(item, str) or not item.strip() for item in limitations)):
-                    raise RunError(f"Limitations must be a JSON list of non-empty strings: {capture_id}")
+                if not isinstance(limitations, list) or any(
+                    not isinstance(item, str) or not item.strip() for item in limitations
+                ):
+                    raise RunError(
+                        f"Limitations must be a JSON list of non-empty strings: {capture_id}"
+                    )
                 limitations = [item.strip() for item in limitations]
                 if status not in ("", "include", "exclude"):
                     raise RunError(f"Invalid review decision for {capture_id}: {status!r}")
                 if not status:
                     if limitations:
                         raise RunError(f"Pending decision has human fields: {capture_id}")
-                    database.execute("DELETE FROM delivery_decision WHERE capture_id=?", (capture_id,))
+                    database.execute(
+                        "DELETE FROM delivery_decision WHERE capture_id=?", (capture_id,)
+                    )
                     continue
                 if status == "include" and current[capture_id]["row"]["blocking_checks"]:
                     raise RunError(f"Blocking capture cannot be included: {capture_id}")
-                expected_limitations = (controlled_limitations(
-                    current[capture_id]["internal_qc"]) if status == "include" else [])
+                expected_limitations = (
+                    controlled_limitations(current[capture_id]["internal_qc"])
+                    if status == "include"
+                    else []
+                )
                 if legacy_review:
                     limitations = expected_limitations
                 elif limitations != expected_limitations:
                     raise RunError(f"Review limitations are pipeline-controlled: {capture_id}")
                 values = (status, json.dumps(limitations, separators=(",", ":")))
-                unchanged = (existing and existing["qc_sha256"] == row["qc_sha256"]
-                             and status == existing["status"])
+                unchanged = (
+                    existing
+                    and existing["qc_sha256"] == row["qc_sha256"]
+                    and status == existing["status"]
+                )
                 decided_at = existing["decided_at"] if unchanged else datetime.now(UTC).isoformat()
                 database.execute(
                     """INSERT INTO delivery_decision VALUES (?, ?, ?, ?, ?)
@@ -1191,20 +1456,26 @@ def _delivery_review(database_path: Path, run_dir: Path):
             entry = current.get(capture_id)
             if not entry or existing["qc_sha256"] != entry["row"]["qc_sha256"]:
                 continue
-            limitations = (controlled_limitations(entry["internal_qc"])
-                           if existing["status"] == "include" else [])
+            limitations = (
+                controlled_limitations(entry["internal_qc"])
+                if existing["status"] == "include"
+                else []
+            )
             database.execute(
                 "UPDATE delivery_decision SET limitations_json=? WHERE capture_id=?",
                 (json.dumps(limitations, separators=(",", ":")), capture_id),
             )
-        decisions = {row["capture_id"]: dict(row) for row in database.execute(
-            "SELECT * FROM delivery_decision")}
+        decisions = {
+            row["capture_id"]: dict(row)
+            for row in database.execute("SELECT * FROM delivery_decision")
+        }
         output_rows = []
         for capture_id, entry in current.items():
             decision = decisions.get(capture_id)
             if decision and decision["qc_sha256"] == entry["row"]["qc_sha256"]:
                 entry["decision"] = {
-                    "status": decision["status"], "decided_at": decision["decided_at"],
+                    "status": decision["status"],
+                    "decided_at": decision["decided_at"],
                     "limitations": json.loads(decision["limitations_json"]),
                 }
                 human = {
@@ -1236,18 +1507,22 @@ def _telemetry_policy(database_path: Path, included, choice=None):
         for capture_id in capture_ids:
             row = database.execute(
                 """SELECT status, source_sha256, parquet_sha256 FROM tel_artifact
-                   WHERE capture_id=?""", (capture_id,),
+                   WHERE capture_id=?""",
+                (capture_id,),
             ).fetchone()
             artifacts.append((capture_id, *(row or ("absent", None, None))))
-        signature = sha256(json.dumps(
-            artifacts, separators=(",", ":")).encode()).hexdigest()
+        signature = sha256(json.dumps(artifacts, separators=(",", ":")).encode()).hexdigest()
         available = sum(row[1] == "decoded" for row in artifacts)
-        coverage = "all" if available == len(capture_ids) else "none" if not available else "partial"
+        coverage = (
+            "all" if available == len(capture_ids) else "none" if not available else "partial"
+        )
         if coverage != "partial":
             database.execute("DELETE FROM telemetry_policy")
             return {
-                "coverage": coverage, "included_episodes": len(capture_ids),
-                "episodes_with_telemetry": available, "requires_choice": False,
+                "coverage": coverage,
+                "included_episodes": len(capture_ids),
+                "episodes_with_telemetry": available,
+                "requires_choice": False,
                 "choice": "include_available" if coverage == "all" else "exclude_all",
             }
         if choice is not None:
@@ -1265,17 +1540,23 @@ def _telemetry_policy(database_path: Path, included, choice=None):
         ).fetchone()
         effective = stored[1] if stored and stored[0] == signature else None
         return {
-            "coverage": coverage, "included_episodes": len(capture_ids),
-            "episodes_with_telemetry": available, "requires_choice": effective is None,
+            "coverage": coverage,
+            "included_episodes": len(capture_ids),
+            "episodes_with_telemetry": available,
+            "requires_choice": effective is None,
             "choice": effective,
         }
 
 
 def telemetry_policy(run_dir: Path, choice=None):
     _, entries = _delivery_review(run_dir / "run.sqlite", run_dir)
-    included = [entry for entry in entries
-                if entry["row"]["grouping_status"] == "complete"
-                and entry["decision"] and entry["decision"]["status"] == "include"]
+    included = [
+        entry
+        for entry in entries
+        if entry["row"]["grouping_status"] == "complete"
+        and entry["decision"]
+        and entry["decision"]["status"] == "include"
+    ]
     return _telemetry_policy(run_dir / "run.sqlite", included, choice)
 
 
@@ -1290,38 +1571,64 @@ def complete_local_delivery(source: str, run_dir: Path, output: Path) -> Deliver
         review_path, entries = _delivery_review(run_dir / "run.sqlite", run_dir)
         eligible = [entry for entry in entries if entry["row"]["grouping_status"] == "complete"]
         pending = sum(entry["decision"] is None for entry in eligible)
-        included = [entry for entry in eligible
-                    if entry["decision"] and entry["decision"]["status"] == "include"]
+        included = [
+            entry
+            for entry in eligible
+            if entry["decision"] and entry["decision"]["status"] == "include"
+        ]
         excluded = len(entries) - pending - len(included)
         if pending:
-            return DeliveryRunResult("review_required", review_path, len(included), excluded, pending, None)
+            return DeliveryRunResult(
+                "review_required", review_path, len(included), excluded, pending, None
+            )
         if not included:
             return DeliveryRunResult("no_captures_included", review_path, 0, excluded, 0, None)
         policy = _telemetry_policy(run_dir / "run.sqlite", included)
         if policy["requires_choice"]:
             return DeliveryRunResult(
-                "telemetry_choice_required", review_path, len(included), excluded, 0, None)
+                "telemetry_choice_required", review_path, len(included), excluded, 0, None
+            )
         with sqlite3.connect(run_dir / "run.sqlite") as database:
             database.row_factory = sqlite3.Row
-            episodes = tuple({
-                "episode_id": entry["row"]["episode_id"],
-                "internal_qc": entry["internal_qc"],
-                "source_relative_directory": entry["parent_path"],
-                "source_group": entry["capture_key"],
-                "vendor_visualizations": _vendor_visualizations(
-                    database, entry["parent_path"], entry["capture_key"]),
-                "decision": entry["decision"],
-            } for entry in included)
+            episodes = tuple(
+                {
+                    "episode_id": entry["row"]["episode_id"],
+                    "internal_qc": entry["internal_qc"],
+                    "source_relative_directory": entry["parent_path"],
+                    "source_group": entry["capture_key"],
+                    "vendor_visualizations": _vendor_visualizations(
+                        database, entry["parent_path"], entry["capture_key"]
+                    ),
+                    "decision": entry["decision"],
+                }
+                for entry in included
+            )
         calibration_path = run_dir / "calibration.json"
-        calibration = json.loads(calibration_path.read_text()) if calibration_path.is_file() else None
-        signature = sha256(json.dumps([
-            {"episode_id": entry["row"]["episode_id"],
-             "capture_id": entry["row"]["capture_id"],
-             "qc_sha256": entry["row"]["qc_sha256"], "decision": entry["decision"]}
-            for entry in included
-        ] + [{"projection_builder": "customer_facts.v1",
-              "calibration": calibration, "telemetry_policy": policy}],
-            sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        calibration = (
+            json.loads(calibration_path.read_text()) if calibration_path.is_file() else None
+        )
+        signature = sha256(
+            json.dumps(
+                [
+                    {
+                        "episode_id": entry["row"]["episode_id"],
+                        "capture_id": entry["row"]["capture_id"],
+                        "qc_sha256": entry["row"]["qc_sha256"],
+                        "decision": entry["decision"],
+                    }
+                    for entry in included
+                ]
+                + [
+                    {
+                        "projection_builder": "customer_facts.v1",
+                        "calibration": calibration,
+                        "telemetry_policy": policy,
+                    }
+                ],
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
         projection = run_dir / "work/deliveries" / signature / "projection"
         if not projection.exists() and not projection.is_symlink():
             project_supplier(episodes, projection, calibration, policy["choice"])
@@ -1329,8 +1636,17 @@ def complete_local_delivery(source: str, run_dir: Path, output: Path) -> Deliver
         return DeliveryRunResult("complete", review_path, len(included), excluded, 0, output)
     except RunError:
         raise
-    except (OSError, KeyError, TypeError, ValueError, sqlite3.Error,
-            csv.Error, json.JSONDecodeError, QcError, PackageError) as error:
+    except (
+        OSError,
+        KeyError,
+        TypeError,
+        ValueError,
+        sqlite3.Error,
+        csv.Error,
+        json.JSONDecodeError,
+        QcError,
+        PackageError,
+    ) as error:
         raise RunError(str(error)) from error
 
 
@@ -1349,16 +1665,24 @@ def _finish_run(
         counts[file.change] += 1
     unique = sum(capture[3] for capture in captures)
     return RunResult(
-        run_id, len(inventory.files), len(inventory.captures),
-        counts["new"], counts["changed"], counts["unchanged"],
-        removed, unique, len(captures) - unique,
-        *imu_counts, *sidecar_counts, *video_counts, *timing_counts, *qc_counts,
+        run_id,
+        len(inventory.files),
+        len(inventory.captures),
+        counts["new"],
+        counts["changed"],
+        counts["unchanged"],
+        removed,
+        unique,
+        len(captures) - unique,
+        *imu_counts,
+        *sidecar_counts,
+        *video_counts,
+        *timing_counts,
+        *qc_counts,
     )
 
 
-def prepare_inventory(
-    source: str, run_dir: Path, source_item_ids: tuple[str, ...] | None = None
-):
+def prepare_inventory(source: str, run_dir: Path, source_item_ids: tuple[str, ...] | None = None):
     try:
         inventory = inventory_local(source, run_dir)
         selected = select_inventory(inventory, source_item_ids)
@@ -1369,24 +1693,35 @@ def prepare_inventory(
     database_path = run_dir / "run.sqlite"
     previous = load_previous(database_path)
     store_inventory(database_path, inventory, selected)
-    prepare_progress(database_path, "inventory", [
-        (file.source_item_id, file.relative_path) for file in selected.files
-    ])
+    prepare_progress(
+        database_path,
+        "inventory",
+        [(file.source_item_id, file.relative_path) for file in selected.files],
+    )
     started = {}
 
     def progress(file, status, error):
         with sqlite3.connect(database_path) as database:
             if status == "running":
                 started[file.source_item_id] = _start_progress(
-                    database, "inventory", file.source_item_id)
+                    database, "inventory", file.source_item_id
+                )
                 return
             _finish_progress(
-                database, "inventory", file.source_item_id,
-                started.pop(file.source_item_id), "preserved", error,
+                database,
+                "inventory",
+                file.source_item_id,
+                started.pop(file.source_item_id),
+                "preserved",
+                error,
             )
+
     try:
         preservation = preserve_inventory(
-            Path(source).expanduser().resolve(), run_dir.resolve(), selected, previous,
+            Path(source).expanduser().resolve(),
+            run_dir.resolve(),
+            selected,
+            previous,
             {file.source_item_id for file in inventory.files},
             progress,
         )

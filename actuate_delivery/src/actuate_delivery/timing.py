@@ -33,31 +33,33 @@ class TimingArtifact:
     stereo_unmatched_rows: int
 
 
-SCHEMA = pa.schema([
-    ("camera_stream_id", pa.string()),
-    ("video_frame_index", pa.int64()),
-    ("mp4_pts_ns", pa.int64()),
-    ("vts_frame_number", pa.uint32()),
-    ("venc_seq", pa.uint32()),
-    ("venc_pts_us", pa.uint64()),
-    ("sof_timestamp_ns", pa.uint64()),
-    ("vts_match_status", pa.string()),
-    ("before_imu_index", pa.int64()),
-    ("before_imu_timestamp_ns", pa.uint64()),
-    ("before_delta_ns", pa.int64()),
-    ("after_imu_index", pa.int64()),
-    ("after_imu_timestamp_ns", pa.uint64()),
-    ("after_delta_ns", pa.int64()),
-    ("closest_imu_index", pa.int64()),
-    ("closest_imu_timestamp_ns", pa.uint64()),
-    ("closest_delta_ns", pa.int64()),
-    ("within_imu_coverage", pa.bool_()),
-    ("mapping_status", pa.string()),
-    ("stereo_peer_stream_id", pa.string()),
-    ("stereo_peer_video_frame_index", pa.int64()),
-    ("stereo_peer_vts_frame_number", pa.uint32()),
-    ("stereo_pair_status", pa.string()),
-])
+SCHEMA = pa.schema(
+    [
+        ("camera_stream_id", pa.string()),
+        ("video_frame_index", pa.int64()),
+        ("mp4_pts_ns", pa.int64()),
+        ("vts_frame_number", pa.uint32()),
+        ("venc_seq", pa.uint32()),
+        ("venc_pts_us", pa.uint64()),
+        ("sof_timestamp_ns", pa.uint64()),
+        ("vts_match_status", pa.string()),
+        ("before_imu_index", pa.int64()),
+        ("before_imu_timestamp_ns", pa.uint64()),
+        ("before_delta_ns", pa.int64()),
+        ("after_imu_index", pa.int64()),
+        ("after_imu_timestamp_ns", pa.uint64()),
+        ("after_delta_ns", pa.int64()),
+        ("closest_imu_index", pa.int64()),
+        ("closest_imu_timestamp_ns", pa.uint64()),
+        ("closest_delta_ns", pa.int64()),
+        ("within_imu_coverage", pa.bool_()),
+        ("mapping_status", pa.string()),
+        ("stereo_peer_stream_id", pa.string()),
+        ("stereo_peer_video_frame_index", pa.int64()),
+        ("stereo_peer_vts_frame_number", pa.uint32()),
+        ("stereo_pair_status", pa.string()),
+    ]
+)
 
 
 def _hash(path: Path) -> str:
@@ -120,10 +122,14 @@ def build_timing(
             video = pq.read_table(stream.video_index_path)
             vts = decode_vts(stream.vts_path, stream.vts_sha256)
         except (OSError, pa.ArrowException, SidecarError) as error:
-            raise TimingError(f"Cannot read timing input for {stream.camera_stream_id}: {error}") from error
+            raise TimingError(
+                f"Cannot read timing input for {stream.camera_stream_id}: {error}"
+            ) from error
         required = {"video_frame_index", "mp4_pts_ns"}
         if not required <= set(video.column_names):
-            raise TimingError(f"Video frame index lacks required columns: {stream.camera_stream_id}")
+            raise TimingError(
+                f"Video frame index lacks required columns: {stream.camera_stream_id}"
+            )
         video_indexes = video["video_frame_index"].to_pylist()
         if video_indexes != list(range(len(video_indexes))):
             raise TimingError(f"Video frame indexes are not contiguous: {stream.camera_stream_id}")
@@ -135,8 +141,9 @@ def build_timing(
             row["camera_stream_id"] = stream.camera_stream_id
             row["video_frame_index"] = index if has_video else None
             row["mp4_pts_ns"] = video["mp4_pts_ns"][index].as_py() if has_video else None
-            row["vts_match_status"] = "matched" if has_video and has_vts else (
-                "video_only" if has_video else "vts_only")
+            row["vts_match_status"] = (
+                "matched" if has_video and has_vts else ("video_only" if has_video else "vts_only")
+            )
             row["mapping_status"] = "no_vts" if not has_vts else "no_video"
             row["stereo_pair_status"] = "not_applicable" if len(streams) == 1 else "not_available"
             if has_vts:
@@ -153,15 +160,19 @@ def build_timing(
                 else:
                     row.update(_query_imu(imu_timestamps, row["sof_timestamp_ns"]))
                     row["mapping_status"] = (
-                        "mapped" if row["within_imu_coverage"] else "outside_imu_coverage")
+                        "mapped" if row["within_imu_coverage"] else "outside_imu_coverage"
+                    )
             rows.append(row)
 
     stereo_pairs = stereo_unmatched = 0
     if len(streams) == 2:
         by_stream = {}
         for stream_id in ("left", "right"):
-            candidates = [row for row in rows
-                          if row["camera_stream_id"] == stream_id and row["vts_frame_number"] is not None]
+            candidates = [
+                row
+                for row in rows
+                if row["camera_stream_id"] == stream_id and row["vts_frame_number"] is not None
+            ]
             if any(row["venc_seq"] is None for row in candidates):
                 raise TimingError(f"Stereo VTS has no encoder sequence: {stream_id}")
             sequence_map = {row["venc_seq"]: row for row in candidates}
@@ -190,13 +201,20 @@ def build_timing(
         "write_parameters": "parquet=2.6;compression=zstd;dictionary=false;statistics=true",
     }
     table = pa.Table.from_pylist(rows, schema=SCHEMA).replace_schema_metadata(
-        {key.encode(): value.encode() for key, value in metadata.items()})
+        {key.encode(): value.encode() for key, value in metadata.items()}
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = output.with_name(f".{output.name}.staging")
     staging.unlink(missing_ok=True)
     try:
-        pq.write_table(table, staging, version="2.6", compression="zstd",
-                       use_dictionary=False, write_statistics=True)
+        pq.write_table(
+            table,
+            staging,
+            version="2.6",
+            compression="zstd",
+            use_dictionary=False,
+            write_statistics=True,
+        )
         if not pq.read_table(staging).equals(table, check_metadata=True):
             raise TimingError("Frame timing Parquet does not match the computed mapping")
         parquet_hash = sha256(staging.read_bytes()).hexdigest()
@@ -207,5 +225,6 @@ def build_timing(
         staging.unlink(missing_ok=True)
     matched = sum(row["vts_match_status"] == "matched" for row in rows)
     coverage = sum(row["mapping_status"] == "mapped" for row in rows)
-    return TimingArtifact(parquet_hash, len(rows), matched, coverage,
-                          stereo_pairs, stereo_unmatched)
+    return TimingArtifact(
+        parquet_hash, len(rows), matched, coverage, stereo_pairs, stereo_unmatched
+    )

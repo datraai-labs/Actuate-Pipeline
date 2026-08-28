@@ -36,11 +36,9 @@ def run_pipeline(source, run_dir):
 def stub_video_verification(monkeypatch):
     def verify(source, output, expected_sha256):
         output.parent.mkdir(parents=True, exist_ok=True)
-        pq.write_table(pa.table({"video_frame_index": [0, 1],
-                                 "mp4_pts_ns": [0, 100]}), output)
+        pq.write_table(pa.table({"video_frame_index": [0, 1], "mp4_pts_ns": [0, 100]}), output)
         output_hash = sha256(output.read_bytes()).hexdigest()
-        return VideoArtifact(output_hash, 2, "test", 1, 1,
-                             "30/1", 1, 0, "{}")
+        return VideoArtifact(output_hash, 2, "test", 1, 1, "30/1", 1, 0, "{}")
 
     monkeypatch.setattr(run_module, "verify_video", verify)
 
@@ -49,25 +47,39 @@ def valid_imu(seed=b""):
     header = bytearray(64)
     struct.pack_into("<8sIIHHQQI", header, 0, b"TRIMU001", 4, 400, 2, 3, 50, 75, 1)
     value = float(sum(seed) % 10)
-    rows = [struct.pack("<Q18f", timestamp, *([value + row] * 18))
-            for row, timestamp in enumerate((100, 200))]
+    rows = [
+        struct.pack("<Q18f", timestamp, *([value + row] * 18))
+        for row, timestamp in enumerate((100, 200))
+    ]
     return bytes(header) + b"".join(rows)
 
 
 def valid_vts(seed=b""):
     offset = sum(seed) % 10
     header = struct.pack("<8sIIqiHH", b"TRIVTS01", 4, 30000, 0, 0, 0, 0)
-    rows = [struct.pack("<IQIQIII", frame, 1_000_000 + offset + frame * 100,
-                        frame + 3, 1_000 + frame, 5000, 15, 26000)
-            for frame in range(2)]
+    rows = [
+        struct.pack(
+            "<IQIQIII",
+            frame,
+            1_000_000 + offset + frame * 100,
+            frame + 3,
+            1_000 + frame,
+            5000,
+            15,
+            26000,
+        )
+        for frame in range(2)
+    ]
     return header + b"".join(rows)
 
 
 def valid_tel():
     header = bytearray(32)
     struct.pack_into("<8sIII", header, 0, b"TRTEL01\0", 1, 32, 2)
-    rows = [struct.pack("<QiIIHBB", timestamp, 33910 + row, 0, 10240, 30, 0, 0)
-            for row, timestamp in enumerate((100, 200))]
+    rows = [
+        struct.pack("<QiIIHBB", timestamp, 33910 + row, 0, 10240, 30, 0, 0)
+        for row, timestamp in enumerate((100, 200))
+    ]
     return bytes(header) + b"".join(rows)
 
 
@@ -76,14 +88,20 @@ def write_capture(folder, name, layout="single_video", complete=True, prefix=b""
     names = [f"{name}.mp4", f"{name}.vts", f"{name}.imu"]
     if layout == "stereo_pair":
         names = [
-            f"{name}_L.mp4", f"{name}_L.vts",
-            f"{name}_R.mp4", f"{name}_R.vts", f"{name}.imu",
+            f"{name}_L.mp4",
+            f"{name}_L.vts",
+            f"{name}_R.mp4",
+            f"{name}_R.vts",
+            f"{name}.imu",
         ]
     if not complete:
         names.pop(-2 if layout == "stereo_pair" else 0)
     for filename in names:
-        content = valid_imu(prefix) if filename.endswith(".imu") else (
-            valid_vts(prefix) if filename.endswith(".vts") else prefix + filename.encode())
+        content = (
+            valid_imu(prefix)
+            if filename.endswith(".imu")
+            else (valid_vts(prefix) if filename.endswith(".vts") else prefix + filename.encode())
+        )
         (folder / filename).write_bytes(content)
 
 
@@ -170,8 +188,12 @@ def test_explicit_selection_expands_stereo_sidecars_and_visualization(tmp_path, 
     selected = select_inventory(inventory, ("selected/take_L.mp4",))
     selected_paths = {file.relative_path for file in selected.files}
     assert selected_paths == {
-        "selected/take.imu", "selected/take_L.mp4", "selected/take_L.vts",
-        "selected/take_R.mp4", "selected/take_R.vts", "selected/visualization.mp4",
+        "selected/take.imu",
+        "selected/take_L.mp4",
+        "selected/take_L.vts",
+        "selected/take_R.mp4",
+        "selected/take_R.vts",
+        "selected/visualization.mp4",
     }
 
     copy_to_blob = inventory_module._copy_to_blob
@@ -182,9 +204,7 @@ def test_explicit_selection_expands_stereo_sidecars_and_visualization(tmp_path, 
 
     monkeypatch.setattr(inventory_module, "_copy_to_blob", selected_copy)
 
-    result = run_module.prepare_local_run(
-        str(source), run_dir, ("selected/take_L.mp4",)
-    )
+    result = run_module.prepare_local_run(str(source), run_dir, ("selected/take_L.mp4",))
     assert result.files == 6
     assert result.captures == 1
     assert len(list((run_dir / "cache/blobs").iterdir())) == 5
@@ -240,23 +260,22 @@ def test_narrower_selection_retains_prior_unselected_blobs(tmp_path, monkeypatch
         return hash_file(path)
 
     monkeypatch.setattr(inventory_module, "_hash_file", selected_hash)
-    result = run_module.prepare_local_run(
-        str(source), run_dir, ("one/take1.mp4",)
-    )
+    result = run_module.prepare_local_run(str(source), run_dir, ("one/take1.mp4",))
 
     assert result.files == 3
     assert result.removed == 0
-    assert rows(
-        run_dir / "run.sqlite",
-        "SELECT relative_path, source_sha256 FROM source_file ORDER BY relative_path",
-    ) == prior
+    assert (
+        rows(
+            run_dir / "run.sqlite",
+            "SELECT relative_path, source_sha256 FROM source_file ORDER BY relative_path",
+        )
+        == prior
+    )
     assert rows(
         run_dir / "run.sqlite",
         "SELECT relative_path FROM source_file WHERE selected=0 ORDER BY relative_path",
     ) == [("two/take2.imu",), ("two/take2.mp4",), ("two/take2.vts",)]
-    assert rows(
-        run_dir / "run.sqlite", "SELECT parent_path FROM capture_snapshot"
-    ) == [("one",)]
+    assert rows(run_dir / "run.sqlite", "SELECT parent_path FROM capture_snapshot") == [("one",)]
 
 
 def test_unchanged_rerun_verifies_without_copying(tmp_path, monkeypatch):
@@ -294,9 +313,9 @@ def test_changed_qc_output_fails_closed(tmp_path):
 
     assert result.exit_code == 1
     assert "qc_failed=1" in result.output
-    assert rows(
-        run_dir / "run.sqlite", "SELECT reason FROM qc_artifact WHERE status='failed'"
-    ) == [("Published internal QC JSON changed after verification",)]
+    assert rows(run_dir / "run.sqlite", "SELECT reason FROM qc_artifact WHERE status='failed'") == [
+        ("Published internal QC JSON changed after verification",)
+    ]
 
 
 def test_changed_timing_output_fails_closed(tmp_path):
@@ -398,8 +417,11 @@ def test_wrong_parent_and_duplicate_camera_member_are_not_complete(tmp_path):
     (source / "a").mkdir(parents=True)
     (source / "b").mkdir()
     for name in ("take_L.mp4", "take_L.vts", "take.imu"):
-        content = valid_imu() if name.endswith(".imu") else (
-            valid_vts() if name.endswith(".vts") else b"a")
+        content = (
+            valid_imu()
+            if name.endswith(".imu")
+            else (valid_vts() if name.endswith(".vts") else b"a")
+        )
         (source / "a" / name).write_bytes(content)
     for name in ("take_R.mp4", "take_R.vts"):
         (source / "b" / name).write_bytes(valid_vts() if name.endswith(".vts") else b"b")
@@ -410,8 +432,22 @@ def test_wrong_parent_and_duplicate_camera_member_are_not_complete(tmp_path):
         "SELECT parent_path, grouping_status FROM capture_candidate ORDER BY 1",
     ) == [("a", "incomplete"), ("b", "incomplete")]
 
-    left = FileFact("one", "take_L.mp4", ".", "video", "take", "left", 1, 1,
-                    "local", ".", "video/mp4", None, None, True)
+    left = FileFact(
+        "one",
+        "take_L.mp4",
+        ".",
+        "video",
+        "take",
+        "left",
+        1,
+        1,
+        "local",
+        ".",
+        "video/mp4",
+        None,
+        None,
+        True,
+    )
     duplicate = replace(left, source_item_id="two", relative_path="copy/take_L.mp4")
     capture = group_captures((left, duplicate))[0]
     assert capture.grouping_status == "ambiguous"
@@ -444,8 +480,22 @@ def test_inventory_write_rolls_back_as_one_transaction(tmp_path):
     open_run(source.as_uri(), run_dir)
     database_path = run_dir / "run.sqlite"
     before = database_path.read_bytes()
-    first = FileFact("duplicate", "one", ".", "video", "one", "single", 1, 1,
-                     "local", ".", "video/mp4", None, None, True)
+    first = FileFact(
+        "duplicate",
+        "one",
+        ".",
+        "video",
+        "one",
+        "single",
+        1,
+        1,
+        "local",
+        ".",
+        "video/mp4",
+        None,
+        None,
+        True,
+    )
     broken = SourceInventory(
         source.as_uri(), (first, replace(first, source_item_id="other", size_bytes=-1)), ()
     )

@@ -68,20 +68,34 @@ def _ensure_table(database_path: Path):
 def _signature(database_path: Path, stage: str):
     tables = {
         "inventory": (
-            ("source_file", (
-                "SELECT source_item_id, relative_path, role, size_bytes, selected, "
-                "source_sha256, cache_relative_path FROM source_file "
-                "WHERE selected=1 ORDER BY source_item_id"
-            )),
-            ("capture_candidate", "SELECT * FROM capture_candidate ORDER BY parent_path, capture_key"),
-            ("capture_snapshot", "SELECT * FROM capture_snapshot ORDER BY parent_path, capture_key"),
+            (
+                "source_file",
+                (
+                    "SELECT source_item_id, relative_path, role, size_bytes, selected, "
+                    "source_sha256, cache_relative_path FROM source_file "
+                    "WHERE selected=1 ORDER BY source_item_id"
+                ),
+            ),
+            (
+                "capture_candidate",
+                "SELECT * FROM capture_candidate ORDER BY parent_path, capture_key",
+            ),
+            (
+                "capture_snapshot",
+                "SELECT * FROM capture_snapshot ORDER BY parent_path, capture_key",
+            ),
         ),
         "sensors": (
             ("imu_artifact", "SELECT * FROM imu_artifact ORDER BY capture_id"),
             ("vts_artifact", "SELECT * FROM vts_artifact ORDER BY capture_id, camera_stream_id"),
             ("tel_artifact", "SELECT * FROM tel_artifact ORDER BY capture_id"),
         ),
-        "video": (("video_artifact", "SELECT * FROM video_artifact ORDER BY capture_id, camera_stream_id"),),
+        "video": (
+            (
+                "video_artifact",
+                "SELECT * FROM video_artifact ORDER BY capture_id, camera_stream_id",
+            ),
+        ),
         "timing": (("timing_artifact", "SELECT * FROM timing_artifact ORDER BY capture_id"),),
         "qc": (("qc_artifact", "SELECT * FROM qc_artifact ORDER BY capture_id"),),
         "review": (
@@ -92,8 +106,9 @@ def _signature(database_path: Path, stage: str):
     }
     payload = []
     with sqlite3.connect(database_path) as database:
-        existing = {row[0] for row in database.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'")}
+        existing = {
+            row[0] for row in database.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
         for table, query in tables[stage]:
             payload.append((table, database.execute(query).fetchall() if table in existing else []))
     return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -120,7 +135,7 @@ def _record(database_path: Path, stage: str, status: str, summary=None, error=No
                           output_signature=NULL, approved_signature=NULL, approved_by=NULL,
                           approved_at=NULL, started_at=NULL, completed_at=NULL, error=NULL
                    WHERE stage=?""",
-                [(item[0],) for item in STAGES[index + 1:]],
+                [(item[0],) for item in STAGES[index + 1 :]],
             )
         if status == "failed":
             database.execute(
@@ -137,8 +152,15 @@ def _record(database_path: Path, stage: str, status: str, summary=None, error=No
                       approved_by=CASE WHEN approved_signature=? THEN approved_by END,
                       approved_at=CASE WHEN approved_signature=? THEN approved_at END,
                       completed_at=?, error=NULL WHERE stage=?""",
-            (json.dumps(summary, sort_keys=True), signature, signature, signature, signature,
-             now, stage),
+            (
+                json.dumps(summary, sort_keys=True),
+                signature,
+                signature,
+                signature,
+                signature,
+                now,
+                stage,
+            ),
         )
     return signature
 
@@ -146,38 +168,60 @@ def _record(database_path: Path, stage: str, status: str, summary=None, error=No
 def workflow_state(run_dir: Path):
     database_path = run_dir / "run.sqlite"
     if not database_path.is_file():
-        return [{"stage": stage, "name": name, "status": "waiting", "approved": False,
-                 "summary": None, "error": None, "elapsed_seconds": None,
-                 "progress": {"completed": 0, "total": 0, "current": None, "items": []}}
-                for stage, name in STAGES]
+        return [
+            {
+                "stage": stage,
+                "name": name,
+                "status": "waiting",
+                "approved": False,
+                "summary": None,
+                "error": None,
+                "elapsed_seconds": None,
+                "progress": {"completed": 0, "total": 0, "current": None, "items": []},
+            }
+            for stage, name in STAGES
+        ]
     _ensure_table(database_path)
     with sqlite3.connect(database_path) as database:
         database.row_factory = sqlite3.Row
-        rows = {row["stage"]: row for row in database.execute(
-            "SELECT * FROM stage_checkpoint")}
+        rows = {row["stage"]: row for row in database.execute("SELECT * FROM stage_checkpoint")}
     now = datetime.now(UTC)
-    result = [{
-        "stage": stage,
-        "name": name,
-        "status": rows[stage]["status"],
-        "approved": bool(rows[stage]["output_signature"]
-                         and rows[stage]["approved_signature"] == rows[stage]["output_signature"]),
-        "summary": json.loads(rows[stage]["result_json"]) if rows[stage]["result_json"] else None,
-        "error": rows[stage]["error"],
-        "approved_by": rows[stage]["approved_by"],
-        "approved_at": rows[stage]["approved_at"],
-        "started_at": rows[stage]["started_at"],
-        "completed_at": rows[stage]["completed_at"],
-        "progress": processing_progress(database_path, stage),
-    } for stage, name in STAGES]
+    result = [
+        {
+            "stage": stage,
+            "name": name,
+            "status": rows[stage]["status"],
+            "approved": bool(
+                rows[stage]["output_signature"]
+                and rows[stage]["approved_signature"] == rows[stage]["output_signature"]
+            ),
+            "summary": json.loads(rows[stage]["result_json"])
+            if rows[stage]["result_json"]
+            else None,
+            "error": rows[stage]["error"],
+            "approved_by": rows[stage]["approved_by"],
+            "approved_at": rows[stage]["approved_at"],
+            "started_at": rows[stage]["started_at"],
+            "completed_at": rows[stage]["completed_at"],
+            "progress": processing_progress(database_path, stage),
+        }
+        for stage, name in STAGES
+    ]
     for item in result:
         started = item["started_at"]
         completed = item["completed_at"]
-        item["elapsed_seconds"] = (round((datetime.fromisoformat(completed) -
-                                           datetime.fromisoformat(started)).total_seconds(), 1)
-                                   if started and completed else
-                                   round((now - datetime.fromisoformat(started)).total_seconds(), 1)
-                                   if started else None)
+        item["elapsed_seconds"] = (
+            round(
+                (
+                    datetime.fromisoformat(completed) - datetime.fromisoformat(started)
+                ).total_seconds(),
+                1,
+            )
+            if started and completed
+            else round((now - datetime.fromisoformat(started)).total_seconds(), 1)
+            if started
+            else None
+        )
     return result
 
 
@@ -191,13 +235,15 @@ def artifact_failures(run_dir: Path, workflow_stage: str | None = None):
         "timing": ("timing_artifact",),
         "qc": ("qc_artifact",),
     }
-    wanted = stage_tables.get(workflow_stage, tuple(
-        table for tables in stage_tables.values() for table in tables))
+    wanted = stage_tables.get(
+        workflow_stage, tuple(table for tables in stage_tables.values() for table in tables)
+    )
     failures = []
     with sqlite3.connect(database_path) as database:
         database.row_factory = sqlite3.Row
-        tables = {row[0] for row in database.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {
+            row[0] for row in database.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
         for table in wanted:
             if table not in tables:
                 continue
@@ -208,19 +254,23 @@ def artifact_failures(run_dir: Path, workflow_stage: str | None = None):
             if stream:
                 selected.insert(1, stream)
             for row in database.execute(
-                    f"SELECT {', '.join(selected)} FROM {table} WHERE status='failed'"):
+                f"SELECT {', '.join(selected)} FROM {table} WHERE status='failed'"
+            ):
                 capture = database.execute(
                     """SELECT parent_path, capture_key FROM capture_snapshot
                        WHERE capture_id=? AND is_canonical=1""",
                     (row["capture_id"],),
                 ).fetchone()
-                failures.append({
-                    "stage": table.removesuffix("_artifact"),
-                    "episode": f"{capture['parent_path']}/{capture['capture_key']}"
-                    if capture else row["capture_id"],
-                    "camera_stream_id": row[stream] if stream else None,
-                    "message": row[message] or "No error detail was recorded",
-                })
+                failures.append(
+                    {
+                        "stage": table.removesuffix("_artifact"),
+                        "episode": f"{capture['parent_path']}/{capture['capture_key']}"
+                        if capture
+                        else row["capture_id"],
+                        "camera_stream_id": row[stream] if stream else None,
+                        "message": row[message] or "No error detail was recorded",
+                    }
+                )
     return failures
 
 
@@ -260,8 +310,9 @@ def invalidate_from(run_dir: Path, stage: str):
                WHERE stage=?""",
             [(item[0],) for item in STAGES[index:]],
         )
-        tables = {row[0] for row in database.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {
+            row[0] for row in database.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
         if "processing_item" in tables:
             database.executemany(
                 "DELETE FROM processing_item WHERE stage=?",
@@ -284,8 +335,7 @@ def _build_archive(output: Path):
     try:
         with zipfile.ZipFile(staging, "w", zipfile.ZIP_STORED, allowZip64=True) as archive:
             for path in sorted(output.rglob("*")):
-                if (path.is_file() and path.name != ".DS_Store"
-                        and "__MACOSX" not in path.parts):
+                if path.is_file() and path.name != ".DS_Store" and "__MACOSX" not in path.parts:
                     archive.write(path, output.name / path.relative_to(output))
         with zipfile.ZipFile(staging) as archive:
             if archive.testzip() is not None:
@@ -298,9 +348,13 @@ def _build_archive(output: Path):
 
 def bind_calibration(run_dir: Path, template: dict):
     _, entries = _delivery_review(run_dir / "run.sqlite", run_dir)
-    episode_ids = [entry["row"]["episode_id"] for entry in entries
-                   if entry["row"]["grouping_status"] == "complete"
-                   and entry["decision"] and entry["decision"]["status"] == "include"]
+    episode_ids = [
+        entry["row"]["episode_id"]
+        for entry in entries
+        if entry["row"]["grouping_status"] == "complete"
+        and entry["decision"]
+        and entry["decision"]["status"] == "include"
+    ]
     calibration = dict(template)
     calibration["applies_to_episode_ids"] = episode_ids
     staging = run_dir / ".calibration.json.staging"
@@ -321,16 +375,20 @@ def run_stage(source: str, run_dir: Path, stage: str, output: Path | None = None
             run_id, inventory, preservation = prepare_inventory(source, run_dir)
             _record(database_path, stage, "running")
             files, _, removed = preservation
-            statuses = {name: sum(file.change == name for file in files)
-                        for name in ("new", "changed", "unchanged")}
+            statuses = {
+                name: sum(file.change == name for file in files)
+                for name in ("new", "changed", "unchanged")
+            }
             summary = {
                 "run_id": run_id,
                 "files": len(inventory.files),
                 "captures": len(inventory.captures),
-                "complete_captures": sum(capture.grouping_status == "complete"
-                                         for capture in inventory.captures),
-                "incomplete_captures": sum(capture.grouping_status != "complete"
-                                           for capture in inventory.captures),
+                "complete_captures": sum(
+                    capture.grouping_status == "complete" for capture in inventory.captures
+                ),
+                "incomplete_captures": sum(
+                    capture.grouping_status != "complete" for capture in inventory.captures
+                ),
                 "removed": removed,
                 **statuses,
             }
@@ -338,9 +396,22 @@ def run_stage(source: str, run_dir: Path, stage: str, output: Path | None = None
             prepare_progress(database_path, stage, stage_progress_items(database_path, stage))
             imu = process_imus(database_path, run_dir)
             sidecars = process_sidecars(database_path, run_dir)
-            summary = dict(zip(("imu_decoded", "imu_reused", "imu_failed",
-                                "vts_decoded", "vts_reused", "vts_failed",
-                                "tel_decoded", "tel_reused", "tel_failed"), imu + sidecars))
+            summary = dict(
+                zip(
+                    (
+                        "imu_decoded",
+                        "imu_reused",
+                        "imu_failed",
+                        "vts_decoded",
+                        "vts_reused",
+                        "vts_failed",
+                        "tel_decoded",
+                        "tel_reused",
+                        "tel_failed",
+                    ),
+                    imu + sidecars,
+                )
+            )
             with sqlite3.connect(database_path) as database:
                 totals = database.execute(
                     """SELECT COALESCE(SUM(sample_count),0) AS imu_samples,
@@ -350,8 +421,9 @@ def run_stage(source: str, run_dir: Path, stage: str, output: Path | None = None
                                WHERE status='decoded') AS telemetry_records
                        FROM imu_artifact WHERE status='decoded'"""
                 ).fetchone()
-            summary.update(dict(zip(
-                ("imu_samples", "camera_timestamps", "telemetry_records"), totals)))
+            summary.update(
+                dict(zip(("imu_samples", "camera_timestamps", "telemetry_records"), totals))
+            )
         elif stage == "video":
             prepare_progress(database_path, stage, stage_progress_items(database_path, stage))
             values = process_videos(database_path, run_dir)
@@ -374,8 +446,20 @@ def run_stage(source: str, run_dir: Path, stage: str, output: Path | None = None
                               COALESCE(SUM(stereo_unmatched_rows),0)
                        FROM timing_artifact WHERE status='ready'"""
                 ).fetchone()
-            summary.update(dict(zip(("frame_rows", "matched_rows", "imu_coverage_rows",
-                                     "stereo_pairs", "unmatched_stereo_frames"), totals)))
+            summary.update(
+                dict(
+                    zip(
+                        (
+                            "frame_rows",
+                            "matched_rows",
+                            "imu_coverage_rows",
+                            "stereo_pairs",
+                            "unmatched_stereo_frames",
+                        ),
+                        totals,
+                    )
+                )
+            )
         elif stage == "qc":
             prepare_progress(database_path, stage, stage_progress_items(database_path, stage))
             values = process_qc(database_path, run_dir)
@@ -385,33 +469,51 @@ def run_stage(source: str, run_dir: Path, stage: str, output: Path | None = None
             review_path, entries = _delivery_review(database_path, run_dir)
             summary["review_path"] = str(review_path)
             summary["episodes"] = len(entries)
-            eligible = [entry for entry in entries
-                        if entry["row"]["grouping_status"] == "complete"]
-            summary.update({
-                "eligible_episodes": len(eligible),
-                "passed_checks": sum(int(entry["row"]["pass_count"]) for entry in eligible),
-                "failed_checks": sum(int(entry["row"]["fail_count"]) for entry in eligible),
-                "unknown_checks": sum(int(entry["row"]["unknown_count"]) for entry in eligible),
-                "blocking_checks": sorted({check for entry in eligible
-                                           for check in entry["row"]["blocking_checks"].split("|")
-                                           if check}),
-                "material_checks": sorted({check for entry in eligible
-                                           for check in entry["row"]["material_checks"].split("|")
-                                           if check}),
-            })
+            eligible = [entry for entry in entries if entry["row"]["grouping_status"] == "complete"]
+            summary.update(
+                {
+                    "eligible_episodes": len(eligible),
+                    "passed_checks": sum(int(entry["row"]["pass_count"]) for entry in eligible),
+                    "failed_checks": sum(int(entry["row"]["fail_count"]) for entry in eligible),
+                    "unknown_checks": sum(int(entry["row"]["unknown_count"]) for entry in eligible),
+                    "blocking_checks": sorted(
+                        {
+                            check
+                            for entry in eligible
+                            for check in entry["row"]["blocking_checks"].split("|")
+                            if check
+                        }
+                    ),
+                    "material_checks": sorted(
+                        {
+                            check
+                            for entry in eligible
+                            for check in entry["row"]["material_checks"].split("|")
+                            if check
+                        }
+                    ),
+                }
+            )
         elif stage == "review":
             review_path, entries = _delivery_review(database_path, run_dir)
-            entries = tuple(entry for entry in entries
-                            if entry["row"]["grouping_status"] == "complete")
-            included = sum(bool(entry["decision"])
-                           and entry["decision"]["status"] == "include"
-                           for entry in entries)
-            excluded = sum(bool(entry["decision"])
-                           and entry["decision"]["status"] == "exclude"
-                           for entry in entries)
-            summary = {"review_path": str(review_path), "episodes": len(entries),
-                       "included": included, "excluded": excluded,
-                       "pending": len(entries) - included - excluded}
+            entries = tuple(
+                entry for entry in entries if entry["row"]["grouping_status"] == "complete"
+            )
+            included = sum(
+                bool(entry["decision"]) and entry["decision"]["status"] == "include"
+                for entry in entries
+            )
+            excluded = sum(
+                bool(entry["decision"]) and entry["decision"]["status"] == "exclude"
+                for entry in entries
+            )
+            summary = {
+                "review_path": str(review_path),
+                "episodes": len(entries),
+                "included": included,
+                "excluded": excluded,
+                "pending": len(entries) - included - excluded,
+            }
         else:
             if output is None:
                 raise RunError("Delivery output path is required")
@@ -419,11 +521,18 @@ def run_stage(source: str, run_dir: Path, stage: str, output: Path | None = None
             if result.status != "complete":
                 raise RunError(f"Delivery cannot be built: {result.status}")
             archive = _build_archive(result.output)
-            summary = {"included": result.included, "excluded": result.excluded,
-                       "output": str(result.output), "archive": str(archive),
-                       "archive_bytes": archive.stat().st_size}
-        altered = [failure for failure in artifact_failures(run_dir, stage)
-                   if "changed after verification" in failure["message"]]
+            summary = {
+                "included": result.included,
+                "excluded": result.excluded,
+                "output": str(result.output),
+                "archive": str(archive),
+                "archive_bytes": archive.stat().st_size,
+            }
+        altered = [
+            failure
+            for failure in artifact_failures(run_dir, stage)
+            if "changed after verification" in failure["message"]
+        ]
         if altered:
             raise RunError(altered[0]["message"])
         signature = _record(database_path, stage, "complete", summary)

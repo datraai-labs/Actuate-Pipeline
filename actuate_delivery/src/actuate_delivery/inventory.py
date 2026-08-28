@@ -5,12 +5,25 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
-ROLES = {"imu": "imu", "json": "json", "mp4": "video", "tel": "telemetry", "tmf": "tmf", "vts": "vts"}
+ROLES = {
+    "imu": "imu",
+    "json": "json",
+    "mp4": "video",
+    "tel": "telemetry",
+    "tmf": "tmf",
+    "vts": "vts",
+}
 REQUIRED = {
     "single_video": {("video", "single"), ("vts", "single"), ("imu", None)},
-    "stereo_pair": {("video", "left"), ("vts", "left"),
-                    ("video", "right"), ("vts", "right"), ("imu", None)},
+    "stereo_pair": {
+        ("video", "left"),
+        ("vts", "left"),
+        ("video", "right"),
+        ("vts", "right"),
+        ("imu", None),
+    },
 }
+
 
 @dataclass(frozen=True)
 class FileFact:
@@ -29,6 +42,7 @@ class FileFact:
     source_checksum: str | None
     can_download: bool
 
+
 @dataclass(frozen=True)
 class CaptureFact:
     parent_path: str
@@ -37,17 +51,21 @@ class CaptureFact:
     grouping_status: str
     members: tuple[FileFact, ...]
 
+
 @dataclass(frozen=True)
 class SourceInventory:
     source_identity: str
     files: tuple[FileFact, ...]
     captures: tuple[CaptureFact, ...]
 
+
 @dataclass(frozen=True)
 class PreservedFile:
     source_item_id: str
     source_sha256: str
     change: str
+
+
 Preservation = tuple[tuple[PreservedFile, ...], tuple[tuple[str, str, str, bool], ...], int]
 
 
@@ -69,12 +87,12 @@ def classify_name(name: str) -> tuple[str, str | None, str | None]:
             camera_stream_id = "right"
     return role, capture_key, camera_stream_id
 
+
 def group_captures(files: tuple[FileFact, ...]) -> tuple[CaptureFact, ...]:
     keys = {
         (file.parent_path, file.capture_key)
         for file in files
-        if file.role in ("video", "vts", "imu")
-        and file.capture_key is not None
+        if file.role in ("video", "vts", "imu") and file.capture_key is not None
     }
     captures = []
     for parent_path, capture_key in sorted(keys):
@@ -84,11 +102,7 @@ def group_captures(files: tuple[FileFact, ...]) -> tuple[CaptureFact, ...]:
             for file in files
             if (file.parent_path, file.capture_key) == (parent_path, capture_key)
         )
-        streams = {
-            file.camera_stream_id
-            for file in members
-            if file.role in ("video", "vts")
-        }
+        streams = {file.camera_stream_id for file in members if file.role in ("video", "vts")}
         has_single = "single" in streams
         has_stereo = bool(streams & {"left", "right"})
         layout = None
@@ -124,7 +138,8 @@ def select_inventory(
     selected = set(source_item_ids)
     groups = {
         (files[item_id].parent_path, files[item_id].capture_key)
-        for item_id in selected if files[item_id].capture_key is not None
+        for item_id in selected
+        if files[item_id].capture_key is not None
     }
     captures_by_parent = {}
     for capture in inventory.captures:
@@ -147,12 +162,15 @@ def select_inventory(
             name = Path(file.relative_path).name
             keys = [key for parent, key in groups if parent == file.parent_path]
             if any(name == f"{key}_stereo_depth_imu.mp4" for key in keys) or (
-                name == "visualization.mp4" and len(captures_by_parent.get(file.parent_path, [])) == 1
+                name == "visualization.mp4"
+                and len(captures_by_parent.get(file.parent_path, [])) == 1
                 and keys
             ):
                 selected.add(file.source_item_id)
     selected_files = tuple(file for file in inventory.files if file.source_item_id in selected)
-    return SourceInventory(inventory.source_identity, selected_files, group_captures(selected_files))
+    return SourceInventory(
+        inventory.source_identity, selected_files, group_captures(selected_files)
+    )
 
 
 def inventory_local(source: str, run_dir: Path) -> SourceInventory:
@@ -168,22 +186,16 @@ def inventory_local(source: str, run_dir: Path) -> SourceInventory:
     for parent, directory_names, file_names in os.walk(root, topdown=True):
         parent = Path(parent)
         directory_names[:] = sorted(
-            name
-            for name in directory_names
-            if name.casefold() != "system volume information"
+            name for name in directory_names if name.casefold() != "system volume information"
         )
         for name in directory_names:
             path = parent / name
             if path.is_symlink():
-                raise ValueError(
-                    f"Local source contains a symlink: {path.relative_to(root)}"
-                )
+                raise ValueError(f"Local source contains a symlink: {path.relative_to(root)}")
         for name in sorted(file_names):
             path = parent / name
             if path.is_symlink():
-                raise ValueError(
-                    f"Local source contains a symlink: {path.relative_to(root)}"
-                )
+                raise ValueError(f"Local source contains a symlink: {path.relative_to(root)}")
             if not path.is_file():
                 continue
 
@@ -214,6 +226,7 @@ def inventory_local(source: str, run_dir: Path) -> SourceInventory:
     facts = tuple(sorted(files, key=lambda file: file.relative_path))
     return SourceInventory(root.as_uri(), facts, group_captures(facts))
 
+
 def _hash_file(path: Path) -> str:
     digest = sha256()
     with path.open("rb") as source:
@@ -221,16 +234,19 @@ def _hash_file(path: Path) -> str:
             digest.update(chunk)
     return digest.hexdigest()
 
+
 def _verify_blob(path: Path, size_bytes: int, expected_hash: str) -> None:
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"Immutable cache blob is missing: {expected_hash}")
     if path.stat().st_size != size_bytes or _hash_file(path) != expected_hash:
         raise ValueError(f"Immutable cache blob changed: {expected_hash}")
 
+
 def _check_source(path: Path, fact: FileFact) -> None:
     metadata = path.stat()
     if metadata.st_size != fact.size_bytes or metadata.st_mtime_ns != fact.modified_time_ns:
         raise ValueError(f"Source member changed: {fact.relative_path}")
+
 
 def _copy_bytes(source, destination, digest) -> None:
     while chunk := source.read(1024 * 1024):
@@ -276,8 +292,10 @@ def _preservation_result(
     for fact in inventory.files:
         prior = previous.get(fact.source_item_id)
         source_hash = hashes[fact.source_item_id]
-        change = "unchanged" if prior and prior[0] and prior[1] == source_hash else (
-            "changed" if prior and prior[0] and prior[1] else "new"
+        change = (
+            "unchanged"
+            if prior and prior[0] and prior[1] == source_hash
+            else ("changed" if prior and prior[0] and prior[1] else "new")
         )
         preserved.append(PreservedFile(fact.source_item_id, source_hash, change))
 
@@ -285,23 +303,33 @@ def _preservation_result(
     canonical_ids = set()
     for capture in inventory.captures:
         identity = sorted(
-            (member.role, member.camera_stream_id or "", hashes[member.source_item_id],
-             member.size_bytes)
+            (
+                member.role,
+                member.camera_stream_id or "",
+                hashes[member.source_item_id],
+                member.size_bytes,
+            )
             for member in capture.members
         )
         capture_id = sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
-        snapshots.append((capture.parent_path, capture.capture_key, capture_id,
-                          capture_id not in canonical_ids))
+        snapshots.append(
+            (capture.parent_path, capture.capture_key, capture_id, capture_id not in canonical_ids)
+        )
         canonical_ids.add(capture_id)
     removed = sum(
-        present and item_id not in present_item_ids
-        for item_id, (present, _) in previous.items()
+        present and item_id not in present_item_ids for item_id, (present, _) in previous.items()
     )
     return tuple(preserved), tuple(snapshots), removed
 
-def preserve_inventory(source_root: Path, run_dir: Path, inventory: SourceInventory,
-                       previous: dict[str, tuple[bool, str | None]],
-                       present_item_ids: set[str], progress) -> Preservation:
+
+def preserve_inventory(
+    source_root: Path,
+    run_dir: Path,
+    inventory: SourceInventory,
+    previous: dict[str, tuple[bool, str | None]],
+    present_item_ids: set[str],
+    progress,
+) -> Preservation:
     if source_root.is_relative_to((run_dir / "cache").resolve()):
         raise ValueError("Cannot preserve a source inside RUN_DIR/cache")
 
@@ -318,7 +346,9 @@ def preserve_inventory(source_root: Path, run_dir: Path, inventory: SourceInvent
                 source_hash = _hash_file(source)
                 _check_source(source, fact)
                 if source_hash == prior[1]:
-                    _verify_blob(run_dir / f"cache/blobs/{source_hash}", fact.size_bytes, source_hash)
+                    _verify_blob(
+                        run_dir / f"cache/blobs/{source_hash}", fact.size_bytes, source_hash
+                    )
                 else:
                     copied_hash = _copy_to_blob(source, run_dir, fact)
                     if copied_hash != source_hash:

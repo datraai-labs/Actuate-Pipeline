@@ -56,11 +56,37 @@ def verify_video(source: Path, output: Path, expected_sha256: str) -> VideoArtif
         raise VideoError("Video source SHA-256 does not match the preserved mapping")
     ffprobe, ffmpeg = _tool("ffprobe"), _tool("ffmpeg")
     try:
-        probe = json.loads(_run([ffprobe, "-v", "error", "-show_streams",
-                                 "-show_format", "-of", "json", str(source)]))
-        frame_probe = json.loads(_run([
-            ffprobe, "-v", "error", "-select_streams", "v:0", "-show_frames",
-            "-show_entries", "frame=pts", "-of", "json", str(source)]))
+        probe = json.loads(
+            _run(
+                [
+                    ffprobe,
+                    "-v",
+                    "error",
+                    "-show_streams",
+                    "-show_format",
+                    "-of",
+                    "json",
+                    str(source),
+                ]
+            )
+        )
+        frame_probe = json.loads(
+            _run(
+                [
+                    ffprobe,
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_frames",
+                    "-show_entries",
+                    "frame=pts",
+                    "-of",
+                    "json",
+                    str(source),
+                ]
+            )
+        )
     except json.JSONDecodeError as error:
         raise VideoError(f"ffprobe returned invalid JSON: {error}") from error
     streams = probe.get("streams")
@@ -86,8 +112,23 @@ def verify_video(source: Path, output: Path, expected_sha256: str) -> VideoArtif
     if any(after <= before for before, after in pairwise(pts)):
         raise VideoError("MP4 frame PTS values must be strictly increasing")
     declared_frames = video.get("nb_frames")
-    _run([ffmpeg, "-v", "error", "-xerror", "-i", str(source),
-          "-map", "0:v:0", "-map", "0:a?", "-f", "null", "-"])
+    _run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-xerror",
+            "-i",
+            str(source),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
+            "-f",
+            "null",
+            "-",
+        ]
+    )
 
     pts_ns = []
     for value in pts:
@@ -99,8 +140,16 @@ def verify_video(source: Path, output: Path, expected_sha256: str) -> VideoArtif
     except InvalidOperation as error:
         raise VideoError(f"ffprobe returned an invalid duration: {duration_raw!r}") from error
     audio = [stream for stream in streams if stream.get("codec_type") == "audio"]
-    fact_keys = ("index", "codec_name", "sample_rate", "channels", "channel_layout",
-                 "time_base", "duration_ts", "duration")
+    fact_keys = (
+        "index",
+        "codec_name",
+        "sample_rate",
+        "channels",
+        "channel_layout",
+        "time_base",
+        "duration_ts",
+        "duration",
+    )
     facts = {
         "format_name": probe.get("format", {}).get("format_name"),
         "pixel_format": video.get("pix_fmt"),
@@ -113,20 +162,34 @@ def verify_video(source: Path, output: Path, expected_sha256: str) -> VideoArtif
         "ffmpeg_version": _run([ffmpeg, "-version"]).splitlines()[0],
     }
     facts_json = json.dumps(facts, sort_keys=True, separators=(",", ":"))
-    metadata = {"schema_version": "actuate_delivery.video_frames.v1",
-                "source_sha256": expected_sha256,
-                "pts_ns_method": "exact_time_base_nearest_ns;half_ties_toward_positive_infinity",
-                "write_parameters": "parquet=2.6;compression=zstd;dictionary=false;statistics=true"}
-    table = pa.table({"video_frame_index": range(len(pts)), "mp4_pts": pts,
-                      "time_base_num": [time_base_num] * len(pts),
-                      "time_base_den": [time_base_den] * len(pts), "mp4_pts_ns": pts_ns})
+    metadata = {
+        "schema_version": "actuate_delivery.video_frames.v1",
+        "source_sha256": expected_sha256,
+        "pts_ns_method": "exact_time_base_nearest_ns;half_ties_toward_positive_infinity",
+        "write_parameters": "parquet=2.6;compression=zstd;dictionary=false;statistics=true",
+    }
+    table = pa.table(
+        {
+            "video_frame_index": range(len(pts)),
+            "mp4_pts": pts,
+            "time_base_num": [time_base_num] * len(pts),
+            "time_base_den": [time_base_den] * len(pts),
+            "mp4_pts_ns": pts_ns,
+        }
+    )
     table = table.replace_schema_metadata({k.encode(): v.encode() for k, v in metadata.items()})
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = output.with_name(f".{output.name}.staging")
     staging.unlink(missing_ok=True)
     try:
-        pq.write_table(table, staging, version="2.6", compression="zstd",
-                       use_dictionary=False, write_statistics=True)
+        pq.write_table(
+            table,
+            staging,
+            version="2.6",
+            compression="zstd",
+            use_dictionary=False,
+            write_statistics=True,
+        )
         if not pq.read_table(staging).equals(table, check_metadata=True):
             raise VideoError("Video frame index does not match enumerated ffprobe frames")
         parquet_hash = sha256(staging.read_bytes()).hexdigest()
@@ -135,5 +198,14 @@ def verify_video(source: Path, output: Path, expected_sha256: str) -> VideoArtif
         raise VideoError(f"Video frame-index write or read failed: {error}") from error
     finally:
         staging.unlink(missing_ok=True)
-    return VideoArtifact(parquet_hash, len(pts), codec, width, height,
-                         average_frame_rate, duration_ns, len(audio), facts_json)
+    return VideoArtifact(
+        parquet_hash,
+        len(pts),
+        codec,
+        width,
+        height,
+        average_frame_rate,
+        duration_ns,
+        len(audio),
+        facts_json,
+    )

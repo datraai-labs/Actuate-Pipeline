@@ -13,23 +13,45 @@ from actuate_delivery.run import RunError, RunInputError, complete_local_deliver
 def facts(capture_id, grouping="complete", partial=False):
     coverage = 2 if partial else 3
     return {
-        "capture_id": capture_id, "capture_layout": "single_video",
+        "capture_id": capture_id,
+        "capture_layout": "single_video",
         "grouping_status": grouping,
-        "source": {"file_count": 1, "bytes": 10, "verified_members": 1,
-                   "all_hashes_verified_in_current_run": True, "members": []},
+        "source": {
+            "file_count": 1,
+            "bytes": 10,
+            "verified_members": 1,
+            "all_hashes_verified_in_current_run": True,
+            "members": [],
+        },
         "imu": {"status": "decoded", "sample_count": 20},
-        "streams": [{"camera_stream_id": "single",
-                     "vts": {"status": "decoded", "frame_count": 3},
-                     "video": {"status": "verified", "frame_count": 3}}],
+        "streams": [
+            {
+                "camera_stream_id": "single",
+                "vts": {"status": "decoded", "frame_count": 3},
+                "video": {"status": "verified", "frame_count": 3},
+            }
+        ],
         "telemetry": {"status": "absent"},
-        "timing": {"status": "ready", "row_count": 3, "matched_rows": 3,
-                   "coverage_rows": coverage, "stereo_pair_count": 0,
-                   "stereo_unmatched_rows": 0,
-                   "streams": [{"camera_stream_id": "single", "row_count": 3,
-                                "matched_rows": 3, "coverage_rows": coverage,
-                                "outside_imu_coverage_rows": 3 - coverage,
-                                "missing_sof_rows": 0, "video_only_rows": 0,
-                                "vts_only_rows": 0}]},
+        "timing": {
+            "status": "ready",
+            "row_count": 3,
+            "matched_rows": 3,
+            "coverage_rows": coverage,
+            "stereo_pair_count": 0,
+            "stereo_unmatched_rows": 0,
+            "streams": [
+                {
+                    "camera_stream_id": "single",
+                    "row_count": 3,
+                    "matched_rows": 3,
+                    "coverage_rows": coverage,
+                    "outside_imu_coverage_rows": 3 - coverage,
+                    "missing_sof_rows": 0,
+                    "video_only_rows": 0,
+                    "vts_only_rows": 0,
+                }
+            ],
+        },
     }
 
 
@@ -68,8 +90,15 @@ def insert_capture(run_dir, capture_id, group, grouping="complete", partial=Fals
         artifact = build_qc(facts(capture_id, grouping, partial), run_dir / relative)
         database.execute(
             "INSERT INTO qc_artifact VALUES (?, '', 'ready', ?, ?, ?, ?, ?, ?, NULL)",
-            (capture_id, relative, artifact.json_sha256, artifact.pass_count,
-             artifact.fail_count, artifact.unknown_count, artifact.not_applicable_count),
+            (
+                capture_id,
+                relative,
+                artifact.json_sha256,
+                artifact.pass_count,
+                artifact.fail_count,
+                artifact.unknown_count,
+                artifact.not_applicable_count,
+            ),
         )
 
 
@@ -110,7 +139,11 @@ def test_review_resume_appends_new_capture_and_builds_only_included(tmp_path, mo
 
     first = complete_local_delivery(str(source), run_dir, output)
     assert (first.status, first.included, first.excluded, first.pending) == (
-        "review_required", 0, 0, 1)
+        "review_required",
+        0,
+        0,
+        1,
+    )
     rows = review_rows(first.review_path)
     rows[0].update(decision="include")
     write_rows(first.review_path, rows)
@@ -118,7 +151,11 @@ def test_review_resume_appends_new_capture_and_builds_only_included(tmp_path, mo
 
     second = complete_local_delivery(str(source), run_dir, output)
     assert (second.status, second.included, second.excluded, second.pending) == (
-        "review_required", 1, 0, 1)
+        "review_required",
+        1,
+        0,
+        1,
+    )
     rows = review_rows(second.review_path)
     assert [row["source_group"] for row in rows] == ["take1", "take2"]
     rows[1].update(decision="exclude")
@@ -127,8 +164,7 @@ def test_review_resume_appends_new_capture_and_builds_only_included(tmp_path, mo
     fake_package(monkeypatch, captured)
 
     final = complete_local_delivery(str(source), run_dir, output)
-    assert (final.status, final.included, final.excluded, final.pending) == (
-        "complete", 1, 1, 0)
+    assert (final.status, final.included, final.excluded, final.pending) == ("complete", 1, 1, 0)
     assert output.is_dir()
     assert len(captured) == 1
     assert captured[0]["internal_qc"]["capture_id"] == "a" * 64
@@ -138,7 +174,9 @@ def test_review_resume_appends_new_capture_and_builds_only_included(tmp_path, mo
             "SELECT capture_id, status, decided_at FROM delivery_decision ORDER BY 1"
         ).fetchall()
         assert [(row[0], row[1]) for row in decisions] == [
-            ("a" * 64, "include"), ("b" * 64, "exclude")]
+            ("a" * 64, "include"),
+            ("b" * 64, "exclude"),
+        ]
         assert all(row[2] for row in decisions)
 
 
@@ -156,8 +194,7 @@ def test_episode_ids_are_allocated_once_and_new_captures_append(tmp_path):
 
     insert_capture(run_dir, second_capture, "take-a")
     complete_local_delivery(str(source), run_dir, output)
-    rows = {row["capture_id"]: row["episode_id"]
-            for row in review_rows(run_dir / "review.csv")}
+    rows = {row["capture_id"]: row["episode_id"] for row in review_rows(run_dir / "review.csv")}
 
     assert rows == {
         first_capture: "episode_000001",
@@ -200,9 +237,7 @@ def test_schema_14_review_migrates_without_episode_reviewer_or_free_text(tmp_pat
             "SELECT limitations_json, decided_at FROM delivery_decision"
         ).fetchone()
     assert "decided_by" not in columns
-    assert json.loads(decision[0]) == [
-        "1 camera frame is outside IMU coverage (single: 1)."
-    ]
+    assert json.loads(decision[0]) == ["1 camera frame is outside IMU coverage (single: 1)."]
     assert decision[1] == "2026-08-26T00:00:00Z"
     assert "decided_by" not in review_rows(run_dir / "review.csv")[0]
     assert entries[0]["decision"]["limitations"] == json.loads(decision[0])
@@ -218,8 +253,7 @@ def test_complete_episodes_receive_ids_before_incomplete_candidates(tmp_path):
     insert_capture(run_dir, complete, "take-z")
 
     complete_local_delivery(str(source), run_dir, tmp_path / "delivery")
-    rows = {row["capture_id"]: row["episode_id"]
-            for row in review_rows(run_dir / "review.csv")}
+    rows = {row["capture_id"]: row["episode_id"] for row in review_rows(run_dir / "review.csv")}
 
     assert rows == {
         complete: "episode_000001",
@@ -227,14 +261,16 @@ def test_complete_episodes_receive_ids_before_incomplete_candidates(tmp_path):
     }
 
 
-@pytest.mark.parametrize(("changes", "message"), [
-    ({"capture_layout": "stereo_pair"}, "facts changed or became stale"),
-    ({"qc_sha256": "0" * 64}, "facts changed or became stale"),
-    ({"decision": "maybe"}, "Invalid review decision"),
-    ({"limitations_json": "{"}, "Invalid limitations JSON"),
-    ({"decision": "exclude", "limitations_json": '["not delivered"]'},
-     "pipeline-controlled"),
-])
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"capture_layout": "stereo_pair"}, "facts changed or became stale"),
+        ({"qc_sha256": "0" * 64}, "facts changed or became stale"),
+        ({"decision": "maybe"}, "Invalid review decision"),
+        ({"limitations_json": "{"}, "Invalid limitations JSON"),
+        ({"decision": "exclude", "limitations_json": '["not delivered"]'}, "pipeline-controlled"),
+    ],
+)
 def test_review_rejects_invalid_or_edited_rows(tmp_path, changes, message):
     source = tmp_path / "source"
     source.mkdir()
@@ -269,8 +305,14 @@ def test_changed_qc_replaces_stale_saved_decision_with_pending_review(tmp_path):
         database.execute(
             """UPDATE qc_artifact SET json_sha256=?, pass_count=?, fail_count=?,
                       unknown_count=?, not_applicable_count=? WHERE capture_id=?""",
-            (changed.json_sha256, changed.pass_count, changed.fail_count,
-             changed.unknown_count, changed.not_applicable_count, capture_id),
+            (
+                changed.json_sha256,
+                changed.pass_count,
+                changed.fail_count,
+                changed.unknown_count,
+                changed.not_applicable_count,
+                capture_id,
+            ),
         )
 
     result = complete_local_delivery(str(source), run_dir, output)
@@ -326,8 +368,7 @@ def test_material_include_requires_controlled_limitation(tmp_path, monkeypatch):
         complete_local_delivery(str(source), run_dir, output)
 
     rows = review_rows(run_dir / "review.csv")
-    rows[0]["limitations_json"] = (
-        '["1 camera frame is outside IMU coverage (single: 1)."]')
+    rows[0]["limitations_json"] = '["1 camera frame is outside IMU coverage (single: 1)."]'
     write_rows(run_dir / "review.csv", rows)
     fake_package(monkeypatch, [])
     assert complete_local_delivery(str(source), run_dir, output).status == "complete"

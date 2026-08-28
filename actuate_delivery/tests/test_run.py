@@ -41,7 +41,8 @@ def test_run_creates_and_resumes_one_ledger(tmp_path, monkeypatch):
 
     output = tmp_path / "delivery"
     first_result = runner.invoke(
-        app, ["run", str(source), str(run_dir), "--output", str(output)],
+        app,
+        ["run", str(source), str(run_dir), "--output", str(output)],
         input="n\n",
     )
     assert first_result.exit_code == 0, first_result.output
@@ -49,7 +50,8 @@ def test_run_creates_and_resumes_one_ledger(tmp_path, monkeypatch):
 
     same_source = source / ".." / source.name
     second_result = runner.invoke(
-        app, ["run", str(same_source), str(run_dir), "--output", str(output)],
+        app,
+        ["run", str(same_source), str(run_dir), "--output", str(output)],
         input="n\n",
     )
     assert second_result.exit_code == 0, second_result.output
@@ -74,17 +76,22 @@ def test_run_rejects_changed_source_without_mutating_ledger(tmp_path):
     source_a.mkdir()
     source_b.mkdir()
     output = tmp_path / "delivery"
-    assert runner.invoke(
-        app, ["run", str(source_a), str(run_dir), "--output", str(output)],
-        input="n\n",
-    ).exit_code == 0
+    assert (
+        runner.invoke(
+            app,
+            ["run", str(source_a), str(run_dir), "--output", str(output)],
+            input="n\n",
+        ).exit_code
+        == 0
+    )
     database_path = run_dir / "run.sqlite"
     before = read_run(database_path)
     before_hash = sha256(database_path.read_bytes()).hexdigest()
     before_mtime = database_path.stat().st_mtime_ns
 
     result = runner.invoke(
-        app, ["run", str(source_b), str(run_dir), "--output", str(output)],
+        app,
+        ["run", str(source_b), str(run_dir), "--output", str(output)],
         input="",
     )
     after = read_run(database_path)
@@ -103,9 +110,7 @@ def test_team_option_was_replaced_without_starting_a_run(tmp_path):
     run_dir = tmp_path / "run"
     source.mkdir()
 
-    result = runner.invoke(
-        app, ["run", str(source), str(run_dir), "--team"]
-    )
+    result = runner.invoke(app, ["run", str(source), str(run_dir), "--team"])
 
     assert result.exit_code != 0
     assert "No such option: --team" in result.output
@@ -119,7 +124,8 @@ def test_output_option_creates_review_sheet_before_delivery(tmp_path):
     source.mkdir()
 
     result = runner.invoke(
-        app, ["run", str(source), str(run_dir), "--output", str(output)],
+        app,
+        ["run", str(source), str(run_dir), "--output", str(output)],
         input="y\ny\ny\ny\nn\n",
     )
 
@@ -165,8 +171,11 @@ def test_partial_telemetry_policy_is_required_persisted_and_invalidated(tmp_path
 
     pending = run_module._telemetry_policy(database_path, included)
     assert pending == {
-        "coverage": "partial", "included_episodes": 2,
-        "episodes_with_telemetry": 1, "requires_choice": True, "choice": None,
+        "coverage": "partial",
+        "included_episodes": 2,
+        "episodes_with_telemetry": 1,
+        "requires_choice": True,
+        "choice": None,
     }
     chosen = run_module._telemetry_policy(database_path, included, "exclude_all")
     assert chosen["choice"] == "exclude_all"
@@ -186,28 +195,54 @@ def test_partial_telemetry_policy_is_required_persisted_and_invalidated(tmp_path
 def test_cli_resolves_partial_telemetry_inside_the_delivery_flow(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(cli_module, "STAGES", (("delivery", "Build delivery"),))
-    monkeypatch.setattr(cli_module, "workflow_state", lambda run_dir: [{
-        "stage": "delivery", "status": "waiting", "approved": False, "summary": None,
-    }])
+    monkeypatch.setattr(
+        cli_module,
+        "workflow_state",
+        lambda run_dir: [
+            {
+                "stage": "delivery",
+                "status": "waiting",
+                "approved": False,
+                "summary": None,
+            }
+        ],
+    )
 
     def policy(run_dir, choice=None):
         calls.append(choice)
         return {
-            "coverage": "partial", "included_episodes": 3,
-            "episodes_with_telemetry": 1, "requires_choice": choice is None,
+            "coverage": "partial",
+            "included_episodes": 3,
+            "episodes_with_telemetry": 1,
+            "requires_choice": choice is None,
             "choice": choice,
         }
 
     monkeypatch.setattr(cli_module, "telemetry_policy", policy)
-    monkeypatch.setattr(cli_module, "run_stage", lambda *args: type("Result", (), {
-        "summary": {"output": str(tmp_path / "delivery")},
-    })())
+    monkeypatch.setattr(
+        cli_module,
+        "run_stage",
+        lambda *args: type(
+            "Result",
+            (),
+            {
+                "summary": {"output": str(tmp_path / "delivery")},
+            },
+        )(),
+    )
     monkeypatch.setattr(cli_module, "_show", lambda *args: None)
 
-    result = runner.invoke(app, [
-        "run", str(tmp_path / "source"), str(tmp_path / "run"),
-        "--output", str(tmp_path / "delivery"),
-    ], input="include available\ny\n")
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            str(tmp_path / "source"),
+            str(tmp_path / "run"),
+            "--output",
+            str(tmp_path / "delivery"),
+        ],
+        input="include available\ny\n",
+    )
 
     assert result.exit_code == 0, result.output
     assert "Telemetry is available for 1 of 3 included episodes" in result.output

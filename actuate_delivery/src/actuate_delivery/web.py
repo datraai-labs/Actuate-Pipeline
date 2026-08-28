@@ -108,14 +108,20 @@ class WebRun:
     def _save_job(self):
         self.run_dir.mkdir(parents=True, exist_ok=True)
         staging = self.job_path.with_suffix(".staging")
-        staging.write_text(json.dumps({
-            "status": self.job_status,
-            "error": self.job_error,
-            "started_at": self.started_at,
-            "finished_at": self.finished_at,
-            "elapsed_seconds": self.elapsed_seconds,
-            "stage": self.job_stage,
-        }, indent=2) + "\n")
+        staging.write_text(
+            json.dumps(
+                {
+                    "status": self.job_status,
+                    "error": self.job_error,
+                    "started_at": self.started_at,
+                    "finished_at": self.finished_at,
+                    "elapsed_seconds": self.elapsed_seconds,
+                    "stage": self.job_stage,
+                },
+                indent=2,
+            )
+            + "\n"
+        )
         staging.replace(self.job_path)
 
     def start(self, stage):
@@ -123,7 +129,9 @@ class WebRun:
             if self.job_status == "running":
                 raise HTTPException(409, "Processing is already running")
             if self.output.exists() and stage != "archive":
-                raise HTTPException(409, "This batch is already delivered and cannot be reprocessed")
+                raise HTTPException(
+                    409, "This batch is already delivered and cannot be reprocessed"
+                )
             if stage == "archive" and not self.output.is_dir():
                 raise HTTPException(409, "Build the customer folder before creating its ZIP")
             self.job_status = "running"
@@ -141,18 +149,34 @@ class WebRun:
             if stage == "archive":
                 archive = self.build_archive()
                 records, _ = self.episodes()
-                _record(self.run_dir / "run.sqlite", "delivery", "complete", {
-                    "included": sum(item["decision"]["status"] == "include"
-                                    for item in records if item["decision"]),
-                    "excluded": sum(item["decision"]["status"] == "exclude"
-                                    for item in records if item["decision"]),
-                    "output": str(self.output), "archive": str(self.archive),
-                    "archive_bytes": archive["bytes"],
-                    "archive_sha256": archive["sha256"],
-                })
+                _record(
+                    self.run_dir / "run.sqlite",
+                    "delivery",
+                    "complete",
+                    {
+                        "included": sum(
+                            item["decision"]["status"] == "include"
+                            for item in records
+                            if item["decision"]
+                        ),
+                        "excluded": sum(
+                            item["decision"]["status"] == "exclude"
+                            for item in records
+                            if item["decision"]
+                        ),
+                        "output": str(self.output),
+                        "archive": str(self.archive),
+                        "archive_bytes": archive["bytes"],
+                        "archive_sha256": archive["sha256"],
+                    },
+                )
             else:
-                run_stage(str(self.source), self.run_dir, stage,
-                          self.output if stage == "delivery" else None)
+                run_stage(
+                    str(self.source),
+                    self.run_dir,
+                    stage,
+                    self.output if stage == "delivery" else None,
+                )
                 if stage == "delivery":
                     self.record_archive()
             status, error = "complete", None
@@ -166,8 +190,11 @@ class WebRun:
             self._save_job()
 
     def job(self):
-        elapsed = (monotonic() - self.started_clock
-                   if self.job_status == "running" and self.started_clock else self.elapsed_seconds)
+        elapsed = (
+            monotonic() - self.started_clock
+            if self.job_status == "running" and self.started_clock
+            else self.elapsed_seconds
+        )
         status = self.job_status
         failures = self.failure_count()
         error = self.job_error
@@ -194,12 +221,14 @@ class WebRun:
     def source_files(self):
         if not self.source.is_dir():
             return []
-        return [{"relative_path": path.relative_to(self.source).as_posix(),
-                 "size": path.stat().st_size}
-                for path in sorted(self.source.rglob("*"))
-                if path.is_file() and not path.is_symlink()
-                and "system volume information" not in {
-                    part.casefold() for part in path.relative_to(self.source).parts}]
+        return [
+            {"relative_path": path.relative_to(self.source).as_posix(), "size": path.stat().st_size}
+            for path in sorted(self.source.rglob("*"))
+            if path.is_file()
+            and not path.is_symlink()
+            and "system volume information"
+            not in {part.casefold() for part in path.relative_to(self.source).parts}
+        ]
 
     def failures(self):
         database_path = self.run_dir / "run.sqlite"
@@ -208,10 +237,18 @@ class WebRun:
         failures = []
         with sqlite3.connect(database_path) as database:
             database.row_factory = sqlite3.Row
-            tables = {row[0] for row in database.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'")}
-            for table in ("imu_artifact", "vts_artifact", "tel_artifact",
-                          "video_artifact", "timing_artifact", "qc_artifact"):
+            tables = {
+                row[0]
+                for row in database.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            for table in (
+                "imu_artifact",
+                "vts_artifact",
+                "tel_artifact",
+                "video_artifact",
+                "timing_artifact",
+                "qc_artifact",
+            ):
                 if table not in tables:
                     continue
                 columns = {row[1] for row in database.execute(f"PRAGMA table_info({table})")}
@@ -221,20 +258,28 @@ class WebRun:
                 if stream:
                     selected.insert(1, stream)
                 for row in database.execute(
-                        f"SELECT {', '.join(selected)} FROM {table} WHERE status='failed'"):
-                    capture = database.execute(
-                        """SELECT parent_path, capture_key FROM capture_snapshot
+                    f"SELECT {', '.join(selected)} FROM {table} WHERE status='failed'"
+                ):
+                    capture = (
+                        database.execute(
+                            """SELECT parent_path, capture_key FROM capture_snapshot
                            WHERE capture_id=? AND is_canonical=1""",
-                        (row["capture_id"],),
-                    ).fetchone() if "capture_snapshot" in tables else None
-                    failures.append({
-                        "stage": table.removesuffix("_artifact"),
-                        "capture_id": row["capture_id"],
-                        "episode": f"{capture['parent_path']}/{capture['capture_key']}"
-                        if capture else None,
-                        "camera_stream_id": row[stream] if stream else None,
-                        "message": row[message] or "No error detail was recorded",
-                    })
+                            (row["capture_id"],),
+                        ).fetchone()
+                        if "capture_snapshot" in tables
+                        else None
+                    )
+                    failures.append(
+                        {
+                            "stage": table.removesuffix("_artifact"),
+                            "capture_id": row["capture_id"],
+                            "episode": f"{capture['parent_path']}/{capture['capture_key']}"
+                            if capture
+                            else None,
+                            "camera_stream_id": row[stream] if stream else None,
+                            "message": row[message] or "No error detail was recorded",
+                        }
+                    )
         return failures
 
     def candidates(self):
@@ -243,15 +288,20 @@ class WebRun:
             return []
         with sqlite3.connect(database_path) as database:
             database.row_factory = sqlite3.Row
-            tables = {row[0] for row in database.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'")}
+            tables = {
+                row[0]
+                for row in database.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
             if "capture_candidate" not in tables:
                 return []
-            return [dict(row) for row in database.execute(
-                """SELECT parent_path AS directory, capture_key AS 'group',
+            return [
+                dict(row)
+                for row in database.execute(
+                    """SELECT parent_path AS directory, capture_key AS 'group',
                           capture_layout AS layout, grouping_status, file_count
                    FROM capture_candidate ORDER BY parent_path, capture_key"""
-            )]
+                )
+            ]
 
     def failure_count(self):
         return len(self.failures())
@@ -260,20 +310,28 @@ class WebRun:
         database_path = self.run_dir / "run.sqlite"
         if not database_path.exists():
             return [
-                {"name": "Inventory and preserve", "status": "waiting",
-                 "detail": "Waiting for processing to start"},
-                *({"name": name, "status": "pending", "detail": detail} for name, detail in (
-                    ("Decode sensors", "Decode IMU, VTS and telemetry"),
-                    ("Verify video", "Probe and fully decode every camera stream"),
-                    ("Align timing", "Map camera frames to IMU timestamps"),
-                    ("Run QC", "Create per-episode facts and deterministic checks"),
-                    ("Human review", "Include or exclude each episode"),
-                    ("Build delivery", "Validate and package customer output"),
-                )),
+                {
+                    "name": "Inventory and preserve",
+                    "status": "waiting",
+                    "detail": "Waiting for processing to start",
+                },
+                *(
+                    {"name": name, "status": "pending", "detail": detail}
+                    for name, detail in (
+                        ("Decode sensors", "Decode IMU, VTS and telemetry"),
+                        ("Verify video", "Probe and fully decode every camera stream"),
+                        ("Align timing", "Map camera frames to IMU timestamps"),
+                        ("Run QC", "Create per-episode facts and deterministic checks"),
+                        ("Human review", "Include or exclude each episode"),
+                        ("Build delivery", "Validate and package customer output"),
+                    )
+                ),
             ]
         with sqlite3.connect(database_path) as database:
-            tables = {row[0] for row in database.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'")}
+            tables = {
+                row[0]
+                for row in database.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
 
             def count(table, where="1"):
                 if table not in tables:
@@ -283,28 +341,44 @@ class WebRun:
             files = count("source_file", "selected=1")
             preserved = count("source_file", "selected=1 AND source_sha256 IS NOT NULL")
             expected_sensors = count(
-                "source_file", "selected=1 AND role IN ('imu', 'vts', 'telemetry')")
+                "source_file", "selected=1 AND role IN ('imu', 'vts', 'telemetry')"
+            )
             expected_videos = count("source_file", "selected=1 AND role='video'")
             candidates = count("capture_snapshot", "is_canonical=1")
-            captures = database.execute(
-                """SELECT COUNT(*) FROM capture_snapshot JOIN capture_candidate
+            captures = (
+                database.execute(
+                    """SELECT COUNT(*) FROM capture_snapshot JOIN capture_candidate
                    USING (parent_path, capture_key)
                    WHERE is_canonical=1 AND grouping_status='complete'"""
-            ).fetchone()[0] if "capture_snapshot" in tables else 0
-            sensors = sum(count(table, f"status='{status}'") for table, status in (
-                ("imu_artifact", "decoded"), ("vts_artifact", "decoded"),
-                ("tel_artifact", "decoded")))
+                ).fetchone()[0]
+                if "capture_snapshot" in tables
+                else 0
+            )
+            sensors = sum(
+                count(table, f"status='{status}'")
+                for table, status in (
+                    ("imu_artifact", "decoded"),
+                    ("vts_artifact", "decoded"),
+                    ("tel_artifact", "decoded"),
+                )
+            )
             videos = count("video_artifact", "status='verified'")
             timing = count("timing_artifact", "status='ready'")
             qc = count("qc_artifact", "status='ready'")
-            decisions = database.execute(
-                """SELECT COUNT(*) FROM delivery_decision
+            decisions = (
+                database.execute(
+                    """SELECT COUNT(*) FROM delivery_decision
                    JOIN capture_snapshot USING (capture_id)
                    JOIN capture_candidate USING (parent_path, capture_key)
                    WHERE is_canonical=1 AND grouping_status='complete'"""
-            ).fetchone()[0] if "delivery_decision" in tables else 0
-            sensor_failed = sum(count(table, "status='failed'") for table in (
-                "imu_artifact", "vts_artifact", "tel_artifact"))
+                ).fetchone()[0]
+                if "delivery_decision" in tables
+                else 0
+            )
+            sensor_failed = sum(
+                count(table, "status='failed'")
+                for table in ("imu_artifact", "vts_artifact", "tel_artifact")
+            )
             video_failed = count("video_artifact", "status='failed'")
             timing_unavailable = count("timing_artifact", "status='unavailable'")
             timing_failed = count("timing_artifact", "status='failed'")
@@ -313,51 +387,100 @@ class WebRun:
         video_done = videos + video_failed
         timing_done = timing + timing_unavailable + timing_failed
         qc_done = qc + qc_failed
-        sensor_status = ("not_applicable" if not expected_sensors and not sensor_done else
-                         "pending" if sensor_done < expected_sensors else
-                         "failed" if sensor_failed else "complete")
-        video_status = ("not_applicable" if not expected_videos and not video_done else
-                        "pending" if video_done < expected_videos else
-                        "failed" if video_failed else "complete")
-        timing_status = ("not_applicable" if not captures else
-                         "pending" if timing_done < captures else
-                         "failed" if timing_failed or timing_unavailable else "complete")
-        qc_status = ("pending" if qc_done < candidates else
-                     "failed" if qc_failed else "complete")
+        sensor_status = (
+            "not_applicable"
+            if not expected_sensors and not sensor_done
+            else "pending"
+            if sensor_done < expected_sensors
+            else "failed"
+            if sensor_failed
+            else "complete"
+        )
+        video_status = (
+            "not_applicable"
+            if not expected_videos and not video_done
+            else "pending"
+            if video_done < expected_videos
+            else "failed"
+            if video_failed
+            else "complete"
+        )
+        timing_status = (
+            "not_applicable"
+            if not captures
+            else "pending"
+            if timing_done < captures
+            else "failed"
+            if timing_failed or timing_unavailable
+            else "complete"
+        )
+        qc_status = "pending" if qc_done < candidates else "failed" if qc_failed else "complete"
         progress = [
-            ("Inventory and preserve", "complete" if preserved == files and files > 0 else "pending",
-             f"{preserved} of {files} selected source files verified and preserved"),
-            ("Decode sensors", sensor_status,
-             ("No IMU, VTS, or telemetry sidecars were recognized"
-              if not expected_sensors else
-              f"{sensor_done} of {max(expected_sensors, sensor_done)} sensor streams processed; "
-              f"{sensor_failed} failed")),
-            ("Verify video", video_status,
-             (f"{video_done} of {max(expected_videos, video_done)} camera files processed; "
-              f"{video_failed} failed")),
-            ("Align timing", timing_status,
-             f"{timing} of {captures} complete episodes mapped"),
-            ("Run QC", qc_status,
-             f"{qc} of {candidates} candidate reports ready"),
-            ("Human review", "complete" if decisions == captures and captures > 0 else "pending",
-             f"{decisions} of {captures} decisions saved"),
-            ("Build delivery", "complete" if self.archive_record() else "pending",
-             "Validated customer folder and ZIP are ready" if self.archive_record()
-             else "Customer folder is ready; ZIP still needs to be built"
-             if self.output.exists() else "Not built"),
+            (
+                "Inventory and preserve",
+                "complete" if preserved == files and files > 0 else "pending",
+                f"{preserved} of {files} selected source files verified and preserved",
+            ),
+            (
+                "Decode sensors",
+                sensor_status,
+                (
+                    "No IMU, VTS, or telemetry sidecars were recognized"
+                    if not expected_sensors
+                    else f"{sensor_done} of {max(expected_sensors, sensor_done)} sensor streams processed; "
+                    f"{sensor_failed} failed"
+                ),
+            ),
+            (
+                "Verify video",
+                video_status,
+                (
+                    f"{video_done} of {max(expected_videos, video_done)} camera files processed; "
+                    f"{video_failed} failed"
+                ),
+            ),
+            ("Align timing", timing_status, f"{timing} of {captures} complete episodes mapped"),
+            ("Run QC", qc_status, f"{qc} of {candidates} candidate reports ready"),
+            (
+                "Human review",
+                "complete" if decisions == captures and captures > 0 else "pending",
+                f"{decisions} of {captures} decisions saved",
+            ),
+            (
+                "Build delivery",
+                "complete" if self.archive_record() else "pending",
+                "Validated customer folder and ZIP are ready"
+                if self.archive_record()
+                else "Customer folder is ready; ZIP still needs to be built"
+                if self.output.exists()
+                else "Not built",
+            ),
         ]
-        first_pending = next((index for index, item in enumerate(progress)
-                              if item[1] == "pending"), None)
-        result = [{"name": name,
-                   "status": "running" if self.job_status == "running"
-                   and index == first_pending else status,
-                   "detail": detail} for index, (name, status, detail) in enumerate(progress)]
+        first_pending = next(
+            (index for index, item in enumerate(progress) if item[1] == "pending"), None
+        )
+        result = [
+            {
+                "name": name,
+                "status": "running"
+                if self.job_status == "running" and index == first_pending
+                else status,
+                "detail": detail,
+            }
+            for index, (name, status, detail) in enumerate(progress)
+        ]
         if not captures and candidates:
             result[3]["detail"] = "No complete episodes are eligible for timing mapping"
-            result[5] = {"name": "Human review", "status": "not_applicable",
-                         "detail": "No complete episodes are eligible for review"}
-            result[6] = {"name": "Build delivery", "status": "not_applicable",
-                         "detail": "No complete episodes are eligible for delivery"}
+            result[5] = {
+                "name": "Human review",
+                "status": "not_applicable",
+                "detail": "No complete episodes are eligible for review",
+            }
+            result[6] = {
+                "name": "Build delivery",
+                "status": "not_applicable",
+                "detail": "No complete episodes are eligible for delivery",
+            }
         states = workflow_state(self.run_dir)
         for item, checkpoint in zip(result, states, strict=True):
             status = checkpoint["status"]
@@ -385,9 +508,11 @@ class WebRun:
         return self.run_dir / "delivery_archive.json"
 
     def delivery_files(self):
-        return [path for path in sorted(self.output.rglob("*"))
-                if path.is_file() and path.name != ".DS_Store"
-                and "__MACOSX" not in path.parts]
+        return [
+            path
+            for path in sorted(self.output.rglob("*"))
+            if path.is_file() and path.name != ".DS_Store" and "__MACOSX" not in path.parts
+        ]
 
     def upload_paths(self, relative: PurePosixPath):
         destination = self.source.joinpath(*relative.parts)
@@ -417,8 +542,11 @@ class WebRun:
             while chunk := file.read(8 * 1024 * 1024):
                 digest.update(chunk)
         stat = self.archive.stat()
-        record = {"bytes": stat.st_size, "modified_ns": stat.st_mtime_ns,
-                  "sha256": digest.hexdigest()}
+        record = {
+            "bytes": stat.st_size,
+            "modified_ns": stat.st_mtime_ns,
+            "sha256": digest.hexdigest(),
+        }
         self.run_dir.mkdir(parents=True, exist_ok=True)
         staging = self.archive_record_path.with_suffix(".staging")
         staging.write_text(json.dumps(record, indent=2) + "\n")
@@ -430,8 +558,7 @@ class WebRun:
             return None
         record = json.loads(self.archive_record_path.read_text())
         stat = self.archive.stat()
-        if (record["bytes"] != stat.st_size
-                or record["modified_ns"] != stat.st_mtime_ns):
+        if record["bytes"] != stat.st_size or record["modified_ns"] != stat.st_mtime_ns:
             return None
         return record
 
@@ -441,11 +568,13 @@ class WebRun:
         if self.output.is_dir():
             for path in self.delivery_files():
                 relative = path.relative_to(self.output).as_posix()
-                files.append({
-                    "path": relative,
-                    "bytes": path.stat().st_size,
-                    "kind": "raw" if "/raw/" in f"/{relative}" else "derived",
-                })
+                files.append(
+                    {
+                        "path": relative,
+                        "bytes": path.stat().st_size,
+                        "kind": "raw" if "/raw/" in f"/{relative}" else "derived",
+                    }
+                )
         return {
             "exists": self.output.is_dir(),
             "downloadable": archive is not None,
@@ -490,11 +619,13 @@ class WebRun:
             database.row_factory = sqlite3.Row
             timing = database.execute(
                 """SELECT parquet_relative_path, parquet_sha256 FROM timing_artifact
-                   WHERE capture_id=? AND status='ready'""", (capture_id,)
+                   WHERE capture_id=? AND status='ready'""",
+                (capture_id,),
             ).fetchone()
             imu = database.execute(
                 """SELECT parquet_relative_path, parquet_sha256 FROM imu_artifact
-                   WHERE capture_id=? AND status='decoded'""", (capture_id,)
+                   WHERE capture_id=? AND status='decoded'""",
+                (capture_id,),
             ).fetchone()
         if timing is None or imu is None:
             raise HTTPException(409, "Verified timing and IMU artifacts are required")
@@ -509,24 +640,46 @@ class WebRun:
         if not streams:
             raise HTTPException(409, "Verified timing artifact contains no camera rows")
         frame_fields = (
-            "camera_stream_id", "video_frame_index", "mp4_pts_ns", "vts_frame_number",
-            "venc_seq", "sof_timestamp_ns", "vts_match_status", "before_imu_index",
-            "before_imu_timestamp_ns", "before_delta_ns", "after_imu_index",
-            "after_imu_timestamp_ns", "after_delta_ns", "closest_imu_index",
-            "closest_imu_timestamp_ns", "closest_delta_ns", "within_imu_coverage",
-            "mapping_status", "stereo_peer_stream_id", "stereo_peer_video_frame_index",
+            "camera_stream_id",
+            "video_frame_index",
+            "mp4_pts_ns",
+            "vts_frame_number",
+            "venc_seq",
+            "sof_timestamp_ns",
+            "vts_match_status",
+            "before_imu_index",
+            "before_imu_timestamp_ns",
+            "before_delta_ns",
+            "after_imu_index",
+            "after_imu_timestamp_ns",
+            "after_delta_ns",
+            "closest_imu_index",
+            "closest_imu_timestamp_ns",
+            "closest_delta_ns",
+            "within_imu_coverage",
+            "mapping_status",
+            "stereo_peer_stream_id",
+            "stereo_peer_video_frame_index",
             "stereo_pair_status",
         )
         frames = [{key: row[key] for key in frame_fields} for row in timing_rows]
         issues = []
         conditions = (
-            ("camera_imu_coverage", lambda row: not row["within_imu_coverage"],
-             "Camera frame is outside the recorded IMU time extent"),
-            ("video_vts_accounting", lambda row: row["vts_match_status"] != "matched",
-             "Video frame and VTS row do not have a one-to-one row-order match"),
-            ("stereo_pairing", lambda row: row["stereo_pair_status"] not in
-             ("matched", "not_applicable"),
-             "Camera frame has no unique equal encoder-sequence peer"),
+            (
+                "camera_imu_coverage",
+                lambda row: not row["within_imu_coverage"],
+                "Camera frame is outside the recorded IMU time extent",
+            ),
+            (
+                "video_vts_accounting",
+                lambda row: row["vts_match_status"] != "matched",
+                "Video frame and VTS row do not have a one-to-one row-order match",
+            ),
+            (
+                "stereo_pairing",
+                lambda row: row["stereo_pair_status"] not in ("matched", "not_applicable"),
+                "Camera frame has no unique equal encoder-sequence peer",
+            ),
         )
         for stream in streams:
             rows = [row for row in frames if row["camera_stream_id"] == stream]
@@ -540,39 +693,71 @@ class WebRun:
                         groups[-1].append(index)
                 for group in groups:
                     first, last = rows[group[0]], rows[group[-1]]
-                    position = ("start" if group[0] == 0 else "end"
-                                if group[-1] == len(rows) - 1 else "interior")
-                    issues.append({
-                        "kind": kind, "stream": stream, "position": position,
-                        "frame_count": len(group),
-                        "start_frame": first["video_frame_index"],
-                        "end_frame": last["video_frame_index"],
-                        "start_time_s": (first["mp4_pts_ns"] or 0) / 1e9,
-                        "end_time_s": (last["mp4_pts_ns"] or 0) / 1e9,
-                        "message": message, "evidence": first,
-                    })
+                    position = (
+                        "start"
+                        if group[0] == 0
+                        else "end"
+                        if group[-1] == len(rows) - 1
+                        else "interior"
+                    )
+                    issues.append(
+                        {
+                            "kind": kind,
+                            "stream": stream,
+                            "position": position,
+                            "frame_count": len(group),
+                            "start_frame": first["video_frame_index"],
+                            "end_frame": last["video_frame_index"],
+                            "start_time_s": (first["mp4_pts_ns"] or 0) / 1e9,
+                            "end_time_s": (last["mp4_pts_ns"] or 0) / 1e9,
+                            "message": message,
+                            "evidence": first,
+                        }
+                    )
         primary = "left" if "left" in streams else streams[0]
-        mapped = [row for row in frames if row["camera_stream_id"] == primary
-                  and row["closest_imu_index"] is not None and row["mp4_pts_ns"] is not None]
-        sampled = mapped[::max(1, ceil(len(mapped) / 1500))]
-        columns = {name: imu_table[name].to_pylist() for name in (
-            "accel_x_mps2", "accel_y_mps2", "accel_z_mps2",
-            "gyro_x_rad_s", "gyro_y_rad_s", "gyro_z_rad_s",
-        )}
+        mapped = [
+            row
+            for row in frames
+            if row["camera_stream_id"] == primary
+            and row["closest_imu_index"] is not None
+            and row["mp4_pts_ns"] is not None
+        ]
+        sampled = mapped[:: max(1, ceil(len(mapped) / 1500))]
+        columns = {
+            name: imu_table[name].to_pylist()
+            for name in (
+                "accel_x_mps2",
+                "accel_y_mps2",
+                "accel_z_mps2",
+                "gyro_x_rad_s",
+                "gyro_y_rad_s",
+                "gyro_z_rad_s",
+            )
+        }
         imu_plot = []
         for row in sampled:
             index = row["closest_imu_index"]
-            imu_plot.append({"time_s": row["mp4_pts_ns"] / 1e9, "imu_index": index,
-                             "closest_delta_ms": row["closest_delta_ns"] / 1e6,
-                             **{name: values[index] for name, values in columns.items()}})
+            imu_plot.append(
+                {
+                    "time_s": row["mp4_pts_ns"] / 1e9,
+                    "imu_index": index,
+                    "closest_delta_ms": row["closest_delta_ns"] / 1e6,
+                    **{name: values[index] for name, values in columns.items()},
+                }
+            )
         frame_columns = {key: [row[key] for row in frames] for key in frame_fields}
-        return {"streams": streams, "frames": frame_columns, "imu_plot": imu_plot,
-                "issues": issues, "basis": {
-                    "camera_time": "native VTS SOF timestamp",
-                    "imu_query": "Before, After, and Closest native samples",
-                    "stereo_pairing": "unique equal encoder sequence",
-                    "physical_sync_certified": False,
-                }}
+        return {
+            "streams": streams,
+            "frames": frame_columns,
+            "imu_plot": imu_plot,
+            "issues": issues,
+            "basis": {
+                "camera_time": "native VTS SOF timestamp",
+                "imu_query": "Before, After, and Closest native samples",
+                "stereo_pairing": "unique equal encoder sequence",
+                "physical_sync_certified": False,
+            },
+        }
 
     def episodes(self):
         database_path = self.run_dir / "run.sqlite"
@@ -582,9 +767,12 @@ class WebRun:
             if database.execute("PRAGMA user_version").fetchone()[0] < 11:
                 return [], None
         failures = self.failure_count()
-        warning = (f"Processing has {failures} failed artifact(s). Complete episodes remain "
-                   "reviewable; failed and incomplete candidates are excluded from delivery."
-                   if failures else None)
+        warning = (
+            f"Processing has {failures} failed artifact(s). Complete episodes remain "
+            "reviewable; failed and incomplete candidates are excluded from delivery."
+            if failures
+            else None
+        )
         try:
             _, entries = _delivery_review(database_path, self.run_dir)
         except (OSError, RunError, sqlite3.Error) as exc:
@@ -594,49 +782,62 @@ class WebRun:
             row = entry["row"]
             facts = entry["internal_qc"]["facts"]
             timing = facts["timing"]
-            streams = [{
-                "id": stream["camera_stream_id"],
-                "frames": stream["video"].get("frame_count"),
-                "codec": stream["video"].get("codec"),
-                "width": stream["video"].get("width"),
-                "height": stream["video"].get("height"),
-                "duration_s": round((stream["video"].get("duration_ns") or 0) / 1e9, 3),
-                "video": stream["video"],
-                "vts": stream["vts"],
-            } for stream in facts["streams"]]
-            episodes.append({
-                "episode_id": row["episode_id"],
-                "capture_id": row["capture_id"],
-                "directory": row["source_relative_directory"],
-                "group": row["source_group"],
-                "layout": row["capture_layout"],
-                "grouping_status": row["grouping_status"],
-                "source_files": facts["source"]["file_count"],
-                "source_bytes": facts["source"]["bytes"],
-                "streams": streams,
-                "imu_samples": facts["imu"].get("sample_count"),
-                "timing_rows": timing.get("row_count"),
-                "coverage_rows": timing.get("coverage_rows"),
-                "stereo_pairs": timing.get("stereo_pair_count"),
-                "unmatched_rows": timing.get("stereo_unmatched_rows"),
-                "timing": timing,
-                "imu": facts["imu"],
-                "telemetry": facts["telemetry"],
-                "source_members": facts["source"]["members"],
-                "has_preview": self.has_preview(entry["parent_path"], entry["capture_key"]),
-                "checks": entry["internal_qc"]["checks"],
-                "check_counts": {
-                    "pass": row["pass_count"], "fail": row["fail_count"],
-                    "unknown": row["unknown_count"],
-                    "not_applicable": row["not_applicable_count"],
-                },
-                "blocking_checks": row["blocking_checks"].split("|") if row["blocking_checks"] else [],
-                "material_checks": row["material_checks"].split("|") if row["material_checks"] else [],
-                "controlled_limitations": (controlled_limitations(entry["internal_qc"])
-                                           if row["grouping_status"] == "complete" else []),
-                "qc_sha256": row["qc_sha256"],
-                "decision": entry["decision"],
-            })
+            streams = [
+                {
+                    "id": stream["camera_stream_id"],
+                    "frames": stream["video"].get("frame_count"),
+                    "codec": stream["video"].get("codec"),
+                    "width": stream["video"].get("width"),
+                    "height": stream["video"].get("height"),
+                    "duration_s": round((stream["video"].get("duration_ns") or 0) / 1e9, 3),
+                    "video": stream["video"],
+                    "vts": stream["vts"],
+                }
+                for stream in facts["streams"]
+            ]
+            episodes.append(
+                {
+                    "episode_id": row["episode_id"],
+                    "capture_id": row["capture_id"],
+                    "directory": row["source_relative_directory"],
+                    "group": row["source_group"],
+                    "layout": row["capture_layout"],
+                    "grouping_status": row["grouping_status"],
+                    "source_files": facts["source"]["file_count"],
+                    "source_bytes": facts["source"]["bytes"],
+                    "streams": streams,
+                    "imu_samples": facts["imu"].get("sample_count"),
+                    "timing_rows": timing.get("row_count"),
+                    "coverage_rows": timing.get("coverage_rows"),
+                    "stereo_pairs": timing.get("stereo_pair_count"),
+                    "unmatched_rows": timing.get("stereo_unmatched_rows"),
+                    "timing": timing,
+                    "imu": facts["imu"],
+                    "telemetry": facts["telemetry"],
+                    "source_members": facts["source"]["members"],
+                    "has_preview": self.has_preview(entry["parent_path"], entry["capture_key"]),
+                    "checks": entry["internal_qc"]["checks"],
+                    "check_counts": {
+                        "pass": row["pass_count"],
+                        "fail": row["fail_count"],
+                        "unknown": row["unknown_count"],
+                        "not_applicable": row["not_applicable_count"],
+                    },
+                    "blocking_checks": row["blocking_checks"].split("|")
+                    if row["blocking_checks"]
+                    else [],
+                    "material_checks": row["material_checks"].split("|")
+                    if row["material_checks"]
+                    else [],
+                    "controlled_limitations": (
+                        controlled_limitations(entry["internal_qc"])
+                        if row["grouping_status"] == "complete"
+                        else []
+                    ),
+                    "qc_sha256": row["qc_sha256"],
+                    "decision": entry["decision"],
+                }
+            )
         return episodes, warning
 
     def decide(self, capture_id: str, decision: Decision):
@@ -645,8 +846,9 @@ class WebRun:
                 raise HTTPException(409, "Wait for processing to finish before reviewing")
             if self.output.exists():
                 raise HTTPException(409, "This delivery is already built and cannot be changed")
-            if not next(item for item in workflow_state(self.run_dir)
-                        if item["stage"] == "qc")["approved"]:
+            if not next(item for item in workflow_state(self.run_dir) if item["stage"] == "qc")[
+                "approved"
+            ]:
                 raise HTTPException(409, "Approve QC before reviewing episodes")
             review_path, entries = _delivery_review(self.run_dir / "run.sqlite", self.run_dir)
             with review_path.open(newline="") as file:
@@ -660,15 +862,18 @@ class WebRun:
                 raise HTTPException(409, "Decision changed; refresh before deciding")
             original = [dict(item) for item in rows]
             entry = next(item for item in entries if item["row"]["capture_id"] == capture_id)
-            row.update({
-                "decision": decision.status,
-                "limitations_json": json.dumps(
-                    controlled_limitations(entry["internal_qc"])
-                    if decision.status == "include" else [],
-                    separators=(",", ":"),
-                ),
-                "decided_at": decision.expected_revision,
-            })
+            row.update(
+                {
+                    "decision": decision.status,
+                    "limitations_json": json.dumps(
+                        controlled_limitations(entry["internal_qc"])
+                        if decision.status == "include"
+                        else [],
+                        separators=(",", ":"),
+                    ),
+                    "decided_at": decision.expected_revision,
+                }
+            )
             try:
                 _write_review(review_path, rows)
                 _delivery_review(self.run_dir / "run.sqlite", self.run_dir)
@@ -693,11 +898,14 @@ def _source_signature(files):
 
 
 def _selection_manifest(files):
-    manifest = [{
-        "relative_path": str(_safe_relative(item.relative_path)),
-        "size": item.size,
-        "selected": item.selected,
-    } for item in files]
+    manifest = [
+        {
+            "relative_path": str(_safe_relative(item.relative_path)),
+            "size": item.size,
+            "selected": item.selected,
+        }
+        for item in files
+    ]
     paths = [item["relative_path"] for item in manifest]
     if any(item["size"] < 0 for item in manifest):
         raise HTTPException(400, "Selection contains a negative file size")
@@ -734,13 +942,17 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
         metadata = json.loads(metadata_path.read_text())
         batch_id = metadata_path.parent.name
         runs[batch_id] = WebRun(
-            metadata_path.parent / "source", metadata_path.parent / "run",
-            metadata_path.parent / "delivery")
+            metadata_path.parent / "source",
+            metadata_path.parent / "run",
+            metadata_path.parent / "delivery",
+        )
         names[batch_id] = metadata["name"]
         selection = metadata.get("selection")
-        selected_paths[batch_id] = ({item["relative_path"]: item["size"]
-                                     for item in selection if item["selected"]}
-                                    if selection else None)
+        selected_paths[batch_id] = (
+            {item["relative_path"]: item["size"] for item in selection if item["selected"]}
+            if selection
+            else None
+        )
         calibration_selected[batch_id] = metadata.get("use_configured_calibration", False)
 
     def batch(batch_id: str):
@@ -753,6 +965,7 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
         if allowed is not None and str(relative) not in allowed:
             raise HTTPException(409, "This file was not selected for this batch")
         return allowed[str(relative)] if allowed is not None else None
+
     review_file = Path(__file__).parents[2] / "review/index.html"
     if not review_file.is_file():
         review_file = Path(sys.prefix) / "share/actuate_delivery/index.html"
@@ -769,22 +982,26 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
             records, _ = web_run.episodes()
             source_files = web_run.source_files()
             candidates = web_run.candidates()
-            result.append({
-                "batch_id": batch_id, "name": names[batch_id],
-                "status": web_run.job()["status"],
-                "episodes": sum(item["grouping_status"] == "complete" for item in records),
-                "incomplete": sum(item["grouping_status"] != "complete"
-                                  for item in candidates),
-                "delivery_ready": web_run.archive_record() is not None,
-                "source_files": len(source_files),
-                "source_bytes": sum(item["size"] for item in source_files),
-            })
+            result.append(
+                {
+                    "batch_id": batch_id,
+                    "name": names[batch_id],
+                    "status": web_run.job()["status"],
+                    "episodes": sum(item["grouping_status"] == "complete" for item in records),
+                    "incomplete": sum(item["grouping_status"] != "complete" for item in candidates),
+                    "delivery_ready": web_run.archive_record() is not None,
+                    "source_files": len(source_files),
+                    "source_bytes": sum(item["size"] for item in source_files),
+                }
+            )
         return result
 
     @app.post("/api/batches/preflight")
     def preflight(request: BatchPreflight):
-        selected = [{"relative_path": str(_safe_relative(item.relative_path)),
-                     "size": item.size} for item in request.files]
+        selected = [
+            {"relative_path": str(_safe_relative(item.relative_path)), "size": item.size}
+            for item in request.files
+        ]
         if not selected:
             raise HTTPException(400, "Select at least one file")
         signature = _source_signature(selected)
@@ -792,12 +1009,14 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
         for batch_id, web_run in runs.items():
             existing = _source_signature(web_run.source_files())
             if signature == existing:
-                matches.append({
-                    "batch_id": batch_id,
-                    "name": names[batch_id],
-                    "status": web_run.job()["status"],
-                    "match": "same paths and sizes",
-                })
+                matches.append(
+                    {
+                        "batch_id": batch_id,
+                        "name": names[batch_id],
+                        "status": web_run.job()["status"],
+                        "match": "same paths and sizes",
+                    }
+                )
         return {"matches": matches}
 
     @app.post("/api/batches")
@@ -817,8 +1036,9 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
         (directory / "batch.json").write_text(json.dumps(metadata, indent=2) + "\n")
         runs[batch_id] = WebRun(directory / "source", directory / "run", directory / "delivery")
         names[batch_id] = name
-        selected_paths[batch_id] = {item["relative_path"]: item["size"]
-                                    for item in selection if item["selected"]}
+        selected_paths[batch_id] = {
+            item["relative_path"]: item["size"] for item in selection if item["selected"]
+        }
         calibration_selected[batch_id] = request.use_configured_calibration
         return {"batch_id": batch_id, "name": name}
 
@@ -839,8 +1059,10 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
                 "selected": calibration_selected[batch_id],
                 "label": _calibration_label(calibration) if calibration else None,
             },
-            "source": {"file_count": len(source_files),
-                       "bytes": sum(item["size"] for item in source_files)},
+            "source": {
+                "file_count": len(source_files),
+                "bytes": sum(item["size"] for item in source_files),
+            },
             "job": web_run.job(),
             "steps": web_run.steps(),
             "workflow": workflow_state(web_run.run_dir),
@@ -854,8 +1076,9 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
         }
 
     @app.put("/api/upload/{relative_path:path}")
-    async def upload(relative_path: str, size: int, request: Request,
-                     batch_id: str = initial_batch_id):
+    async def upload(
+        relative_path: str, size: int, request: Request, batch_id: str = initial_batch_id
+    ):
         web_run = batch(batch_id)
         relative = _safe_relative(relative_path)
         expected_size = selected_path(batch_id, relative)
@@ -896,8 +1119,9 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
         return {"path": str(relative), "offset": 0}
 
     @app.patch("/api/upload/chunk/{relative_path:path}")
-    async def append_upload(relative_path: str, offset: int, request: Request,
-                            batch_id: str = initial_batch_id):
+    async def append_upload(
+        relative_path: str, offset: int, request: Request, batch_id: str = initial_batch_id
+    ):
         web_run = batch(batch_id)
         relative = _safe_relative(relative_path)
         selected_path(batch_id, relative)
@@ -933,22 +1157,23 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
                     existing.update(chunk)
             if destination.stat().st_size != size or existing.hexdigest() != digest_hex:
                 staging.unlink(missing_ok=True)
-                raise HTTPException(409, "A different source file already uses this path in the batch")
+                raise HTTPException(
+                    409, "A different source file already uses this path in the batch"
+                )
             staging.unlink()
-            return {"path": str(relative), "bytes": size, "sha256": digest_hex,
-                    "reused": True}
+            return {"path": str(relative), "bytes": size, "sha256": digest_hex, "reused": True}
         destination.parent.mkdir(parents=True, exist_ok=True)
         staging.replace(destination)
         invalidate_from(web_run.run_dir, "inventory")
-        return {"path": str(relative), "bytes": size, "sha256": digest_hex,
-                "reused": False}
+        return {"path": str(relative), "bytes": size, "sha256": digest_hex, "reused": False}
 
     @app.post("/api/process", status_code=202)
     def process(batch_id: str = initial_batch_id):
         web_run = batch(batch_id)
         states = workflow_state(web_run.run_dir)
-        next_stage = next((item for item in states
-                           if item["stage"] != "delivery" and not item["approved"]), None)
+        next_stage = next(
+            (item for item in states if item["stage"] != "delivery" and not item["approved"]), None
+        )
         if next_stage is None:
             raise HTTPException(409, "All processing and review checkpoints are approved")
         if next_stage["status"] == "complete":
@@ -984,12 +1209,14 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
             database.row_factory = sqlite3.Row
             capture = database.execute(
                 """SELECT parent_path, capture_key FROM capture_snapshot
-                   WHERE capture_id=? AND is_canonical=1""", (capture_id,),
+                   WHERE capture_id=? AND is_canonical=1""",
+                (capture_id,),
             ).fetchone()
             if capture is None:
                 raise HTTPException(404, "Episode is not current")
             videos = _vendor_visualizations(
-                database, capture["parent_path"], capture["capture_key"])
+                database, capture["parent_path"], capture["capture_key"]
+            )
         if not videos:
             raise HTTPException(404, "No vendor review video is present")
         return FileResponse(
@@ -1009,8 +1236,9 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
     def delivery(batch_id: str = initial_batch_id):
         web_run = batch(batch_id)
         try:
-            review = next(item for item in workflow_state(web_run.run_dir)
-                          if item["stage"] == "review")
+            review = next(
+                item for item in workflow_state(web_run.run_dir) if item["stage"] == "review"
+            )
             if not review["approved"]:
                 raise RunError("Approve Human review before building delivery")
             policy = telemetry_policy(web_run.run_dir)
@@ -1029,8 +1257,7 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
         web_run = batch(batch_id)
         if web_run.output.exists():
             raise HTTPException(409, "This delivery is already built and cannot be changed")
-        review = next(item for item in workflow_state(web_run.run_dir)
-                      if item["stage"] == "review")
+        review = next(item for item in workflow_state(web_run.run_dir) if item["stage"] == "review")
         if not review["approved"]:
             raise HTTPException(409, "Approve Human review before choosing delivery contents")
         try:
@@ -1052,7 +1279,8 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
         web_run = batch(batch_id)
         if web_run.archive_record() is None:
             raise HTTPException(404, "The delivery ZIP is not ready")
-        return FileResponse(web_run.archive, media_type="application/zip",
-                            filename=f"actuate-{batch_id}.zip")
+        return FileResponse(
+            web_run.archive, media_type="application/zip", filename=f"actuate-{batch_id}.zip"
+        )
 
     return app

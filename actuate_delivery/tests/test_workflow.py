@@ -68,9 +68,7 @@ def test_running_progress_can_be_marked_interrupted(tmp_path):
     run_dir = tmp_path / "run"
     run_stage(str(source), run_dir, "inventory")
     with sqlite3.connect(run_dir / "run.sqlite") as database:
-        database.execute(
-            "UPDATE processing_item SET status='running' WHERE stage='inventory'"
-        )
+        database.execute("UPDATE processing_item SET status='running' WHERE stage='inventory'")
 
     interrupt_progress(run_dir / "run.sqlite", "inventory", "service restarted")
 
@@ -121,8 +119,10 @@ def test_changed_approved_artifact_blocks_resume_and_clears_approval(tmp_path):
     source.mkdir()
     header = bytearray(64)
     struct.pack_into("<8sIIHHQQI", header, 0, b"TRIMU001", 4, 400, 2, 3, 50, 75, 1)
-    rows = [struct.pack("<Q18f", timestamp, *([float(index)] * 18))
-            for index, timestamp in enumerate((100, 200))]
+    rows = [
+        struct.pack("<Q18f", timestamp, *([float(index)] * 18))
+        for index, timestamp in enumerate((100, 200))
+    ]
     (source / "take.imu").write_bytes(bytes(header) + b"".join(rows))
     run_dir = tmp_path / "run"
 

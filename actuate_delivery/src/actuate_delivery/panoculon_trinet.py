@@ -16,32 +16,68 @@ BASE_FIELDS = [
     ("mag", "<f4", (3,)),
 ]
 V1_DTYPE = np.dtype(BASE_FIELDS)
-V2_DTYPE = np.dtype(BASE_FIELDS + [
-    ("temperature_c", "<f4"),
-    ("quat_xyzw", "<f4", (4,)),
-    ("linear_accel", "<f4", (3,)),
-])
+V2_DTYPE = np.dtype(
+    BASE_FIELDS
+    + [
+        ("temperature_c", "<f4"),
+        ("quat_xyzw", "<f4", (4,)),
+        ("linear_accel", "<f4", (3,)),
+    ]
+)
 V3_DTYPE = np.dtype(V2_DTYPE.descr + [("trailing_value", "<f4")])
 DTYPES = {1: V1_DTYPE, 2: V2_DTYPE, 3: V3_DTYPE, 4: V3_DTYPE, 5: V3_DTYPE, 6: V3_DTYPE}
-COLUMNS = ["sample_index", "timestamp_ns",
-    "accel_x_mps2", "accel_y_mps2", "accel_z_mps2",
-    "gyro_x_rad_s", "gyro_y_rad_s", "gyro_z_rad_s",
-    "mag_x_ut", "mag_y_ut", "mag_z_ut", "temperature_c", "mag_age_us"]
+COLUMNS = [
+    "sample_index",
+    "timestamp_ns",
+    "accel_x_mps2",
+    "accel_y_mps2",
+    "accel_z_mps2",
+    "gyro_x_rad_s",
+    "gyro_y_rad_s",
+    "gyro_z_rad_s",
+    "mag_x_ut",
+    "mag_y_ut",
+    "mag_z_ut",
+    "temperature_c",
+    "mag_age_us",
+]
 VTS_DTYPES = {
     1: np.dtype([("frame_number", "<u4"), ("timestamp_ns", "<u8")]),
-    2: np.dtype([("frame_number", "<u4"), ("sof_timestamp_ns", "<u8"),
-        ("venc_seq", "<u4"), ("venc_pts_us", "<u8")]),
+    2: np.dtype(
+        [
+            ("frame_number", "<u4"),
+            ("sof_timestamp_ns", "<u8"),
+            ("venc_seq", "<u4"),
+            ("venc_pts_us", "<u8"),
+        ]
+    ),
 }
 VTS_DTYPES[3] = VTS_DTYPES[2]
-VTS_DTYPES[4] = np.dtype(VTS_DTYPES[2].descr + [("exposure_us", "<u4"),
-    ("timing_flags", "<u4"), ("readout_time_us", "<u4")])
-TEL_DTYPE = np.dtype([
-    ("timestamp_ns", "<u8"), ("device_temperature_millic", "<i4"),
-    ("cpu_frequency_khz", "<u4"), ("configured_bitrate_kbps", "<u4"),
-    ("configured_framerate_fps", "<u2"), ("thermal_state_code", "u1"), ("led_state_code", "u1")])
-TEL_COLUMNS = ["record_index", "timestamp_ns", "device_temperature_c",
-    "cpu_frequency_khz", "configured_bitrate_kbps", "configured_framerate_fps",
-    "thermal_state_code", "led_state_code"]
+VTS_DTYPES[4] = np.dtype(
+    VTS_DTYPES[2].descr
+    + [("exposure_us", "<u4"), ("timing_flags", "<u4"), ("readout_time_us", "<u4")]
+)
+TEL_DTYPE = np.dtype(
+    [
+        ("timestamp_ns", "<u8"),
+        ("device_temperature_millic", "<i4"),
+        ("cpu_frequency_khz", "<u4"),
+        ("configured_bitrate_kbps", "<u4"),
+        ("configured_framerate_fps", "<u2"),
+        ("thermal_state_code", "u1"),
+        ("led_state_code", "u1"),
+    ]
+)
+TEL_COLUMNS = [
+    "record_index",
+    "timestamp_ns",
+    "device_temperature_c",
+    "cpu_frequency_khz",
+    "configured_bitrate_kbps",
+    "configured_framerate_fps",
+    "thermal_state_code",
+    "led_state_code",
+]
 
 
 class ImuError(ValueError):
@@ -97,9 +133,7 @@ def decode_imu(source: Path, expected_sha256: str) -> ImuData:
     if len(raw) < HEADER_SIZE:
         raise ImuError(f"TRIMU001 header is truncated: {len(raw)} of {HEADER_SIZE} bytes")
 
-    magic, version, rate, accel_fs, gyro_fs, start, video = struct.unpack_from(
-        "<8sIIHHQQ", raw
-    )
+    magic, version, rate, accel_fs, gyro_fs, start, video = struct.unpack_from("<8sIIHHQQ", raw)
     if magic != b"TRIMU001":
         raise ImuError(f"Invalid IMU magic: {magic!r}")
     if version not in DTYPES:
@@ -112,7 +146,9 @@ def decode_imu(source: Path, expected_sha256: str) -> ImuData:
     dtype = DTYPES[version]
     body_size = len(raw) - HEADER_SIZE
     if body_size % dtype.itemsize:
-        raise ImuError(f"IMU body is not a whole number of {dtype.itemsize}-byte samples: {body_size} bytes")
+        raise ImuError(
+            f"IMU body is not a whole number of {dtype.itemsize}-byte samples: {body_size} bytes"
+        )
     if body_size == 0:
         raise ImuError("IMU file contains zero samples")
     samples = np.frombuffer(raw, dtype=dtype, offset=HEADER_SIZE).copy()
@@ -125,8 +161,19 @@ def decode_imu(source: Path, expected_sha256: str) -> ImuData:
     flags = struct.unpack_from("<I", raw, 36)[0] if version >= 3 else 0
     device_id = raw[40:56] if version >= 3 else b"\0" * 16
     ios_offset = struct.unpack_from("<q", raw, 56)[0] if version >= 4 else None
-    return ImuData(version, rate, accel_fs, gyro_fs, start, video, flags, device_id,
-                   ios_offset, raw[36:64], samples)
+    return ImuData(
+        version,
+        rate,
+        accel_fs,
+        gyro_fs,
+        start,
+        video,
+        flags,
+        device_id,
+        ios_offset,
+        raw[36:64],
+        samples,
+    )
 
 
 def _metadata(data: ImuData, source_sha256: str) -> dict[bytes, bytes]:
@@ -152,15 +199,25 @@ def _table(data: ImuData, source_sha256: str) -> pa.Table:
     arrays = [
         pa.array(np.arange(len(samples), dtype=np.int64)),
         pa.array(samples["timestamp_ns"], type=pa.uint64()),
-        *(pa.array(samples[field][:, axis], type=pa.float32())
-          for field in ("accel", "gyro", "mag") for axis in range(3)),
-        (pa.nulls(len(samples), type=pa.float32()) if data.version == 1
-         else pa.array(samples["temperature_c"], type=pa.float32())),
-        (pa.array(samples["trailing_value"], type=pa.float32()) if data.version >= 5
-         else pa.nulls(len(samples), type=pa.float32())),
+        *(
+            pa.array(samples[field][:, axis], type=pa.float32())
+            for field in ("accel", "gyro", "mag")
+            for axis in range(3)
+        ),
+        (
+            pa.nulls(len(samples), type=pa.float32())
+            if data.version == 1
+            else pa.array(samples["temperature_c"], type=pa.float32())
+        ),
+        (
+            pa.array(samples["trailing_value"], type=pa.float32())
+            if data.version >= 5
+            else pa.nulls(len(samples), type=pa.float32())
+        ),
     ]
     return pa.Table.from_arrays(arrays, names=COLUMNS).replace_schema_metadata(
-        _metadata(data, source_sha256))
+        _metadata(data, source_sha256)
+    )
 
 
 def _verify_parquet(path: Path, data: ImuData, source_sha256: str) -> None:
@@ -175,8 +232,7 @@ def _verify_parquet(path: Path, data: ImuData, source_sha256: str) -> None:
         raise ImuError("IMU Parquet timestamps do not match native values")
 
     native_columns = [
-        *(data.samples[field][:, axis]
-          for field in ("accel", "gyro", "mag") for axis in range(3)),
+        *(data.samples[field][:, axis] for field in ("accel", "gyro", "mag") for axis in range(3)),
         None if data.version == 1 else data.samples["temperature_c"],
         data.samples["trailing_value"] if data.version >= 5 else None,
     ]
@@ -184,7 +240,9 @@ def _verify_parquet(path: Path, data: ImuData, source_sha256: str) -> None:
         column = table[name]
         if native is None:
             if column.null_count != len(data.samples):
-                raise ImuError(f"IMU Parquet field must be null for native version {data.version}: {name}")
+                raise ImuError(
+                    f"IMU Parquet field must be null for native version {data.version}: {name}"
+                )
             continue
         stored = column.to_numpy(zero_copy_only=False).astype(np.float32, copy=False)
         if not np.array_equal(stored.view(np.uint32), native.view(np.uint32)):
@@ -198,8 +256,12 @@ def convert_imu(source: Path, output: Path, expected_sha256: str) -> ImuArtifact
     staging.unlink(missing_ok=True)
     try:
         pq.write_table(
-            _table(data, expected_sha256), staging, version="2.6", compression="zstd",
-            use_dictionary=False, write_statistics=True,
+            _table(data, expected_sha256),
+            staging,
+            version="2.6",
+            compression="zstd",
+            use_dictionary=False,
+            write_statistics=True,
         )
         _verify_parquet(staging, data, expected_sha256)
         parquet_hash = sha256(staging.read_bytes()).hexdigest()
@@ -255,7 +317,8 @@ def convert_tel(source: Path, output: Path, expected_sha256: str) -> TelArtifact
     magic, version, header_size, count = struct.unpack_from("<8sIII", raw)
     if magic != b"TRTEL01\0" or version != 1 or header_size != 32:
         raise SidecarError(
-            f"Invalid TEL header: magic={magic!r}, version={version}, header_size={header_size}")
+            f"Invalid TEL header: magic={magic!r}, version={version}, header_size={header_size}"
+        )
     if count == 0:
         raise SidecarError("TEL file declares zero records")
     if len(raw) != 32 + count * TEL_DTYPE.itemsize:
@@ -263,15 +326,22 @@ def convert_tel(source: Path, output: Path, expected_sha256: str) -> TelArtifact
     records = np.frombuffer(raw, dtype=TEL_DTYPE, offset=32).copy()
     if np.any(records["timestamp_ns"][1:] <= records["timestamp_ns"][:-1]):
         raise SidecarError("TEL timestamps must be strictly increasing")
-    table = pa.Table.from_arrays([pa.array(np.arange(count), type=pa.int64()),
-        pa.array(records["timestamp_ns"], type=pa.uint64()),
-        pa.array(records["device_temperature_millic"] / np.float32(1000), type=pa.float32()),
-        *(pa.array(records[name]) for name in TEL_DTYPE.names[2:]),
-    ], names=TEL_COLUMNS)
+    table = pa.Table.from_arrays(
+        [
+            pa.array(np.arange(count), type=pa.int64()),
+            pa.array(records["timestamp_ns"], type=pa.uint64()),
+            pa.array(records["device_temperature_millic"] / np.float32(1000), type=pa.float32()),
+            *(pa.array(records[name]) for name in TEL_DTYPE.names[2:]),
+        ],
+        names=TEL_COLUMNS,
+    )
     metadata = {
-        "schema_version": "actuate_delivery.telemetry.v1", "source_sha256": expected_sha256,
-        "native_format": "TRTEL01", "native_version": str(version),
-        "native_record_count": str(count), "native_device_id": raw[24:32].hex(),
+        "schema_version": "actuate_delivery.telemetry.v1",
+        "source_sha256": expected_sha256,
+        "native_format": "TRTEL01",
+        "native_version": str(version),
+        "native_record_count": str(count),
+        "native_device_id": raw[24:32].hex(),
         "temperature_conversion": "float32(temp_milli_c/1000)",
         "decoder_reference": f"Panoculon-Labs/Trinet-tools@{TOOLKIT_REVISION}",
         "write_parameters": "parquet=2.6;compression=zstd;dictionary=false;statistics=true",
@@ -281,8 +351,14 @@ def convert_tel(source: Path, output: Path, expected_sha256: str) -> TelArtifact
     staging = output.with_name(f".{output.name}.staging")
     staging.unlink(missing_ok=True)
     try:
-        pq.write_table(table, staging, version="2.6", compression="zstd",
-                       use_dictionary=False, write_statistics=True)
+        pq.write_table(
+            table,
+            staging,
+            version="2.6",
+            compression="zstd",
+            use_dictionary=False,
+            write_statistics=True,
+        )
         if not pq.read_table(staging).equals(table, check_metadata=True):
             raise SidecarError("TEL Parquet does not match the native decode")
         parquet_hash = sha256(staging.read_bytes()).hexdigest()

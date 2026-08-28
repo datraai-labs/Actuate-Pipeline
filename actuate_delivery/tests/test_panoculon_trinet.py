@@ -180,17 +180,47 @@ def test_run_continues_other_captures_and_rejects_changed_artifact(tmp_path):
 
 def test_ambiguous_capture_does_not_choose_between_two_imus(tmp_path):
     run_dir = tmp_path / "run"
-    first = FileFact("a.imu", "a.imu", ".", "imu", "take", None, 224, 1,
-                     "local", ".", "application/octet-stream", None, None, True)
-    second = FileFact("b.imu", "b.imu", ".", "imu", "take", None, 224, 1,
-                      "local", ".", "application/octet-stream", None, None, True)
+    first = FileFact(
+        "a.imu",
+        "a.imu",
+        ".",
+        "imu",
+        "take",
+        None,
+        224,
+        1,
+        "local",
+        ".",
+        "application/octet-stream",
+        None,
+        None,
+        True,
+    )
+    second = FileFact(
+        "b.imu",
+        "b.imu",
+        ".",
+        "imu",
+        "take",
+        None,
+        224,
+        1,
+        "local",
+        ".",
+        "application/octet-stream",
+        None,
+        None,
+        True,
+    )
     inventory = SourceInventory("file:///source", (first, second), group_captures((first, second)))
     open_run(inventory.source_identity, run_dir)
     store_inventory(run_dir / "run.sqlite", inventory, inventory)
     source_hashes = ("a" * 64, "b" * 64)
     preservation = (
-        (PreservedFile("a.imu", source_hashes[0], "new"),
-         PreservedFile("b.imu", source_hashes[1], "new")),
+        (
+            PreservedFile("a.imu", source_hashes[0], "new"),
+            PreservedFile("b.imu", source_hashes[1], "new"),
+        ),
         ((".", "take", "c" * 64, True),),
         0,
     )
