@@ -760,7 +760,7 @@ def create_app(source: Path, run_dir: Path, output: Path) -> FastAPI:
 
     @app.get("/")
     def index():
-        return FileResponse(review_file)
+        return FileResponse(review_file, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/batches")
     def batches():

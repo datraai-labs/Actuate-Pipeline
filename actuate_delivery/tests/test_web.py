@@ -97,6 +97,14 @@ def test_empty_browser_starts_with_neutral_dataset(tmp_path):
     }]
 
 
+def test_review_html_is_not_browser_cached(tmp_path):
+    app = create_app(tmp_path / "source", tmp_path / "run", tmp_path / "delivery")
+    index = next(route.endpoint for route in app.routes
+                 if getattr(route, "path", None) == "/")
+
+    assert index().headers["cache-control"] == "no-store"
+
+
 def test_stage_approval_route_accepts_nameless_confirmation(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
@@ -156,6 +164,19 @@ def test_review_ui_restores_latest_batch_and_can_finish_missing_zip():
     assert 'data-telemetry="exclude_all"' in html
     assert 'data-telemetry="include_available"' in html
     assert "needsTelemetry" in html
+
+
+def test_review_ui_wires_interactive_timeline_controls():
+    html = (Path(__file__).parents[1] / "review/index.html").read_text()
+
+    assert "canvas.onpointermove" in html
+    assert "canvas.onpointerleave" in html
+    assert "canvas.onclick" in html
+    assert "seekVideos(videos" in html
+    assert "master.addEventListener('timeupdate'" in html
+    assert "Hover for exact plotted values" in html
+    assert "window.devicePixelRatio" in html
+    assert "new ResizeObserver" in html
 
 
 def test_calibration_label_contains_facts_not_internal_ids():
