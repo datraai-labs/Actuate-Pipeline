@@ -54,10 +54,9 @@ class VideoDepthEstimator:
             from video_depth_anything.video_depth import VideoDepthAnything
         except ImportError as exc:  # pragma: no cover -- Kaggle path
             raise RuntimeError(
-                "Video-Depth-Anything is not installed. On Kaggle:\n"
-                "  pip install -q git+https://github.com/DepthAnything/Video-Depth-Anything\n"
-                "and download the checkpoint (metric variant for metric depth). See "
-                "kaggle/README.md."
+                "Video-Depth-Anything is not installed. In the isolated GPU environment:\n"
+                "  pip install git+https://github.com/DepthAnything/Video-Depth-Anything\n"
+                "Then download the metric checkpoint and set VDA_CKPT to its path."
             ) from exc
 
         cfgs = {

@@ -1,6 +1,6 @@
 # CLI/API-first, enforced (Master Spec §2.1).
 #
-# "If a capability only works through the CLI or only through the service, it is wrong."
+# "If a capability only works through the CLI or dashboard API, it is wrong."
 # That rule is only real if something checks it, so this contract runs in CI.
 #
 #   lint-imports
@@ -13,7 +13,7 @@ include_external_packages = False
 name = Actuate layered architecture (higher may import lower; never the reverse)
 type = layers
 layers =
-    actuate.cli : actuate.service
+    actuate.cli
     actuate.sdk
     actuate.pipeline
     actuate.feedback
@@ -32,7 +32,7 @@ layers =
     actuate.config
 
 [importlinter:contract:thin-consumers]
-name = No layer may import the CLI or the service
+name = No layer may import the CLI
 type = forbidden
 source_modules =
     actuate.config
@@ -54,4 +54,3 @@ source_modules =
     actuate.cloud
 forbidden_modules =
     actuate.cli
-    actuate.service

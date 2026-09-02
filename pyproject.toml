@@ -49,7 +49,6 @@ humanoid-retarget = [
 sim = ["mujoco>=3.1"]
 # Rerun visualization (`actuate viz`). Viewer-free import; only needed to log/open recordings.
 viz = ["rerun-sdk>=0.20", "opencv-python>=4.8", "av>=12"]
-service = ["fastapi>=0.111", "uvicorn>=0.30"]
 # SDK source resolvers (Phase 6): pull data from HuggingFace / URLs / Open-X. s3fs+fsspec
 # are already in [aws]; huggingface_hub + datasets add the HF read/write path.
 sources = ["huggingface_hub>=0.23", "datasets>=2.19", "requests>=2.31", "fsspec>=2024.6"]

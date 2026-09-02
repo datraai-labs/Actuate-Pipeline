@@ -45,10 +45,10 @@ scripts/NN_stage.py   # the 17 v1 stages. Still the execution path (run_pipeline
                       # Numbered so DAG order is visible from the filesystem — keep that.
 infra/                # AWS CDK (Python): StorageStack, DataStack
 config.py             # v1's 633-line de-facto spec. Read before changing behavior.
-service/api.py        # v1 FastAPI. Known-fragile: in-memory job state + regex-parses its own log.
+../Actuate-dashboard/ # FastAPI + Next.js product surface; consumes the public SDK.
 ```
 
-Dependency direction is one-way and CI-enforced: `cli/` and `service/` import layers; layers import only `schema/`, `io/`, `config/`, `catalog/`, and each other in pipeline order. **Nothing in a layer imports `cli/` or `service/`.**
+Dependency direction is one-way and CI-enforced: `cli/` imports layers; layers import only `schema/`, `io/`, `config/`, `catalog/`, and each other in pipeline order. The separate dashboard consumes the SDK; Core never imports it.
 
 ## Known-shaky — do not build on these without checking
 

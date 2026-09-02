@@ -1,9 +1,7 @@
 """Typed, validated settings — Master Spec §2.3, AWS Architecture §4.3.
 
-Replaces v1's `config.py` module-level constants, which the FastAPI service currently
-mutates globally per request under a lock (`service/api.py`) — a known-fragile pattern
-that cannot be made multi-tenant. Settings here are an object you pass, not global state
-you reassign.
+Replaces v1's `config.py` module-level constants. Settings here are an object you pass,
+not global state you reassign, so the separate dashboard API can remain multi-tenant.
 
 **No secrets in code, ever.** DB credentials come from AWS Secrets Manager (or an env var
 in local dev). There is no default password and no default connection string; absence is

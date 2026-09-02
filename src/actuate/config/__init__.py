@@ -47,6 +47,7 @@ from actuate.config.settings import (
     StorageBackendKind,
     load_settings,
 )
+from actuate.config.capabilities import product_capabilities
 
 __all__ = [
     "ActionVerb",
@@ -80,6 +81,7 @@ __all__ = [
     "get_embodiment",
     "get_rig",
     "load_settings",
+    "product_capabilities",
     "retarget_ready_embodiments",
     "trust_rank",
 ]

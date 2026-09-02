@@ -62,7 +62,7 @@ actuate/            # importable library — the source of truth
   package/          # L7: lerobot/ rlds/ normalize/ tiers
   feedback/         # L8
   cli/              # Typer app (thin)
-  service/          # FastAPI app (thin consumer)
+../Actuate-dashboard/ # FastAPI + Next.js app (separate thin consumer)
 tests/
   unit/             # fast, mock-free where possible
   integration/      # real-data fixtures, small real clips
@@ -70,7 +70,7 @@ tests/
 pyproject.toml      # uv/pip; extras per layer to keep deps optional
 ```
 
-**Dependency direction:** `cli/` and `service/` import from the layer packages; layer packages import only from `schema/`, `io/`, `config/`, and each other in pipeline order. **Nothing in a layer imports from `cli/` or `service/`. Enforce with an import-linter contract in CI.**
+**Dependency direction:** `cli/` imports from the layer packages; layer packages import only from `schema/`, `io/`, `config/`, and each other in pipeline order. The separate dashboard consumes the public SDK and is never imported by Core. **Enforce the Core direction with an import-linter contract in CI.**
 
 **Optional heavy deps:** perception/retarget models (torch, CUDA libs, sim engines) live behind extras (`actuate[perception]`, `actuate[retarget]`, `actuate[sim]`) so the core library and exporters install without a GPU stack.
 

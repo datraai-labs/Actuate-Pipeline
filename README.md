@@ -25,9 +25,9 @@ Spec consolidates them. The v1 pipeline's own README is at
 
 ## Two non-negotiables
 
-1. **CLI/API-first.** Everything is a library function first; the Typer CLI and the FastAPI
-   service are thin consumers, never dependencies. If a capability only works through the
-   CLI or the service, it is wrong. **Enforced in CI** by an import-linter contract.
+1. **CLI/API-first.** Everything is a library function first; the Typer CLI and the separate
+   `Actuate-dashboard` API are thin consumers, never dependencies. If a capability only works
+   through one interface, it is wrong. **Enforced in CI** by an import-linter contract.
 2. **Verify against real data.** A component is "done" only when tested against real data,
    and **every correctness test must be confirmed to fail against a broken version.**
    "Looks right" is not a status.
@@ -35,13 +35,13 @@ Spec consolidates them. The v1 pipeline's own README is at
 ## Install
 
 ```bash
-pip install -e ".[aws,dev,service]"   # core is CPU-only and light; heavy deps are extras
+pip install -e ".[aws,dev]"   # core is CPU-only and light; heavy deps are extras
 ```
 
 Extras: `[perception]` (WiLoR, depth models — GPU), `[retarget]` (IK), `[sim]` (MuJoCo),
-`[aws]` (S3 + Postgres + pgvector), `[service]` (FastAPI). The core library, the schema,
-certification, and the exporters all run **without a GPU stack** — so value ships before
-any model does.
+`[aws]` (S3 + Postgres + pgvector). Dashboard API dependencies live in the separate
+`Actuate-dashboard` repository. The core library, schema, certification, and exporters all
+run **without a GPU stack** — so value ships before any model does.
 
 ## Run the tests
 
@@ -147,11 +147,10 @@ src/actuate/        the library — the source of truth
   catalog/          Postgres (SQLAlchemy + Alembic + pgvector)
   ingest/ perception/ fusion/ canonical/ certify/ retarget/ language/ package/ feedback/
   cli/              Typer (thin)
-  service/          FastAPI (thin consumer)
 infra/              AWS CDK: StorageStack + DataStack
 scripts/NN_*.py     the 17 v1 stages — still the execution path (run_pipeline.py)
 ```
 
-Dependency direction is one-way and CI-enforced: `cli/` and `service/` import layers;
-layers import only `schema/`, `io/`, `config/`, `catalog/`, and each other in pipeline
-order. **Nothing in a layer imports `cli/` or `service/`.**
+Dependency direction is one-way and CI-enforced: `cli/` imports layers; layers import only
+`schema/`, `io/`, `config/`, `catalog/`, and each other in pipeline order. The external
+dashboard imports the public SDK and is never imported by Core.
