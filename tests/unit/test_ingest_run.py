@@ -10,7 +10,7 @@ import pytest
 
 from actuate.config import Tier
 from actuate.config.embodiments import EmbodimentSpec, HandSpec
-from actuate.ingest import RigStreamError, run_ingest
+from actuate.ingest import RigDeclarationError, RigStreamError, run_ingest
 from actuate.ingest.run import _check_alignment, _session_intrinsics
 
 
@@ -118,16 +118,38 @@ def test_undeclared_sensor_sidecar_fails(session):
         run_ingest("head_mounted", session)
 
 
-def test_multi_camera_rig_requires_each_declared_camera(tmp_path):
+def test_stereo_rig_with_one_camera_fails_at_the_declaration_gate(tmp_path):
+    """A stereo declaration backed by ONE view fails — now at the declaration gate.
+
+    Previously this surfaced as RigStreamError ("declared camera 'stereo_right' has no
+    video"). Since `validate_declared_rig` moved ahead of `verify_rig_streams`, the
+    declaration gate reaches it first and refuses to invent the missing second view. Both
+    are hard failures; only the reported reason changed. The manifest's per-camera check is
+    still exercised directly by the teleop case below.
+    """
     (tmp_path / "stereo_left.mp4").write_bytes(b"\x00" * 512)
     (tmp_path / "session_meta.json").write_text(json.dumps(
         {"frame_count": 10, "duration_seconds": 1.0, "fps_nominal": 10.0}))
-    with pytest.raises(RigStreamError, match="stereo_right"):
+    with pytest.raises(RigDeclarationError, match="missing second view"):
         run_ingest("stereo", tmp_path)
     # positive control: both declared cameras present -> ingest proceeds
     (tmp_path / "stereo_right.mp4").write_bytes(b"\x00" * 512)
     res = run_ingest("stereo", tmp_path)
     assert res.tier is Tier.STAGE1_VOLUME
+
+
+def test_multi_camera_rig_requires_each_declared_camera(tmp_path):
+    """The manifest's per-camera guarantee, on a rig the declaration gate does not gate.
+
+    teleop_robot declares cameras ("top", "wrist") and has no layout rule of its own, so a
+    session missing one camera reaches `verify_rig_streams` and fails there by name.
+    """
+    (tmp_path / "top.mp4").write_bytes(b"\x00" * 512)
+    (tmp_path / "joint_states.json").write_text("{}")
+    (tmp_path / "session_meta.json").write_text(json.dumps(
+        {"frame_count": 10, "duration_seconds": 1.0, "fps_nominal": 10.0}))
+    with pytest.raises(RigStreamError, match="wrist"):
+        run_ingest("teleop_robot", tmp_path)
 
 
 def test_fps_metadata_mismatch_is_flagged_not_silently_trusted(tmp_path):
