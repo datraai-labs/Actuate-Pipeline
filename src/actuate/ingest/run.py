@@ -50,6 +50,93 @@ class RigStreamError(ValueError):
     """
 
 
+class RigDeclarationError(ValueError):
+    """The declared capture rig contradicts the source pixels/layout."""
+
+
+def validate_declared_rig(src: Path, rig: RigType, flags: list[str] | None = None) -> str:
+    """Validate active-rig declarations against source provenance and geometry.
+
+    Three layers, in cost order — naming evidence first, pixels only when needed:
+
+    1. **Provenance gate.** A file named `<stem>_L.mp4` with no `<stem>_R.mp4` beside it is
+       one eye of a stereo pair. This is the case the aspect gate structurally cannot catch:
+       a single stereo eye is 1920x1080 exactly like a genuine monocular capture, because
+       one eye of a stereo rig *is* a monocular image (see ingest/stereo.py).
+    2. **Aspect/layout gate.** Retained unchanged for true side-by-side composites.
+    3. **Correspondence check.** When a stereo declaration has both eyes, confirm they
+       actually correspond rather than being two unrelated cameras.
+
+    Deliberately fatal: processing a stereo eye as monocular produces plausible-looking but
+    physically meaningless depth. `flags` collects non-fatal "could not verify" notes; an
+    unverifiable correspondence is never silently upgraded to a verified one.
+    """
+    from actuate.sources.detect import detect_layout
+    from actuate.ingest.stereo import (
+        classify_eye,
+        find_companion_eye,
+        find_lone_eye,
+        orphaned_stereo_sidecars,
+        verify_stereo_pair,
+    )
+
+    # --- Layer 1: provenance, before any frame is decoded -------------------------------
+    lone = find_lone_eye(src)
+    if lone is not None:
+        sidecars = orphaned_stereo_sidecars(lone.stem, src)
+        extra = f" Orphaned stereo sidecars present: {', '.join(sidecars)}." if sidecars else ""
+        raise RigDeclarationError(
+            f"{lone.path.name} is one eye of a stereo pair -- its companion "
+            f"'{lone.expected_companion_name}' is missing from {src}. One eye of a stereo "
+            "rig is pixel-identical to a monocular capture, so this cannot be caught by "
+            f"geometry: it must be refused here.{extra} Declare rig=stereo and supply the "
+            "pair, or ingest a genuinely monocular capture."
+        )
+
+    layout = detect_layout(src)
+
+    # --- Layer 2: aspect/layout (unchanged) ---------------------------------------------
+    if rig is RigType.HEAD_MOUNTED and layout in {"stereo_video", "multi_camera"}:
+        raise RigDeclarationError(
+            f"declared rig=head_mounted but the source layout is {layout}. A side-by-side "
+            "stereo composite must not be processed as one monocular image. Declare "
+            "rig=stereo and use a validated stereo adapter."
+        )
+    if rig is RigType.STEREO and layout not in {"stereo_video", "multi_camera"}:
+        raise RigDeclarationError(
+            f"declared rig=stereo but the source layout is {layout}; expected one "
+            "side-by-side stereo video or both declared camera files. Refusing to invent "
+            "the missing second view."
+        )
+
+    # --- Layer 3: correspondence, only for a stereo declaration with both eyes -----------
+    if rig is RigType.STEREO:
+        pair = None
+        for candidate in sorted(Path(src).iterdir()):
+            if not candidate.is_file() or candidate.suffix.lower() not in (".mp4", ".mov", ".avi"):
+                continue
+            eye = classify_eye(candidate)
+            if eye and eye.eye in ("l", "left"):
+                companion = find_companion_eye(eye, src)
+                if companion is not None:
+                    pair = (candidate, companion)
+                    break
+        if pair is not None:
+            evidence = verify_stereo_pair(*pair)
+            if not evidence.corresponds and evidence.n_samples >= 4:
+                raise RigDeclarationError(
+                    f"declared rig=stereo but {pair[0].name} and {pair[1].name} do not "
+                    f"correspond: {evidence.reason} ({evidence.summary()}). Two unrelated "
+                    "views must not be fused as a stereo pair."
+                )
+            if not evidence.corresponds and flags is not None:
+                flags.append(
+                    f"stereo correspondence UNVERIFIABLE for {pair[0].name}/{pair[1].name}: "
+                    f"{evidence.reason}. Not accepted as verified."
+                )
+
+    return layout
+
 @dataclass
 class IngestResult:
     session_dir: Path
@@ -315,10 +402,15 @@ def run(rig: RigType | str, src: Path, store: Path | None = None,
     """
     src = Path(src)
     rig = RigType(rig) if isinstance(rig, str) else rig
+    flags: list[str] = []
+    # ORDER MATTERS. The declaration gate runs BEFORE the rig manifest check: the manifest
+    # describes what the DECLARED rig should produce, so verifying it first means a
+    # mis-declared session is validated against the wrong contract and can pass. A lone
+    # stereo eye declared head_mounted satisfies the head_mounted manifest perfectly --
+    # which is exactly how it used to ingest cleanly.
+    layout = validate_declared_rig(src, rig, flags)
     verify_rig_streams(rig, src)
     video = _session_video(src)
-
-    flags: list[str] = []
     capture_id = hash_file(video)
 
     meta = {}
