@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Actuate</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root { --ink:#172019; --muted:#667068; --line:#dce2dc; --paper:#f6f7f3; --green:#176b47; --green-bg:#eaf5ee; --red:#9b352d; --red-bg:#fff0ee; --amber:#87500f; --amber-bg:#fff6e7; }
+    * { box-sizing:border-box; }
+    [hidden] { display:none !important; }
+    body { margin:0; color:var(--ink); background:var(--paper); font:14px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
+    button, input, textarea { font:inherit; }
+    button { cursor:pointer; }
+    button:disabled { opacity:.46; cursor:not-allowed; }
+    header { height:66px; display:flex; align-items:center; justify-content:space-between; padding:0 28px; border-bottom:1px solid var(--line); background:#fff; }
+    .brand { display:flex; align-items:center; gap:10px; font-weight:760; }
+    .mark { width:31px; height:31px; display:grid; place-items:center; border-radius:8px; color:#fff; background:var(--ink); font-size:11px; }
+    .status { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; }
+    .dot { width:8px; height:8px; border-radius:50%; background:#a3aaa3; }
+    .dot.running { background:#d68224; } .dot.complete { background:#27915f; } .dot.failed { background:var(--red); }
+    .shell { min-height:calc(100vh - 66px); display:grid; grid-template-columns:224px minmax(0,1fr); }
+    nav { padding:24px 14px; border-right:1px solid var(--line); background:#fbfcf9; }
+    nav button { width:100%; display:flex; align-items:center; gap:10px; padding:11px 12px; border:0; border-radius:8px; color:var(--muted); text-align:left; background:transparent; }
+    nav button.active { color:var(--ink); background:#e9ede7; font-weight:700; }
+    .nav-number { width:22px; height:22px; display:grid; place-items:center; border:1px solid var(--line); border-radius:50%; font-size:11px; }
+    main { width:min(1040px, calc(100% - 40px)); margin:0 auto; padding:40px 0 72px; }
+    .page { display:none; } .page.active { display:block; }
+    .eyebrow { color:var(--muted); font-size:11px; font-weight:760; letter-spacing:.11em; text-transform:uppercase; }
+    h1 { margin:5px 0 8px; font-size:32px; line-height:1.16; letter-spacing:-.04em; }
+    h2 { margin:0; font-size:18px; letter-spacing:-.02em; }
+    h3 { margin:0 0 10px; font-size:15px; }
+    p { margin:0; } .lead { max-width:720px; color:var(--muted); font-size:16px; }
+    .context { margin-top:17px; padding:10px 13px; border:1px solid var(--line); border-radius:8px; color:var(--muted); background:#fff; }
+    .surface { margin-top:24px; padding:24px; border:1px solid var(--line); border-radius:12px; background:#fff; }
+    .drop { padding:50px 24px; border:1px dashed #9da69d; border-radius:10px; text-align:center; background:#fafbf8; }
+    .drop strong { display:block; font-size:18px; } .drop p { margin:5px auto 18px; max-width:620px; color:var(--muted); }
+    .primary,.secondary,.danger { display:inline-flex; align-items:center; justify-content:center; min-height:40px; padding:9px 15px; border-radius:8px; text-decoration:none; }
+    .primary { border:1px solid var(--ink); color:#fff; background:var(--ink); }
+    .secondary { border:1px solid var(--line); color:var(--ink); background:#fff; }
+    .danger { border:1px solid #ddb6b0; color:var(--red); background:#fff9f8; }
+    .choice-row,.actions { display:flex; flex-wrap:wrap; gap:9px; } .choice-row { justify-content:center; } .actions { justify-content:flex-end; margin-top:16px; }
+    .notice,.success,.error { margin-top:14px; padding:13px 14px; border-radius:8px; }
+    .notice { color:#644015; background:var(--amber-bg); } .success { color:#155a3c; background:var(--green-bg); } .error { color:var(--red); background:var(--red-bg); }
+    .summary-grid,.metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:1px; margin-top:18px; overflow:hidden; border:1px solid var(--line); border-radius:9px; background:var(--line); }
+    .metric { padding:14px; background:#fff; } .metric b { display:block; font-size:21px; letter-spacing:-.025em; } .metric span { color:var(--muted); font-size:12px; }
+    label { display:block; margin-top:17px; font-size:12px; font-weight:700; }
+    input[type=text],textarea { width:100%; margin-top:6px; padding:10px 11px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+    textarea { min-height:82px; resize:vertical; }
+    .file-list { max-height:210px; margin-top:14px; overflow:auto; border:1px solid var(--line); border-radius:8px; }
+    .file-row,.run-row,.delivery-row { display:flex; align-items:center; justify-content:space-between; gap:18px; padding:11px 13px; border-top:1px solid var(--line); }
+    .file-row:first-child,.run-row:first-child,.delivery-row:first-child { border-top:0; }
+    .file-row code { min-width:0; overflow-wrap:anywhere; font-size:12px; }
+    .run-row small { display:block; }
+    .muted,small { color:var(--muted); }
+    .progress { height:8px; margin-top:16px; overflow:hidden; border-radius:8px; background:#e4e8e2; }
+    .progress span { display:block; width:0; height:100%; background:var(--green); transition:width .2s; }
+    .steps { margin-top:18px; }
+    .step { display:grid; grid-template-columns:26px 190px 1fr; gap:10px; padding:11px 0; border-top:1px solid var(--line); }
+    .step:first-child { border-top:0; }
+    .step-icon { width:22px; height:22px; display:grid; place-items:center; border:1px solid #a4aaa4; border-radius:50%; color:var(--muted); font-size:11px; font-weight:800; }
+    .step.complete .step-icon,.step.approved .step-icon { border-color:var(--green); color:#fff; background:var(--green); }
+    .step.running .step-icon { border-color:#d68224; color:#6b3e08; background:#f6c579; }
+    .step.failed .step-icon { border-color:var(--red); color:#fff; background:var(--red); }
+    .step-state { font-size:11px; font-weight:700; }
+    .step.complete .step-state,.step.approved .step-state { color:var(--green); } .step.running .step-state,.step.awaiting_approval .step-state { color:var(--amber); } .step.failed .step-state { color:var(--red); }
+    .step small { display:block; }
+    .section-head,.detail-head { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; }
+    .batch-list { margin-top:12px; border-top:1px solid var(--line); }
+    details summary { cursor:pointer; color:var(--muted); }
+    .episodes { display:grid; grid-template-columns:245px minmax(0,1fr); gap:18px; margin-top:23px; }
+    .episode-list { padding-right:15px; border-right:1px solid var(--line); }
+    .episode-list button { width:100%; margin-bottom:5px; padding:11px; border:0; border-radius:8px; text-align:left; background:transparent; }
+    .episode-list button.active { background:#e9ede7; } .episode-list small { display:block; }
+    .pill { display:inline-flex; height:max-content; padding:4px 9px; border-radius:99px; color:var(--green); background:var(--green-bg); font-size:11px; font-weight:760; }
+    .pill.fail { color:var(--red); background:var(--red-bg); } .pill.unknown { color:var(--amber); background:var(--amber-bg); }
+    video { width:100%; aspect-ratio:16/7; margin:18px 0; border-radius:9px; background:#18201a; object-fit:contain; }
+    .tabs { display:flex; gap:4px; margin:18px 0 14px; overflow:auto; border-bottom:1px solid var(--line); }
+    .tabs button { padding:8px 10px; border:0; border-bottom:2px solid transparent; white-space:nowrap; color:var(--muted); background:transparent; }
+    .tabs button.active { border-color:var(--ink); color:var(--ink); font-weight:700; }
+    .tab-panel { display:none; } .tab-panel.active { display:block; }
+    dl { display:grid; grid-template-columns:1fr 1fr; gap:14px 28px; margin:0; }
+    dt { color:var(--muted); font-size:12px; } dd { margin:2px 0 0; font-weight:680; }
+    table { width:100%; border-collapse:collapse; font-size:12px; } th,td { padding:9px 8px; border-top:1px solid var(--line); text-align:left; vertical-align:top; } th { color:var(--muted); }
+    pre { max-height:230px; overflow:auto; padding:10px; border-radius:7px; white-space:pre-wrap; overflow-wrap:anywhere; background:#f2f4ef; font-size:11px; }
+    .tree { max-height:340px; margin-top:15px; overflow:auto; border:1px solid var(--line); border-radius:8px; }
+    .tree .file-row { align-items:flex-start; }
+    .selection-dialog { width:min(980px,calc(100% - 32px)); max-height:calc(100vh - 40px); padding:0; overflow:hidden; border:1px solid var(--line); border-radius:14px; color:var(--ink); background:#fff; box-shadow:0 22px 70px #1520182b; }
+    .selection-dialog::backdrop { background:#17201966; }
+    .selection-head,.selection-foot { display:flex; align-items:center; justify-content:space-between; gap:18px; padding:19px 22px; }
+    .selection-head { border-bottom:1px solid var(--line); } .selection-foot { border-top:1px solid var(--line); }
+    .selection-body { display:grid; grid-template-columns:minmax(0,1fr) 270px; height:min(560px,calc(100vh - 230px)); min-height:0; overflow:hidden; }
+    .selection-browser { min-width:0; min-height:0; padding:14px 18px 22px; overflow:auto; border-right:1px solid var(--line); }
+    .selection-tools { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:8px; }
+    .source-tree { min-width:480px; }
+    .source-row { display:grid; grid-template-columns:24px 22px minmax(0,1fr) auto; align-items:center; gap:6px; min-height:34px; padding:3px 8px 3px calc(8px + var(--depth) * 20px); border-radius:6px; }
+    .source-row:hover { background:#f3f6f1; }
+    .source-row input { margin:0; }
+    .source-row small { white-space:nowrap; }
+    .folder-toggle { width:22px; height:22px; padding:0; border:0; color:var(--muted); background:transparent; }
+    .source-summary { min-height:0; padding:18px; overflow:auto; background:#fbfcf9; }
+    .source-summary .metric { padding:10px 0; border-bottom:1px solid var(--line); }
+    .source-summary .metric b { display:block; font-size:20px; }
+    .source-summary .metric span { color:var(--muted); font-size:12px; }
+    .selection-status { min-width:0; flex:1; }
+    .download-status { margin-top:10px; color:var(--green); text-align:right; }
+    .item-progress { grid-column:2 / -1; margin-top:7px; }
+    .item-progress summary { color:var(--muted); cursor:pointer; font-size:12px; }
+    .item-progress div { display:flex; justify-content:space-between; gap:16px; padding:5px 0; border-top:1px solid var(--line); font-size:11px; }
+    .camera-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px; margin:14px 0; }
+    .camera-grid video { width:100%; border-radius:8px; background:#111; }
+    .plot-help { margin:-3px 0 7px; color:var(--muted); font-size:12px; }
+    .plot-wrap { position:relative; margin-bottom:18px; }
+    .plot { display:block; width:100%; height:160px; border:1px solid var(--line); border-radius:7px; background:#fff; cursor:crosshair; touch-action:none; }
+    .plot-tooltip { position:absolute; z-index:2; max-width:260px; padding:8px 10px; border:1px solid #cbd2cb; border-radius:7px; color:#fff; background:#172019eb; box-shadow:0 5px 18px #1720192e; pointer-events:none; font-size:11px; line-height:1.5; }
+    .issue-card { margin:8px 0; padding:12px; border:1px solid #efd5af; border-radius:8px; background:var(--amber-bg); }
+    @media(max-width:800px) { .shell{grid-template-columns:1fr} nav{display:flex;overflow:auto;padding:10px;border-right:0;border-bottom:1px solid var(--line)} nav button{width:auto;white-space:nowrap}.summary-grid,.metrics{grid-template-columns:1fr 1fr}.episodes{grid-template-columns:1fr}.episode-list{display:flex;overflow:auto;padding:0 0 12px;border-right:0;border-bottom:1px solid var(--line)}.episode-list button{min-width:180px}.step{grid-template-columns:18px 1fr}.step small{grid-column:2}.selection-body{grid-template-columns:1fr}.selection-browser{border-right:0}.source-summary{border-top:1px solid var(--line)} }
+  </style>
+</head>
+<body>
+  <header><div class="brand"><span class="mark">A</span> Actuate</div><div class="status"><span class="dot" id="status-dot"></span><span id="status-text">Loading</span></div></header>
+  <div class="shell">
+    <nav aria-label="Workflow"><button class="active" data-page="source"><span class="nav-number">1</span>Upload</button><button data-page="runs"><span class="nav-number">2</span>Process</button><button data-page="episodes"><span class="nav-number">3</span>Review</button><button data-page="delivery"><span class="nav-number">4</span>Deliver</button></nav>
+    <main>
+      <section class="page active" id="source">
+        <div class="eyebrow">Step 1 of 4</div><h1>Select a recording batch</h1><p class="lead">Choose a dated folder or individual recording files. Nothing is uploaded until you review the selection and click the final upload button.</p>
+        <div class="surface" id="source-picker"><div class="drop"><strong>Choose files from this computer</strong><p>Your browser may first ask permission to access the selected files. That prompt does not upload anything. System Volume Information is always ignored.</p><input id="folder" type="file" webkitdirectory multiple hidden><input id="files" type="file" multiple hidden><div class="choice-row"><button class="primary" id="choose-folder">Choose folder</button><button class="secondary" id="choose-files">Choose individual files</button></div></div><p class="muted" id="picker-message" style="margin-top:12px" aria-live="polite">No files selected.</p></div>
+        <dialog class="selection-dialog" id="selection" aria-labelledby="selection-title"><div class="selection-head"><div><h2 id="selection-title">Select files for this dataset</h2><p class="muted">Choose folders or individual files. Original nesting is preserved.</p></div><button class="secondary" id="clear-selection">Cancel</button></div><div class="selection-body"><div class="selection-browser"><div class="selection-tools"><span class="muted" id="selection-root"></span><button class="secondary" id="toggle-all">Clear all</button></div><div class="source-tree" id="selected-files"></div></div><aside class="source-summary"><div class="metric"><b id="selected-count">0</b><span>files selected</span></div><div class="metric"><b id="excluded-count">0</b><span>files excluded</span></div><div class="metric"><b id="selected-size">0 MB</b><span>selected upload size</span></div><div class="metric"><b id="selected-ignored">0</b><span>ignored system files</span></div><label for="batch-input">Dataset name</label><input id="batch-input" type="text" autocomplete="off"><div class="context" id="calibration-choice" hidden><label style="margin-top:0"><input id="use-calibration" type="checkbox"> Include configured stereo calibration</label><p class="muted" id="calibration-label"></p><p class="muted">Select this only when the recordings came from the same physical camera setup as this calibration.</p></div><div id="duplicate-message" aria-live="polite"></div></aside></div><div class="selection-foot"><div class="selection-status"><div class="progress" id="upload-progress-track" hidden><span id="upload-progress"></span></div><p class="muted" id="upload-message" aria-live="polite">Review the exact selection before upload.</p></div><div class="actions" style="margin-top:0"><button class="secondary" id="open-existing" hidden>Open existing batch</button><button class="primary" id="upload">Upload selected files</button></div></div></dialog>
+      </section>
+
+      <section class="page" id="runs">
+        <div class="eyebrow">Step 2 of 4</div><h1>Process batch</h1><p class="lead">See exactly what is running, what completed, and what needs action. Retrying preserves uploaded files and reuses verified work.</p><div class="context" id="run-context">Loading current batch...</div>
+        <div class="surface"><div class="section-head"><div><h2 id="batch-name">Current batch</h2><p class="muted" id="run-detail">Reading state</p></div><button class="primary" id="process">Start inventory</button></div><div class="metrics"><div class="metric"><b id="episode-count">0</b><span>complete episodes</span></div><div class="metric"><b id="incomplete-count">0</b><span>incomplete candidates</span></div><div class="metric"><b id="stream-count">0</b><span>camera streams</span></div><div class="metric"><b id="source-count">0</b><span>uploaded source files</span></div></div><div id="checkpoint-approval-message" aria-live="polite"></div><p class="muted" style="margin-top:14px">Elapsed time for current stage: <b id="elapsed">-</b></p><div class="steps" id="steps"></div><div id="run-error"></div><div id="incomplete"></div></div>
+        <div class="surface"><h2>Other batches</h2><p class="muted">Each upload is isolated. Files from different batches are never mixed.</p><div class="batch-list" id="batch-list"></div><details id="empty-batches" hidden><summary>Show incomplete upload attempts</summary><div id="empty-batch-list"></div></details></div>
+      </section>
+
+      <section class="page" id="episodes">
+        <div class="eyebrow">Step 3 of 4</div><h1>Review episode quality</h1><p class="lead">Review measured facts, deterministic QC checks, and raw source membership before including or excluding each episode.</p><div class="context" id="review-context">Loading current batch...</div><div class="surface" id="review-gate" hidden><div class="section-head"><div><h2>Episode review complete</h2><p class="muted">Confirm these exact decisions before delivery can begin.</p></div><button class="primary" id="approve-review">Confirm review</button></div><label for="review-approver">Reviewer name - optional</label><input id="review-approver" type="text" autocomplete="name" placeholder="Add one name for this batch, or leave blank"><div id="review-approval-error"></div></div><div class="episodes"><div class="episode-list" id="episode-list"></div><div class="surface" id="episode-detail"><p class="lead">No complete episode is available for review.</p></div></div>
+      </section>
+
+      <section class="page" id="delivery">
+        <div class="eyebrow">Step 4 of 4</div><h1>Build and download delivery</h1><p class="lead">Only explicitly included episodes enter the customer folder. See the exact package contents before downloading.</p><div class="context" id="delivery-context">Loading current batch...</div>
+        <div class="surface"><div class="summary-grid"><div class="metric"><b id="delivery-total">0</b><span>processed episodes</span></div><div class="metric"><b id="delivery-included">0</b><span>included</span></div><div class="metric"><b id="delivery-excluded">0</b><span>excluded</span></div><div class="metric"><b id="delivery-pending">0</b><span>awaiting review</span></div></div><div class="notice" id="delivery-state">Review every episode before building.</div><div id="telemetry-policy"></div><div id="package-summary"></div><div class="actions"><button class="primary" id="build">Build customer delivery</button><a class="primary" id="download" hidden>Download delivery ZIP</a></div><p class="download-status" id="download-status" aria-live="polite"></p><div id="delivery-error"></div></div>
+      </section>
+    </main>
+  </div>
+  <script>
+    let state={episodes:[],incomplete:[],job:{status:'empty'},steps:[],workflow:[],source:{file_count:0,bytes:0},delivery:{}}, batches=[], selectedEpisode=null, selectedTab='overview', selectionFiles=[], selectedFiles=[], collapsedFolders=new Set(), uploadBatchId=null, duplicateBatch=null, preflightVersion=0, evidenceCache={}, plotHover=null, plotResize=null;
+    let activeBatch=localStorage.getItem('actuate-batch')||'initial';
+    const $=selector=>document.querySelector(selector);
+    const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    const fmtBytes=value=>value==null?'-':value>=1e9?`${(value/1e9).toFixed(2)} GB`:value>=1e6?`${(value/1e6).toFixed(1)} MB`:value>=1e3?`${(value/1e3).toFixed(1)} KB`:`${value} B`;
+    const fmtTime=value=>value==null?'-':value<60?`${Math.round(value)} sec`:`${Math.floor(value/60)}m ${Math.round(value%60)}s`;
+    const human=value=>String(value??'').replaceAll('_',' ');
+    async function api(url,options){const response=await fetch(url,options);let body={};try{body=await response.json()}catch{}if(!response.ok)throw new Error(body.detail||`Request failed (${response.status})`);return body}
+    function show(page){document.querySelectorAll('.page').forEach(node=>node.classList.toggle('active',node.id===page));document.querySelectorAll('nav button').forEach(node=>node.classList.toggle('active',node.dataset.page===page));location.hash=page}
+    document.querySelectorAll('nav button').forEach(button=>button.onclick=()=>show(button.dataset.page));
+
+    async function refresh(){
+      [state,batches]=await Promise.all([api(`/api/state?batch_id=${encodeURIComponent(activeBatch)}`),api('/api/batches')]);
+      const status=state.job.status, complete=['processed','complete','delivered'].includes(status);
+      $('#status-text').textContent=status==='running'?'Processing in progress':status==='failed'?'Action needed':status==='delivered'?'Delivery ready':complete?'Ready for review':state.source.file_count?'Ready to process':'Waiting for files';
+      $('#status-dot').className=`dot ${status==='running'?'running':status==='failed'?'failed':complete?'complete':''}`;
+      renderRun();renderBatches();renderEpisodes();renderDelivery();
+      if(status==='running')setTimeout(refresh,2000);
+    }
+
+    function useBatch(batchId,page='runs'){activeBatch=batchId;localStorage.setItem('actuate-batch',batchId);selectedEpisode=null;selectedTab='overview';show(page);refresh().catch(showGlobalError)}
+    function showGlobalError(error){$('#status-text').textContent=error.message;$('#status-dot').className='dot failed'}
+
+    function renderRun(){
+      const status=state.job.status, diagnosed=state.incomplete.length?state.incomplete:(state.candidates||[]).filter(item=>item.grouping_status!=='complete');
+      $('#run-context').textContent=`Viewing batch: ${state.batch.name} (${state.batch.batch_id})`;
+      $('#review-context').textContent=`Batch: ${state.batch.name} - ${state.episodes.length} complete episode(s)`;
+      $('#delivery-context').textContent=`Batch: ${state.batch.name} - delivery is isolated from every other batch`;
+      $('#batch-name').textContent=state.batch.name;
+      $('#run-detail').textContent=status==='running'?'Processing continues in the background. You can leave this page.':status==='failed'?'Processing stopped. Uploaded originals are safe. Review the failure below and retry.':status==='empty'?'This batch has no uploaded files.':state.delivery.exists?'Customer delivery has been built.':`${state.episodes.length} complete and ${diagnosed.length} incomplete candidate(s) found.`;
+      const checkpoint=state.workflow.find(item=>item.stage!=='delivery'&&!item.approved);
+      $('#episode-count').textContent=state.episodes.length;$('#incomplete-count').textContent=diagnosed.length;$('#stream-count').textContent=state.episodes.reduce((sum,item)=>sum+item.streams.length,0);$('#source-count').textContent=state.source.file_count;$('#elapsed').textContent=fmtTime(checkpoint?.elapsed_seconds??state.job.elapsed_seconds);
+      $('#process').disabled=status==='running'||state.delivery.exists||!state.source.file_count||!checkpoint;
+      if(state.delivery.exists)$('#process').textContent='Delivery built';else if(!checkpoint)$('#process').textContent='Processing and review approved';else if(checkpoint.stage==='review'&&checkpoint.summary?.pending)$('#process').textContent=`Review ${checkpoint.summary.pending} episode(s)`;else if(checkpoint.status==='complete')$('#process').textContent=`Approve ${checkpoint.name}`;else $('#process').textContent=`${checkpoint.status==='failed'?'Retry':'Run'} ${checkpoint.name}`;
+      const stageLabel={approved:'Approved',awaiting_approval:'Awaiting approval',complete:'Completed',running:'Running now',failed:'Failed',not_applicable:'Not needed',pending:'Waiting',waiting:'Waiting'};
+      const summary=item=>item.summary?Object.entries(item.summary).filter(([key])=>!key.endsWith('path')&&!key.endsWith('id')).map(([key,value])=>`${human(key)}: ${value}`).join(' · '):'';
+      const itemProgress=step=>step.progress?.total?`<details class="item-progress" ${step.status==='running'||step.status==='failed'?'open':''}><summary>${step.progress.completed} of ${step.progress.total} item(s) processed${step.progress.current?` - current: ${esc(step.progress.current.label)}`:''} - ${fmtTime(step.elapsed_seconds)}</summary>${step.progress.items.map(item=>`<div><span>${esc(item.label)}</span><span>${esc(item.outcome||human(item.status))}${item.elapsed_seconds==null?'':` - ${fmtTime(item.elapsed_seconds)}`}${item.error?` - ${esc(item.error)}`:''}</span></div>`).join('')}</details>`:'';
+      $('#steps').innerHTML=state.steps.map((step,index)=>`<div class="step ${step.status}"><span class="step-icon">${['complete','approved'].includes(step.status)?'✓':step.status==='failed'?'!':step.status==='not_applicable'?'–':index+1}</span><div><b>${esc(step.name)}</b><small class="step-state">${stageLabel[step.status]||esc(human(step.status))}</small></div><small>${esc(summary(step)||step.detail)}${step.error?`<br>${esc(step.error)}`:''}</small>${itemProgress(step)}</div>`).join('');
+      const failureSummary=message=>message.includes('0 video streams')?'MP4 contains no video stream.':message.includes('Invalid data found')?'File is not a valid decodable MP4.':message;
+      const failureClass=state.delivery.exists?'notice':'error', failureIntro=state.delivery.exists?'These failures belong to excluded candidates. The customer delivery remains valid.':'Your uploaded originals are preserved. Address the cause, then retry; verified stages will be reused.';
+      $('#run-error').innerHTML=state.failures?.length?`<div class="${failureClass}"><b>${state.failures.length} excluded-source failure(s)</b><p>${failureIntro}</p>${state.failures.map(item=>`<div style="margin-top:9px"><b>${item.episode?`${esc(item.episode)} - `:''}${esc(human(item.stage))}${item.camera_stream_id?` / ${esc(item.camera_stream_id)}`:''}</b><br>${esc(failureSummary(item.message))}<details><summary>Technical detail</summary><code>${esc(item.message)}</code></details></div>`).join('')}</div>`:state.review_error?`<div class="error">${esc(state.review_error)}</div>`:'';
+      $('#incomplete').innerHTML=diagnosed.length?`<div class="notice"><b>${diagnosed.length} incomplete or ambiguous candidate(s) retained</b><p>They remain available for analysis but are not eligible for customer delivery.</p>${diagnosed.map(item=>`<div style="margin-top:7px">${esc(item.directory||'Root')} / ${esc(item.group)} - ${esc(human(item.grouping_status))}</div>`).join('')}</div>`:'';
+    }
+
+    function renderBatches(){
+      const nonempty=batches.filter(item=>item.episodes||item.delivery_ready), empty=batches.filter(item=>item.batch_id!=='initial'&&!item.episodes&&!item.delivery_ready);
+      const rows=items=>items.map(item=>`<div class="run-row"><div><b>${esc(item.name)}</b><small>${item.source_files} source file(s) - ${item.episodes} complete episode(s) - ${item.delivery_ready?'delivery ready':esc(human(item.status))}</small></div><button class="secondary" data-batch="${esc(item.batch_id)}">${item.batch_id===activeBatch?'Viewing':'Open'}</button></div>`).join('');
+      $('#batch-list').innerHTML=rows(nonempty);$('#empty-batches').hidden=!empty.length;$('#empty-batches summary').textContent=`Show ${empty.length} incomplete or unsupported upload attempt(s)`;$('#empty-batch-list').innerHTML=rows(empty);
+      document.querySelectorAll('[data-batch]').forEach(button=>button.onclick=()=>useBatch(button.dataset.batch));
+    }
+
+    function renderEpisodes(){
+      const review=state.workflow.find(item=>item.stage==='review');$('#review-gate').hidden=!review||review.approved||review.status!=='complete'||review.summary?.pending;
+      if(!state.episodes.length){$('#episode-list').innerHTML='';$('#episode-detail').innerHTML=`<h2>No complete episodes</h2><p class="lead" style="margin-top:8px">${state.incomplete.length?'This batch contains incomplete candidates only. Open Process for details.':'Process a batch before reviewing episodes.'}</p>`;return}
+      if(!selectedEpisode||!state.episodes.some(item=>item.capture_id===selectedEpisode))selectedEpisode=state.episodes[0].capture_id;
+      $('#episode-list').innerHTML=state.episodes.map(item=>`<button class="${item.capture_id===selectedEpisode?'active':''}" data-episode="${item.capture_id}"><b>${esc(item.episode_id)}</b><small>${esc(item.directory||'Root')} / ${esc(item.group)}</small><small>${esc(human(item.layout))} - ${item.decision?esc(item.decision.status):'needs review'}</small></button>`).join('');
+      document.querySelectorAll('[data-episode]').forEach(button=>button.onclick=()=>{selectedEpisode=button.dataset.episode;selectedTab='overview';renderEpisodes()});
+      const episode=state.episodes.find(item=>item.capture_id===selectedEpisode);
+      const counts=episode.check_counts, verdict=counts.fail?`${counts.fail} QC issue(s) found`:'All applicable QC checks passed';
+      const preview=episode.has_preview?`<video controls preload="metadata" src="/api/episodes/${episode.capture_id}/preview?batch_id=${encodeURIComponent(activeBatch)}"></video>`:'<div class="notice">No vendor visualization was supplied for this episode.</div>';
+      const overview=`<dl><div><dt>Capture layout</dt><dd>${esc(human(episode.layout))}</dd></div><div><dt>Raw source</dt><dd>${episode.source_files} files - ${fmtBytes(episode.source_bytes)}</dd></div><div><dt>QC checks</dt><dd>${counts.pass} pass - ${counts.fail} fail - ${counts.unknown} unknown</dd></div><div><dt>Human decision</dt><dd>${episode.decision?esc(episode.decision.status):'Awaiting review'}</dd></div><div><dt>Decoded IMU</dt><dd>${episode.imu_samples?.toLocaleString()||'Unavailable'} samples</dd></div><div><dt>Telemetry</dt><dd>${esc(human(episode.telemetry.status))}${episode.telemetry.record_count!=null?` - ${episode.telemetry.record_count} records`:''}</dd></div></dl>${preview}`;
+      const streams=`<table><thead><tr><th>Camera</th><th>Video</th><th>VTS</th><th>Duration</th><th>Audio</th></tr></thead><tbody>${episode.streams.map(stream=>`<tr><td><b>${esc(stream.id)}</b></td><td>${stream.frames.toLocaleString()} decoded frames<br>${esc(stream.codec?.toUpperCase())} - ${stream.width}x${stream.height}</td><td>${stream.vts.frame_count.toLocaleString()} timestamps<br>native v${stream.vts.native_version}</td><td>${stream.duration_s}s</td><td>${stream.video.audio_stream_count} stream(s)</td></tr>`).join('')}</tbody></table>`;
+      const timing=`<dl><div><dt>Frame timing rows</dt><dd>${episode.timing_rows.toLocaleString()}</dd></div><div><dt>Within IMU coverage</dt><dd>${episode.coverage_rows.toLocaleString()} / ${episode.timing.matched_rows.toLocaleString()}</dd></div><div><dt>Stereo pairs</dt><dd>${episode.stereo_pairs?.toLocaleString()||'Not applicable'}</dd></div><div><dt>Unmatched stereo frames</dt><dd>${episode.unmatched_rows??'Not applicable'}</dd></div><div><dt>Native IMU rate</dt><dd>${episode.imu.native?.measured_sample_rate_hz??'Unknown'} Hz</dd></div><div><dt>IMU timestamps</dt><dd>${episode.imu.native?.first_sample_timestamp_ns??'Unknown'} to ${episode.imu.native?.last_sample_timestamp_ns??'Unknown'}</dd></div></dl><table style="margin-top:16px"><thead><tr><th>Stream</th><th>Rows</th><th>Covered</th><th>Outside coverage</th><th>Video/VTS gaps</th></tr></thead><tbody>${episode.timing.streams.map(item=>`<tr><td>${esc(item.camera_stream_id)}</td><td>${item.row_count}</td><td>${item.coverage_rows}</td><td>${item.outside_imu_coverage_rows}</td><td>${item.video_only_rows} / ${item.vts_only_rows}</td></tr>`).join('')}</tbody></table><div id="evidence-view" style="margin-top:20px"><p class="muted">Loading synchronized camera and IMU evidence...</p></div>`;
+      const checks=`<table><thead><tr><th>Check</th><th>Result</th><th>Evidence</th></tr></thead><tbody>${episode.checks.map(check=>`<tr><td><b>${esc(human(check.check_id))}</b></td><td><span class="pill ${check.result==='fail'?'fail':check.result==='pass'?'':'unknown'}">${esc(human(check.result))}</span></td><td><details><summary>View measured evidence</summary><pre>${esc(JSON.stringify(check.evidence,null,2))}</pre></details></td></tr>`).join('')}</tbody></table>`;
+      const sources=`<p class="muted">These are the immutable raw members assigned to this episode. SHA-256 proves byte identity.</p><table style="margin-top:12px"><thead><tr><th>Path</th><th>Role / stream</th><th>Size</th><th>SHA-256</th></tr></thead><tbody>${episode.source_members.map(item=>`<tr><td>${esc(item.relative_path)}</td><td>${esc(item.role)}${item.camera_stream_id?` / ${esc(item.camera_stream_id)}`:''}</td><td>${fmtBytes(item.size_bytes)}</td><td><code>${esc(item.source_sha256)}</code></td></tr>`).join('')}</tbody></table>`;
+      const panels={overview,streams,timing,checks,sources}, canReview=state.workflow.find(item=>item.stage==='qc')?.approved&&!state.delivery.exists;
+      const measuredIssues=episode.controlled_limitations.length?`<div class="notice"><b>Measured issues recorded by the pipeline</b>${episode.controlled_limitations.map(item=>`<p>${esc(item)}</p>`).join('')}</div>`:'<div class="success">No measured issue needs an episode-level note.</div>';
+      $('#episode-detail').innerHTML=`<div class="detail-head"><div><h2>${esc(episode.episode_id)}</h2><p class="muted">Source: ${esc(episode.directory||'Root')} / ${esc(episode.group)} - ${esc(human(episode.layout))} - ${fmtBytes(episode.source_bytes)}</p></div><span class="pill ${counts.fail?'fail':''}">${esc(verdict)}</span></div><div class="tabs">${Object.keys(panels).map(key=>`<button class="${key===selectedTab?'active':''}" data-tab="${key}">${esc(human(key))}</button>`).join('')}</div>${Object.entries(panels).map(([key,value])=>`<div class="tab-panel ${key===selectedTab?'active':''}" data-panel="${key}">${value}</div>`).join('')}<div style="margin-top:22px;padding-top:20px;border-top:1px solid var(--line)"><h3>Episode decision</h3><p class="muted">Include or exclude the whole episode. QC facts and measured issue text cannot be edited here.</p>${measuredIssues}<div class="actions"><button class="danger" data-decision="exclude" ${canReview?'':'disabled'}>Exclude episode</button><button class="primary" data-decision="include" ${canReview?'':'disabled'}>Include episode</button></div>${state.delivery.exists?'<div class="success">Delivery already built. This decision is locked.</div>':canReview?'':'<div class="notice">Approve QC before saving episode decisions.</div>'}<div id="decision-error"></div></div>`;
+      document.querySelectorAll('[data-tab]').forEach(button=>button.onclick=()=>{selectedTab=button.dataset.tab;renderEpisodes()});document.querySelectorAll('[data-decision]').forEach(button=>button.onclick=()=>saveDecision(episode,button.dataset.decision));if(selectedTab==='timing')loadEvidence(episode).catch(error=>{$('#evidence-view').innerHTML=`<div class="error">${esc(error.message)}</div>`});
+    }
+
+    function plotCanvas(canvas){const bounds=canvas.getBoundingClientRect(),ratio=window.devicePixelRatio||1,width=Math.round(bounds.width*ratio),height=Math.round(bounds.height*ratio);if(canvas.width!==width||canvas.height!==height){canvas.width=width;canvas.height=height}const ctx=canvas.getContext('2d');ctx.setTransform(ratio,0,0,ratio,0,0);return {ctx,width:bounds.width,height:bounds.height}}
+    function drawCursor(ctx,width,height,time,start,end,pad){
+      if(!Number.isFinite(time))return;
+      const x=pad+(Math.max(start,Math.min(end,time))-start)*(width-pad*2)/(end-start||1);
+      ctx.strokeStyle='#172019';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x,18);ctx.lineTo(x,height-8);ctx.stroke();
+    }
+    function drawLines(id,points,fields,colors,cursorTime=null){
+      const canvas=$(`#${id}`),plot=plotCanvas(canvas),ctx=plot.ctx,w=plot.width,h=plot.height,pad=24;
+      ctx.clearRect(0,0,w,h);ctx.strokeStyle='#dce2dc';ctx.beginPath();ctx.moveTo(pad,h/2);ctx.lineTo(w-pad,h/2);ctx.stroke();
+      if(!points.length)return;
+      const values=points.flatMap(point=>fields.map(field=>point[field])).filter(Number.isFinite),low=Math.min(...values),high=Math.max(...values),span=high-low||1,start=points[0].time_s,end=points.at(-1).time_s,timeSpan=end-start||1;
+      fields.forEach((field,index)=>{ctx.strokeStyle=colors[index];ctx.lineWidth=1.3;ctx.beginPath();points.forEach((point,pointIndex)=>{const x=pad+(point.time_s-start)*(w-pad*2)/timeSpan,y=h-pad-(point[field]-low)*(h-pad*2)/span;pointIndex?ctx.lineTo(x,y):ctx.moveTo(x,y)});ctx.stroke();ctx.fillStyle=colors[index];ctx.fillText(field.replace(/_(mps2|rad_s)$/,''),pad+index*82,14)});
+      ctx.fillStyle='#667068';ctx.fillText(`${low.toFixed(2)} to ${high.toFixed(2)}`,w-130,14);drawCursor(ctx,w,h,cursorTime,start,end,pad);
+    }
+    function drawTracks(evidence,cursorTime=null){
+      const canvas=$('#timing-track'),plot=plotCanvas(canvas),ctx=plot.ctx,w=plot.width,h=plot.height,rows=evidence.frames.filter(row=>row.mp4_pts_ns!=null),end=rows.reduce((high,row)=>Math.max(high,row.mp4_pts_ns),0)/1e9||1;
+      ctx.clearRect(0,0,w,h);evidence.streams.forEach((stream,index)=>{const y=24+index*42;ctx.fillStyle='#667068';ctx.fillText(stream,8,y+7);for(const row of rows.filter(item=>item.camera_stream_id===stream)){const x=70+row.mp4_pts_ns/1e9*(w-140)/end,color=!row.within_imu_coverage?'#d35b51':row.vts_match_status!=='matched'||!['paired','not_applicable'].includes(row.stereo_pair_status)?'#d68a2d':'#36a06a';ctx.fillStyle=color;ctx.fillRect(x,y-5,2,15)}});drawCursor(ctx,w,h,cursorTime,0,end,70);
+    }
+    function pointerTime(canvas,event,start,end,pad){const rect=canvas.getBoundingClientRect(),x=event.clientX-rect.left;return start+(Math.max(pad,Math.min(rect.width-pad,x))-pad)*(end-start)/(rect.width-pad*2)}
+    function nearestPoint(points,time){let low=0,high=points.length-1;while(low<high){const middle=Math.floor((low+high)/2);points[middle].time_s<time?low=middle+1:high=middle}const after=points[low],before=points[Math.max(0,low-1)];return !before||Math.abs(after.time_s-time)<Math.abs(before.time_s-time)?after:before}
+    function showPlotTooltip(canvas,event,lines){const tooltip=canvas.parentElement.querySelector('.plot-tooltip'),bounds=canvas.parentElement.getBoundingClientRect();tooltip.innerHTML=lines.map(esc).join('<br>');tooltip.hidden=false;tooltip.style.left=`${Math.max(8,Math.min(event.clientX-bounds.left+12,bounds.width-tooltip.offsetWidth-8))}px`;tooltip.style.top=`${Math.max(8,event.clientY-bounds.top-tooltip.offsetHeight-10)}px`}
+    function seekVideos(videos,time){videos.forEach(video=>video.currentTime=Math.max(0,Math.min(Number.isFinite(video.duration)?video.duration:time,time)))}
+    function renderTimeline(evidence,time){drawLines('accel-plot',evidence.imu_plot,['accel_x_mps2','accel_y_mps2','accel_z_mps2'],['#bc4038','#257e52','#2b65aa'],time);drawLines('gyro-plot',evidence.imu_plot,['gyro_x_rad_s','gyro_y_rad_s','gyro_z_rad_s'],['#bc4038','#257e52','#2b65aa'],time);drawTracks(evidence,time)}
+    function bindLinePlot(canvas,evidence,videos,master,fields){
+      const points=evidence.imu_plot,start=points[0].time_s,end=points.at(-1).time_s;
+      canvas.onpointermove=event=>{const point=nearestPoint(points,pointerTime(canvas,event,start,end,24));plotHover=canvas.id;renderTimeline(evidence,point.time_s);showFrameEvidence(evidence,master.dataset.camera,point.time_s);showPlotTooltip(canvas,event,[`${point.time_s.toFixed(3)} s - IMU ${point.imu_index}`,`Closest delta: ${point.closest_delta_ms.toFixed(3)} ms`,...fields.map(([label,field])=>`${label}: ${point[field].toFixed(3)}`)])};
+      canvas.onpointerleave=()=>{plotHover=null;canvas.parentElement.querySelector('.plot-tooltip').hidden=true;renderTimeline(evidence,master.currentTime);showFrameEvidence(evidence,master.dataset.camera,master.currentTime)};
+      canvas.onclick=event=>{const point=nearestPoint(points,pointerTime(canvas,event,start,end,24));seekVideos(videos,point.time_s);renderTimeline(evidence,point.time_s);showFrameEvidence(evidence,master.dataset.camera,point.time_s)};
+    }
+    function bindTrackPlot(canvas,evidence,videos,master){
+      const end=evidence.frames.reduce((high,row)=>Math.max(high,(row.mp4_pts_ns??0)/1e9),0)||1;
+      canvas.onpointermove=event=>{const rect=canvas.getBoundingClientRect(),y=event.clientY-rect.top,index=Math.max(0,Math.min(evidence.streams.length-1,Math.round((y-24)/42))),stream=evidence.streams[index],time=pointerTime(canvas,event,0,end,70),row=nearestFrame(evidence,stream,time);plotHover=canvas.id;renderTimeline(evidence,time);showFrameEvidence(evidence,stream,time);showPlotTooltip(canvas,event,[`${stream} - ${time.toFixed(3)} s`,row?`Frame ${row.video_frame_index}`:'No camera frame',row?.within_imu_coverage?'Within IMU extent':'Outside IMU extent',`VTS: ${human(row?.vts_match_status??'unavailable')}`,`Stereo: ${human(row?.stereo_pair_status??'unavailable')}`])};
+      canvas.onpointerleave=()=>{plotHover=null;canvas.parentElement.querySelector('.plot-tooltip').hidden=true;renderTimeline(evidence,master.currentTime);showFrameEvidence(evidence,master.dataset.camera,master.currentTime)};
+      canvas.onclick=event=>{const time=pointerTime(canvas,event,0,end,70);seekVideos(videos,time);renderTimeline(evidence,time);showFrameEvidence(evidence,master.dataset.camera,time)};
+    }
+    function nearestFrame(evidence,stream,time){const rows=evidence.byStream[stream],target=time*1e9;if(!rows.length)return null;let low=0,high=rows.length-1;while(low<high){const mid=Math.floor((low+high)/2);if((rows[mid].mp4_pts_ns??Infinity)<target)low=mid+1;else high=mid}const after=rows[low],before=rows[Math.max(0,low-1)];return !before||Math.abs((after.mp4_pts_ns??target)-target)<Math.abs((before.mp4_pts_ns??target)-target)?after:before}
+    function showFrameEvidence(evidence,stream,time){const row=nearestFrame(evidence,stream,time);if(!row){$('#frame-evidence').innerHTML='<div class="notice">No video frame is available at this position.</div>';return}$('#frame-evidence').innerHTML=`<h3>Current frame evidence - ${esc(stream)}</h3><table><tbody>${[['Video frame',row.video_frame_index],['MP4 time',`${((row.mp4_pts_ns??0)/1e9).toFixed(3)} s`],['VTS frame',row.vts_frame_number],['Encoder sequence',row.venc_seq],['SOF timestamp',row.sof_timestamp_ns],['Before IMU',`${row.before_imu_index} / ${row.before_imu_timestamp_ns} / ${row.before_delta_ns} ns`],['After IMU',`${row.after_imu_index} / ${row.after_imu_timestamp_ns} / ${row.after_delta_ns} ns`],['Closest IMU',`${row.closest_imu_index} / ${row.closest_imu_timestamp_ns} / ${row.closest_delta_ns} ns`],['Within IMU extent',row.within_imu_coverage],['Stereo peer',row.stereo_peer_stream_id?`${row.stereo_peer_stream_id} frame ${row.stereo_peer_video_frame_index}`:row.stereo_pair_status]].map(([label,value])=>`<tr><th>${label}</th><td>${esc(value)}</td></tr>`).join('')}</tbody></table>`}
+    async function loadEvidence(episode){const key=`${activeBatch}:${episode.capture_id}`;if(!evidenceCache[key])evidenceCache[key]=await api(`/api/episodes/${episode.capture_id}/evidence?batch_id=${encodeURIComponent(activeBatch)}`);const evidence=evidenceCache[key];if(!Array.isArray(evidence.frames)){const columns=evidence.frames,n=columns.camera_stream_id.length;evidence.frames=Array.from({length:n},(_,index)=>Object.fromEntries(Object.entries(columns).map(([name,values])=>[name,values[index]])))}if(selectedEpisode!==episode.capture_id||selectedTab!=='timing')return;evidence.byStream=Object.fromEntries(evidence.streams.map(stream=>[stream,evidence.frames.filter(row=>row.camera_stream_id===stream&&row.video_frame_index!=null&&row.mp4_pts_ns!=null)]));const videos=evidence.streams.map(stream=>`<div><b>${esc(stream)} camera</b><video controls preload="metadata" data-camera="${esc(stream)}" src="/api/episodes/${episode.capture_id}/video/${encodeURIComponent(stream)}?batch_id=${encodeURIComponent(activeBatch)}"></video></div>`).join(''),issues=evidence.issues.length?evidence.issues.map((issue,index)=>`<div class="issue-card"><b>${esc(human(issue.kind))} - ${esc(issue.stream)} - ${esc(issue.position)}</b><p>${esc(issue.message)}. ${issue.frame_count} frame(s), ${issue.start_time_s.toFixed(3)}s to ${issue.end_time_s.toFixed(3)}s.</p><button class="secondary" data-jump="${index}">Jump to issue</button></div>`).join(''):'<div class="success">No camera/IMU coverage, Video/VTS accounting, or stereo-pairing issue was found.</div>';$('#evidence-view').innerHTML=`<h3>Camera and sensor timeline</h3><p class="muted">The graphs use the Closest native IMU sample for visualization only. Canonical files remain native-rate and unmodified. Timestamp coverage does not certify physical synchronization.</p><div class="camera-grid">${videos}</div><p class="plot-help">Hover for exact plotted values and frame evidence. Click any graph to seek every camera.</p><h3>Acceleration (m/s²)</h3><div class="plot-wrap"><canvas class="plot" id="accel-plot" width="900" height="180" aria-label="Interactive acceleration graph"></canvas><div class="plot-tooltip" hidden></div></div><h3>Angular velocity (rad/s)</h3><div class="plot-wrap"><canvas class="plot" id="gyro-plot" width="900" height="180" aria-label="Interactive angular velocity graph"></canvas><div class="plot-tooltip" hidden></div></div><h3>Coverage and pairing tracks</h3><p class="muted">Green: mapped and paired. Amber: Video/VTS or stereo association issue. Red: outside IMU time extent.</p><div class="plot-wrap"><canvas class="plot" id="timing-track" width="900" height="${Math.max(90,evidence.streams.length*42+30)}" aria-label="Interactive camera coverage and stereo pairing graph"></canvas><div class="plot-tooltip" hidden></div></div><h3>Diagnosed issue ranges</h3>${issues}<div id="frame-evidence" style="margin-top:18px"></div>`;const camera=[...document.querySelectorAll('[data-camera]')],master=camera[0];renderTimeline(evidence,0);bindLinePlot($('#accel-plot'),evidence,camera,master,[['X','accel_x_mps2'],['Y','accel_y_mps2'],['Z','accel_z_mps2']]);bindLinePlot($('#gyro-plot'),evidence,camera,master,[['X','gyro_x_rad_s'],['Y','gyro_y_rad_s'],['Z','gyro_z_rad_s']]);bindTrackPlot($('#timing-track'),evidence,camera,master);plotResize?.disconnect();plotResize=new ResizeObserver(()=>renderTimeline(evidence,master.currentTime));document.querySelectorAll('.plot').forEach(canvas=>plotResize.observe(canvas));camera.slice(1).forEach(peer=>{master.addEventListener('play',()=>peer.play().catch(()=>{}));master.addEventListener('pause',()=>peer.pause())});master.addEventListener('timeupdate',()=>{camera.slice(1).forEach(peer=>{if(Math.abs(peer.currentTime-master.currentTime)>.08)peer.currentTime=master.currentTime});if(!plotHover)renderTimeline(evidence,master.currentTime);showFrameEvidence(evidence,master.dataset.camera,master.currentTime)});master.addEventListener('loadedmetadata',()=>{renderTimeline(evidence,0);showFrameEvidence(evidence,master.dataset.camera,0)});document.querySelectorAll('[data-jump]').forEach(button=>button.onclick=()=>{const issue=evidence.issues[Number(button.dataset.jump)];seekVideos(camera,issue.start_time_s);renderTimeline(evidence,issue.start_time_s);showFrameEvidence(evidence,issue.stream,issue.start_time_s);$('#frame-evidence').scrollIntoView({behavior:'smooth',block:'center'})})}
+
+    async function saveDecision(episode,status){try{await api(`/api/episodes/${episode.capture_id}/decision?batch_id=${encodeURIComponent(activeBatch)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({qc_sha256:episode.qc_sha256,expected_revision:episode.decision?.decided_at||'',status})});await refresh()}catch(error){$('#decision-error').innerHTML=`<div class="error">${esc(error.message)}</div>`}}
+    $('#approve-review').onclick=async()=>{try{const approvedBy=$('#review-approver').value.trim();$('#approve-review').disabled=true;await api(`/api/stages/review/approve?batch_id=${encodeURIComponent(activeBatch)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({approved_by:approvedBy})});show('delivery');await refresh()}catch(error){$('#review-approval-error').innerHTML=`<div class="error">${esc(error.message)}</div>`;$('#approve-review').disabled=false}};
+
+    function renderDelivery(){
+      const included=state.episodes.filter(item=>item.decision?.status==='include').length, excluded=state.episodes.filter(item=>item.decision?.status==='exclude').length, pending=state.episodes.length-included-excluded, delivery=state.delivery;
+      $('#delivery-total').textContent=state.episodes.length;$('#delivery-included').textContent=included;$('#delivery-excluded').textContent=excluded;$('#delivery-pending').textContent=pending;
+      const reviewApproved=state.workflow.find(item=>item.stage==='review')?.approved;
+      const telemetry=state.telemetry_policy,needsTelemetry=telemetry?.requires_choice;
+      $('#build').hidden=delivery.downloadable;$('#build').disabled=!state.episodes.length||!included||pending>0||!reviewApproved||needsTelemetry||state.job.status==='running';$('#build').textContent=delivery.exists?'Finish delivery ZIP':'Build customer delivery';$('#download').hidden=!delivery.downloadable;$('#download').href=`/api/delivery/download?batch_id=${encodeURIComponent(activeBatch)}`;$('#download').download=`actuate-${activeBatch}.zip`;
+      $('#delivery-state').className=delivery.downloadable?'success':'notice';$('#delivery-state').textContent=delivery.downloadable?`Validated delivery ZIP is ready (${fmtBytes(delivery.archive_bytes)}). SHA-256: ${delivery.archive_sha256}`:delivery.exists?'The customer folder is complete, but its ZIP is not ready. Finish the ZIP to download it.':pending?`Review ${pending} remaining episode(s) before building.`:state.episodes.length&&!reviewApproved?'Approve the completed human review checkpoint before delivery.':state.episodes.length?`${included} included and ${excluded} excluded episode(s) are ready to package.`:'No complete episodes are available for delivery.';
+      $('#telemetry-policy').innerHTML=needsTelemetry?`<div class="notice"><b>Telemetry is present in ${telemetry.episodes_with_telemetry} of ${telemetry.included_episodes} included episodes</b><p>Choose one consistent customer dataset policy. No missing telemetry will be synthesized.</p><div class="actions"><button class="secondary" data-telemetry="exclude_all">Exclude telemetry from this dataset</button><button class="primary" data-telemetry="include_available">Include available telemetry</button></div></div>`:telemetry?.coverage==='all'?'<div class="success">Native telemetry is available for every included episode and will be included.</div>':telemetry?.coverage==='none'?'<div class="notice">No included episode has native telemetry, so no telemetry files will be added.</div>':'';
+      document.querySelectorAll('[data-telemetry]').forEach(button=>button.onclick=()=>chooseTelemetry(button.dataset.telemetry));
+      $('#package-summary').innerHTML=delivery.exists?`<div class="summary-grid"><div class="metric"><b>${delivery.file_count}</b><span>files in package</span></div><div class="metric"><b>${fmtBytes(delivery.total_bytes)}</b><span>uncompressed size</span></div><div class="metric"><b>${delivery.raw_files}</b><span>byte-identical raw files</span></div><div class="metric"><b>${delivery.derived_files}</b><span>metadata and derived files</span></div></div><h3 style="margin-top:20px">Package contents</h3><p class="muted">Each included episode contains raw originals, meta.json, IMU, timing, factual QC, and an optional preview. Telemetry follows the dataset policy shown above. The root contains README.md, episodes.csv, and calibration only when explicitly supplied.</p><div class="tree">${delivery.files.map(item=>`<div class="file-row"><code>${esc(item.path)}</code><span>${fmtBytes(item.bytes)}</span></div>`).join('')}</div>`:'';
+    }
+
+    async function chooseTelemetry(choice){try{$('[data-telemetry="'+choice+'"]').disabled=true;await api(`/api/delivery/telemetry?batch_id=${encodeURIComponent(activeBatch)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({choice})});await refresh()}catch(error){$('#delivery-error').innerHTML=`<div class="error">${esc(error.message)}</div>`}}
+
+    const sourcePath=file=>file.webkitRelativePath||file.name;
+    const underFolder=(path,folder)=>path.startsWith(`${folder}/`);
+    function sourceTree(){const root={folders:new Map(),files:[],members:[]};for(const item of selectionFiles){let node=root;node.members.push(item);const parts=item.path.split('/');for(const name of parts.slice(0,-1)){if(!node.folders.has(name))node.folders.set(name,{folders:new Map(),files:[],members:[]});node=node.folders.get(name);node.members.push(item)}node.files.push(item)}return root}
+    function folderRows(name,node,parent,depth,rows){const folder=parent?`${parent}/${name}`:name,all=node.members.every(item=>item.selected),collapsed=collapsedFolders.has(folder);rows.push(`<div class="source-row" style="--depth:${depth}"><button class="folder-toggle" data-collapse="${esc(folder)}" aria-label="${collapsed?'Expand':'Collapse'} ${esc(folder)}">${collapsed?'▸':'▾'}</button><input type="checkbox" data-folder="${esc(folder)}" ${all?'checked':''}><b>${esc(name)}</b><small>${node.members.filter(item=>item.selected).length}/${node.members.length}</small></div>`);if(collapsed)return;for(const [child,branch] of [...node.folders].sort(([left],[right])=>left.localeCompare(right)))folderRows(child,branch,folder,depth+1,rows);for(const item of node.files.sort((left,right)=>left.path.localeCompare(right.path)))rows.push(fileRow(item,depth+1))}
+    function renderSourceTree(){
+      const rows=[],tree=sourceTree();for(const [name,node] of [...tree.folders].sort(([left],[right])=>left.localeCompare(right)))folderRows(name,node,'',0,rows);for(const item of tree.files.sort((left,right)=>left.path.localeCompare(right.path)))rows.push(fileRow(item,0));
+      $('#selected-files').innerHTML=rows.join('');
+      document.querySelectorAll('[data-file]').forEach(input=>input.onchange=()=>{selectionFiles.find(item=>item.path===input.dataset.file).selected=input.checked;selectionChanged()});
+      document.querySelectorAll('[data-folder]').forEach(input=>{const members=selectionFiles.filter(item=>underFolder(item.path,input.dataset.folder));input.indeterminate=members.some(item=>item.selected)&&members.some(item=>!item.selected);input.onchange=()=>{members.forEach(item=>item.selected=input.checked);selectionChanged()}});
+      document.querySelectorAll('[data-collapse]').forEach(button=>button.onclick=()=>{const path=button.dataset.collapse;collapsedFolders.has(path)?collapsedFolders.delete(path):collapsedFolders.add(path);renderSourceTree()});
+    }
+    function fileRow(item,depth){return `<label class="source-row" style="--depth:${depth}"><span></span><input type="checkbox" data-file="${esc(item.path)}" ${item.selected?'checked':''}><span>${esc(item.path.split('/').at(-1))}</span><small>${fmtBytes(item.file.size)}</small></label>`}
+    function selectionChanged(){uploadBatchId=null;duplicateBatch=null;selectedFiles=selectionFiles.filter(item=>item.selected).map(item=>item.file);renderSourceTree();$('#selected-count').textContent=selectedFiles.length;$('#excluded-count').textContent=selectionFiles.length-selectedFiles.length;$('#selected-size').textContent=fmtBytes(selectedFiles.reduce((sum,file)=>sum+file.size,0));$('#toggle-all').textContent=selectedFiles.length?'Clear all':'Select all';checkSelection()}
+    async function checkSelection(){
+      const version=++preflightVersion;$('#open-existing').hidden=true;$('#duplicate-message').innerHTML='';$('#upload').textContent='Upload selected files';
+      if(!selectedFiles.length){$('#upload').disabled=true;$('#upload-message').textContent='Select at least one file.';return}
+      $('#upload').disabled=true;$('#upload-message').textContent='Checking this selection...';
+      try{const result=await api('/api/batches/preflight',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({files:selectionFiles.filter(item=>item.selected).map(item=>({relative_path:item.path,size:item.file.size}))})});if(version!==preflightVersion)return;duplicateBatch=result.matches[0]||null;if(duplicateBatch){$('#duplicate-message').innerHTML=`<div class="notice"><b>This exact selection already exists</b><p>${esc(duplicateBatch.name)} has the same paths and sizes.</p></div>`;$('#open-existing').hidden=false;$('#upload').textContent='Upload as a new batch anyway'}$('#upload').disabled=false;$('#upload-message').textContent='Nothing has been uploaded. Confirm when ready.'}catch(error){if(version!==preflightVersion)return;$('#upload-message').innerHTML=`<span style="color:var(--red)">${esc(error.message)}</span>`}
+    }
+    async function selectFiles(event){
+      const picked=event?.target?.files?Array.from(event.target.files):[];
+      if(!picked.length){$('#picker-message').textContent='No files selected. Nothing was uploaded.';return}
+      const ignored=picked.filter(file=>sourcePath(file).split('/').some(part=>part.toLowerCase()==='system volume information')),kept=picked.filter(file=>!ignored.includes(file)),paths=kept.map(sourcePath);
+      if(!kept.length){$('#picker-message').textContent='Only System Volume Information files were selected. Nothing was uploaded.';return}
+      if(new Set(paths).size!==paths.length){$('#picker-message').textContent='Two selected files have the same relative path. Choose one source folder instead.';return}
+      selectionFiles=kept.map(file=>({file,path:sourcePath(file),selected:true}));selectedFiles=kept;collapsedFolders=new Set();uploadBatchId=null;duplicateBatch=null;const roots=new Set(paths.map(path=>path.split('/')[0])),root=roots.size===1?[...roots][0]:'';
+      document.querySelectorAll('#selection input,#toggle-all,#clear-selection').forEach(item=>item.disabled=false);$('#open-existing').disabled=false;$('#selection-root').textContent=root||`${roots.size} selected roots`;$('#selected-ignored').textContent=ignored.length;$('#batch-input').value=root||`Dataset ${new Date().toLocaleString()}`;$('#picker-message').textContent='Selection ready. Nothing has been uploaded.';$('#use-calibration').checked=false;$('#calibration-choice').hidden=!state.calibration.available;$('#calibration-label').textContent=state.calibration.label||'';$('#upload-progress-track').hidden=true;$('#upload-progress').style.width='0';$('#selection').showModal();selectionChanged();
+    }
+
+    $('#choose-folder').onclick=()=>$('#folder').click();$('#choose-files').onclick=()=>$('#files').click();$('#folder').onchange=selectFiles;$('#files').onchange=selectFiles;
+    $('#toggle-all').onclick=()=>{const selected=!selectionFiles.some(item=>item.selected);selectionFiles.forEach(item=>item.selected=selected);selectionChanged()};
+    function clearSelection(){selectionFiles=[];selectedFiles=[];uploadBatchId=null;duplicateBatch=null;$('#selection').close();$('#use-calibration').checked=false;$('#folder').value='';$('#files').value='';$('#picker-message').textContent='No files selected.'}
+    $('#clear-selection').onclick=clearSelection;$('#selection').oncancel=event=>{event.preventDefault();clearSelection()};
+    $('#open-existing').onclick=()=>{if(duplicateBatch){$('#selection').close();useBatch(duplicateBatch.batch_id)}};
+    $('#upload').onclick=upload;
+    async function upload(){
+      if(!selectedFiles.length){$('#upload-message').textContent='Select at least one file first.';return}
+      try{
+        $('#upload').disabled=true;$('#open-existing').disabled=true;$('#upload-progress-track').hidden=false;
+        if(!uploadBatchId){const name=$('#batch-input').value.trim();if(!name)throw new Error('Enter a dataset name');const files=selectionFiles.map(item=>({relative_path:item.path,size:item.file.size,selected:item.selected}));const created=await api('/api/batches',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,files,use_configured_calibration:$('#use-calibration').checked})});uploadBatchId=created.batch_id;activeBatch=uploadBatchId;localStorage.setItem('actuate-batch',activeBatch);document.querySelectorAll('#selection input,#toggle-all,#clear-selection').forEach(item=>item.disabled=true)}
+        const total=selectedFiles.reduce((sum,file)=>sum+file.size,0),chunkSize=8*1024*1024;let sent=0;
+        for(let index=0;index<selectedFiles.length;index++){
+          const file=selectedFiles[index],path=sourcePath(file),encoded=path.split('/').map(encodeURIComponent).join('/'),query=`batch_id=${encodeURIComponent(uploadBatchId)}`;
+          $('#upload-message').textContent=`Uploading file ${index+1} of ${selectedFiles.length}: ${file.name}`;await api(`/api/upload/start/${encoded}?${query}`,{method:'POST'});
+          for(let offset=0;offset<file.size;offset+=chunkSize){const chunk=file.slice(offset,Math.min(offset+chunkSize,file.size));await api(`/api/upload/chunk/${encoded}?offset=${offset}&${query}`,{method:'PATCH',body:chunk});sent+=chunk.size;$('#upload-progress').style.width=`${sent*100/total}%`}
+          await api(`/api/upload/complete/${encoded}?size=${file.size}&${query}`,{method:'POST'});
+        }
+        $('#upload-message').textContent='Upload complete. Nothing has been processed yet. Opening the first checkpoint...';$('#selection').close();show('runs');await refresh();
+      }catch(error){$('#upload').disabled=false;$('#open-existing').disabled=false;$('#upload-message').innerHTML=`<span style="color:var(--red)"><b>Upload stopped:</b> ${esc(error.message)}. Click retry to continue in the same batch; completed files will be verified and reused.</span>`;$('#upload').textContent='Retry upload'}
+    }
+
+    $('#process').onclick=async()=>{const checkpoint=state.workflow.find(item=>item.stage!=='delivery'&&!item.approved);if(!checkpoint)return;if(checkpoint.stage==='review'&&checkpoint.summary?.pending){show('episodes');return}const message=$('#checkpoint-approval-message');try{$('#process').disabled=true;message.innerHTML='';if(checkpoint.status==='complete'){$('#process').textContent='Approving...';await api(`/api/stages/${checkpoint.stage}/approve?batch_id=${encodeURIComponent(activeBatch)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});message.innerHTML=`<div class="success">${esc(checkpoint.name)} approved. Starting the next stage...</div>`;if(checkpoint.stage==='qc'){show('episodes');await refresh();return}if(checkpoint.stage==='review'){show('delivery');await refresh();return}}else $('#process').textContent=`Running ${checkpoint.name}...`;await api(`/api/process?batch_id=${encodeURIComponent(activeBatch)}`,{method:'POST'});await refresh()}catch(error){message.innerHTML=`<div class="error">${esc(error.message)}</div>`;$('#process').disabled=false;renderRun()}};
+    $('#build').onclick=async()=>{try{$('#build').disabled=true;$('#delivery-state').textContent='Validating and building the customer folder and ZIP...';await api(`/api/delivery?batch_id=${encodeURIComponent(activeBatch)}`,{method:'POST'});await refresh()}catch(error){$('#delivery-error').innerHTML=`<div class="error">${esc(error.message)}</div>`;$('#build').disabled=false}};
+    $('#download').onclick=()=>{$('#download-status').textContent=`Download started: actuate-${activeBatch}.zip`};
+    async function boot(){batches=await api('/api/batches');const current=batches.find(item=>item.batch_id===activeBatch),latest=[...batches].reverse().find(item=>item.batch_id!=='initial'&&item.source_files);if(!current||(activeBatch==='initial'&&!current.source_files&&latest)){activeBatch=latest?.batch_id||batches[0].batch_id;localStorage.setItem('actuate-batch',activeBatch)}await refresh();const page=location.hash.slice(1);if(['source','runs','episodes','delivery'].includes(page))show(page)}
+    boot().catch(showGlobalError);
+  </script>
+</body>
+</html>

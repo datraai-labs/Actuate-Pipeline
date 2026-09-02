@@ -1,0 +1,30 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+build/
+dist/
+tmp/
+.DS_Store
+*.log
+*.zip
+
+# Local pipeline inputs, state, and generated deliveries
+source/
+runs/
+delivery/
+.actuate/
+
+# Credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+*credentials*.json
+*secret*.json
