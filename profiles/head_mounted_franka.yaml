@@ -1,4 +1,4 @@
-# The integration-gate profile: head-mounted human capture -> Franka Panda.
+\# The integration-gate profile: head-mounted human capture -> Franka Panda.
 rig: head_mounted
 embodiment: franka_panda
 # aligned_robot deliberately unset: franka_panda has no calibrated camera_intrinsics,
@@ -10,19 +10,19 @@ task: "Sort and staple paperwork at the workbench."
 video: redacted_compressed.mp4
 
 perception:
-  enabled: true
-  max_frames: 45            # 4 GB VRAM laptop; GPU stages cache under .actuate_cache/
-  prompts: [stapler, paper]
+enabled: true
+max_frames: 45   # # 4 GB VRAM laptop; GPU stages cache under .actuate_cache/
+prompts: [stapler, paper]
 
 retarget:
-  arm_model: models/arm_estimator.pt   # absent -> stage SKIPS with the reason (train on Kaggle)
+arm_model: models/arm_estimator.pt   # absent -> stage SKIPS with the reason (train on Kaggle)
 
 language:
-  mode: reuse                          # $0: attach the already-paid Part A annotations
-  reuse_from: out/session_001_certified.json
+model: reuse
+reuse_from: out/session_001_certified.json
 
 export:
-  formats: [lerobot, rlds]
-  tier: all
+formats: [lerobot, rlds]
+tier: all
 
 viz: true

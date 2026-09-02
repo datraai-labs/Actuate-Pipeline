@@ -37,22 +37,46 @@ from actuate.ingest.content_address import (
     write_manifest,
 )
 from actuate.ingest.imu import IMUSyncResult, MultipleIMUSourcesError, sync_imu
-from actuate.ingest.run import IngestResult, RigStreamError, verify_rig_streams
+from actuate.ingest.run import (
+    IngestResult,
+    RigDeclarationError,
+    RigStreamError,
+    validate_declared_rig,
+    verify_rig_streams,
+)
 from actuate.ingest.run import run as run_ingest
+from actuate.ingest.stereo import (
+    EyeFile,
+    PairEvidence,
+    StereoPairError,
+    classify_eye,
+    find_companion_eye,
+    find_lone_eye,
+    verify_stereo_pair,
+)
 
 __all__ = [
     "CaptureManifest",
+    "EyeFile",
     "IMUSyncResult",
     "IngestResult",
     "IntegrityError",
     "MultipleIMUSourcesError",
+    "PairEvidence",
+    "RigDeclarationError",
     "RigStreamError",
+    "StereoPairError",
     "build_manifest",
     "check_legacy_claims",
+    "classify_eye",
+    "find_companion_eye",
+    "find_lone_eye",
     "hash_file",
     "read_manifest",
     "run_ingest",
     "sync_imu",
+    "validate_declared_rig",
     "verify_rig_streams",
+    "verify_stereo_pair",
     "write_manifest",
 ]

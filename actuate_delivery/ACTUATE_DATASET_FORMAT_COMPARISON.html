@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Actuate dataset format - reference comparison and decision</title>
+  <style>
+    @page { size: A4 landscape; margin: 10mm; }
+    * { box-sizing: border-box; }
+    :root {
+      --ink: #17232e;
+      --navy: #183248;
+      --muted: #5c6974;
+      --line: #ccd6dd;
+      --soft: #f3f7f8;
+      --teal: #087c73;
+      --teal-soft: #e7f5f2;
+      --amber: #7b5605;
+      --amber-soft: #fff4d7;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      color: var(--ink);
+      background: white;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      font-size: 9.5pt;
+      line-height: 1.34;
+    }
+    body { width: auto; }
+    .page {
+      width: 100%;
+      max-width: none;
+      height: 189mm;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      page-break-after: always;
+      break-after: page;
+      break-inside: avoid;
+    }
+    .page + .page { page-break-before: always; break-before: page; }
+    .page:last-child { page-break-after: auto; break-after: auto; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      margin-bottom: 3mm;
+      color: var(--navy);
+      font-size: 23pt;
+      line-height: 1.08;
+      letter-spacing: -0.025em;
+    }
+    h2 {
+      margin-bottom: 2.3mm;
+      color: var(--navy);
+      font-size: 13pt;
+      line-height: 1.15;
+    }
+    h3 {
+      margin-bottom: 1mm;
+      color: var(--navy);
+      font-size: 9.2pt;
+    }
+    .eyebrow {
+      margin-bottom: 2.2mm;
+      color: var(--teal);
+      font-size: 7.6pt;
+      font-weight: 800;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .lede {
+      max-width: 245mm;
+      margin-bottom: 5mm;
+      color: var(--muted);
+      font-size: 11pt;
+    }
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 3mm;
+      margin-bottom: 5mm;
+    }
+    .flow-card {
+      min-height: 27mm;
+      padding: 3.2mm;
+      border: 1px solid var(--line);
+      border-radius: 2.5mm;
+      background: var(--soft);
+    }
+    .flow-card:last-child {
+      border-color: #95cbc5;
+      background: var(--teal-soft);
+    }
+    .step {
+      margin-bottom: .8mm;
+      color: var(--teal);
+      font-size: 6.8pt;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .flow-card p { margin: 0; color: var(--muted); font-size: 8pt; }
+    .split {
+      display: grid;
+      grid-template-columns: 1.15fr 1fr;
+      gap: 4mm;
+      flex: 1;
+    }
+    .panel {
+      padding: 4mm;
+      border: 1px solid var(--line);
+      border-radius: 2.5mm;
+    }
+    pre {
+      margin: 0;
+      padding: 3.2mm;
+      border-radius: 2mm;
+      color: #e2edf2;
+      background: #10202e;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 7.4pt;
+      line-height: 1.35;
+      white-space: pre-wrap;
+    }
+    .files { display: grid; gap: 1.7mm; }
+    .file {
+      display: grid;
+      grid-template-columns: 29mm 1fr;
+      gap: 2mm;
+      padding-bottom: 1.4mm;
+      border-bottom: 1px solid #e1e7ea;
+      font-size: 7.8pt;
+    }
+    .file:last-child { border: 0; padding-bottom: 0; }
+    .file code { color: var(--navy); font-weight: 750; }
+    .file span { color: var(--muted); }
+    .warning {
+      margin-top: 3mm;
+      padding: 2.4mm 3mm;
+      border-left: 1mm solid #d19a1a;
+      background: var(--amber-soft);
+      color: #604707;
+      font-size: 7.8pt;
+    }
+    footer {
+      display: flex;
+      justify-content: space-between;
+      margin-top: auto;
+      padding-top: 2mm;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 7pt;
+    }
+    .comparison-head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 12mm;
+      margin-bottom: 3mm;
+    }
+    .comparison-head h1 { margin: 0; font-size: 19pt; }
+    .comparison-head p {
+      max-width: 118mm;
+      margin: 0;
+      color: var(--muted);
+      font-size: 8pt;
+      min-width: 0;
+    }
+    table {
+      width: 100%;
+      table-layout: fixed;
+      border-collapse: separate;
+      border-spacing: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 2mm;
+      font-size: 7.15pt;
+      line-height: 1.27;
+    }
+    col.ref { width: 14%; }
+    col.format { width: 31%; }
+    col.fit { width: 25%; }
+    col.decision { width: 30%; }
+    th {
+      padding: 2.2mm;
+      color: white;
+      background: var(--navy);
+      text-align: left;
+      vertical-align: bottom;
+      font-size: 7pt;
+    }
+    td {
+      padding: 2.35mm 2.2mm;
+      border-top: 1px solid #dbe2e6;
+      color: #2b3842;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    tbody tr:first-child td { border-top: 0; }
+    tbody tr:nth-child(even) td { background: #f7f9fa; }
+    tbody tr { break-inside: avoid; page-break-inside: avoid; }
+    td strong { color: var(--navy); }
+    td a { color: var(--navy); text-decoration: none; }
+    .product {
+      display: block;
+      margin-top: .7mm;
+      color: var(--muted);
+      font-size: 6.7pt;
+      font-weight: 500;
+    }
+    .source {
+      display: inline-block;
+      margin-bottom: 1mm;
+      padding: .65mm 1.5mm;
+      border-radius: 99px;
+      color: #05645d;
+      background: #d4eee9;
+      font-size: 6pt;
+      font-weight: 800;
+    }
+    .adopt, .reject { font-weight: 800; }
+    .adopt { color: #086b63; }
+    .reject { color: #8a5600; }
+    .table-note {
+      margin-top: 2.5mm;
+      padding: 2.1mm 2.8mm;
+      border-left: 1mm solid var(--teal);
+      background: var(--teal-soft);
+      color: #28514d;
+      font-size: 7.4pt;
+    }
+    .decision-strip {
+      display: grid;
+      grid-template-columns: 1.05fr 1fr 1fr;
+      gap: 3mm;
+      margin-top: 2.7mm;
+    }
+    .decision {
+      padding: 2.5mm;
+      border: 1px solid var(--line);
+      border-radius: 2mm;
+      background: var(--soft);
+      color: #37434d;
+      font-size: 7.2pt;
+    }
+    .decision.primary { color: #e6eff4; background: var(--navy); border-color: var(--navy); }
+    .decision strong { display: block; margin-bottom: .7mm; color: var(--navy); }
+    .decision.primary strong { color: white; }
+    code { font-family: "SFMono-Regular", Consolas, monospace; font-size: .94em; }
+  </style>
+</head>
+<body>
+  <section class="page">
+    <div class="eyebrow">Actuate dataset pipeline / format decision</div>
+    <h1>Preserve the capture first. Optimize delivery second.</h1>
+    <p class="lede">The ten references below solve different problems: bulk video streaming, commercial catalogue QA, manifest-led commercial distribution, multimodal loading, native asynchronous capture, ground-truth evaluation, reproducible export, human/robot normalization, cross-dataset robot training, and human-to-robot action transfer. Actuate needs a verified source package before any training representation.</p>
+
+    <div class="flow">
+      <div class="flow-card"><div class="step">01 / Raw</div><h3>Native Panoculon Trinet files</h3><p>MP4, IMU, VTS, optional TEL, JSON, and embedded metadata remain byte-identical.</p></div>
+      <div class="flow-card"><div class="step">02 / Decode</div><h3>Native-rate IMU</h3><p>Confirmed IMU fields and original timestamps become one typed table without interpolation.</p></div>
+      <div class="flow-card"><div class="step">03 / Verify</div><h3>Traceable QC</h3><p>Measured facts, deterministic diagnoses, transformations, and human decisions stay distinct.</p></div>
+      <div class="flow-card"><div class="step">04 / Deliver</div><h3>Inspectable episodes</h3><p>One capture folder can be opened by tools, the CLI, or the shared review service.</p></div>
+    </div>
+
+    <div class="split">
+      <div class="panel">
+        <h2>Chosen v1 package</h2>
+        <pre>dataset/
+├── README.md
+├── episodes.csv
+├── calibration/                 # when supplied and bound
+│   └── calibration_000001.json
+└── episodes/episode_000001/
+    ├── meta.json
+    ├── raw/                      # byte-identical inputs
+    ├── derived/
+    │   ├── imu.parquet
+    │   ├── frame_timing.parquet
+    │   └── telemetry.parquet    # when present
+    └── previews/                 # when supplied</pre>
+      </div>
+      <div class="panel">
+        <h2>Meaning of each layer</h2>
+        <div class="files">
+          <div class="file"><code>README.md</code><span>Human guide to fields, limitations, inspection, and loading.</span></div>
+          <div class="file"><code>episodes.csv</code><span>One factual row per delivered episode with stable identity and source provenance.</span></div>
+          <div class="file"><code>calibration/</code><span>Machine-readable calibration only when explicitly bound to the recorded rig.</span></div>
+          <div class="file"><code>raw/</code><span>Authoritative source bytes. Hashes establish identity, not quality.</span></div>
+          <div class="file"><code>derived/</code><span>Native-rate IMU and per-frame timing tables, plus telemetry when present.</span></div>
+          <div class="file"><code>previews/</code><span>Clearly separated supplied visualizations. Internal QC verdicts are not delivered.</span></div>
+        </div>
+        <div class="warning"><strong>Evidence boundary:</strong> richer working indexes and review caches do not change this customer-facing v1 package.</div>
+      </div>
+    </div>
+    <footer><span>Only the ten requested references are compared</span><span>Page 1 / 4 - 26 August 2026</span></footer>
+  </section>
+
+  <section class="page">
+    <div class="eyebrow">Published formats / video catalogue to multimodal episodes</div>
+    <div class="comparison-head">
+      <h1>How access pattern shapes the package</h1>
+      <p>The middle column states the published format. The next explains its documented fit using scale and loader behavior. The last combines the useful lesson and the boundary for Actuate.</p>
+    </div>
+    <table>
+      <colgroup><col class="ref"><col class="format"><col class="fit"><col class="decision"></colgroup>
+      <thead><tr><th>Company / reference</th><th>Exact published format and access path</th><th>Why this choice fits that product</th><th>Combined lesson and Actuate decision</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="source">Public dataset card</span><strong><a href="https://huggingface.co/datasets/builddotai/Egocentric-10K">Build AI</a></strong><span class="product">Egocentric-10K</span></td>
+          <td><code>factory_N/workers/worker_N/</code> contains one <code>intrinsics.json</code> plus WebDataset TAR shards capped at 1 GB. Every shard contains same-stem H.265 <code>.mp4</code> + <code>.json</code> samples. JSON records factory, worker, clip index, duration, width, height, FPS, bytes, and codec. Hugging Face examples stream all shards or select factories/workers.</td>
+          <td>The card documents 192,900 clips and about 18 TB. Factory/worker paths enable subset loading; bounded TARs enable streaming without expanding millions of loose files; intrinsics are stored once per worker/device.</td>
+          <td><span class="adopt">Adopt:</span> stable media/metadata stems, measured media facts, device calibration, and optional sharding for transfer.<br><span class="reject">Do not copy as canonical:</span> TARs hinder recurring file-level inspection/replacement, and the video-only format has no native IMU or hardware-clock contract.</td>
+        </tr>
+        <tr>
+          <td><span class="source">Publicly documented, files gated</span><strong><a href="https://huggingface.co/datasets/humanarchive/HA-Ego-Samples">Human Archive</a></strong><span class="product">500h / HA-Ego-Samples</span></td>
+          <td><code>commercial/factory</code>, <code>commercial/hospitality</code>, and <code>residential</code> contain <code>personN/</code>. Each has <code>personN_segments.json</code> and H.264 <code>personN_segmentK.mp4</code>. JSON stores person totals plus each segment's task, environment, duration, dimensions, FPS, bytes, and codec.</td>
+          <td>The product is a 10,633-segment commercial video catalogue. Its card says every MP4 is fully <code>ffprobe</code>-verified; JSON/media pairing, indices, durations, corrupt/short clips, and whole-corpus duplicates are checked. One compact JSON exposes the person's catalogue.</td>
+          <td><span class="adopt">Adopt:</span> playable MP4, compact inventory, strict pairing, measured properties, full-file validation, and duplicate detection.<br><span class="reject">Do not copy:</span> task/environment/person remain unknown for Actuate unless supplied; there is no sensor-clock representation. The card says “LeRobot v3,” but the shown tree is custom MP4 + JSON.</td>
+        </tr>
+        <tr>
+          <td><span class="source">Publicly documented, files gated</span><strong><a href="https://huggingface.co/datasets/humanarchive/HA-Multi-Samples-v2">Human Archive</a></strong><span class="product">HA-Multi-Samples-v2</span></td>
+          <td><code>episodes/ep_N/</code> contains four view MP4s, rectified stereo MP4s, tactile <code>(N,256)</code> NumPy arrays, glove IMU <code>(N,12)</code>, body/head IMU arrays, and <code>meta.json</code>. Global <code>meta/</code> holds <code>episodes.csv</code>, <code>tasks.csv</code>, <code>calibration.json</code>, and <code>stats.json</code>. Sensor rows align to 30 FPS frames.</td>
+          <td>The card says v2 was reorganized into episode/modality folders for easier browsing and partial loading without a LeRobot dependency. Separate arrays make modality selection direct; CSVs index the corpus; shared calibration and fixed shapes simplify frame-aligned access.</td>
+          <td><span class="adopt">Adopt:</span> self-contained episode folders, separated modalities, a global catalogue, calibration, and statistics.<br><span class="reject">Do not copy as canonical:</span> frame alignment is derived convenience. Native Panoculon Trinet IMU/timestamps must survive first. The card conflicts on current depth availability, so this comparison makes no depth claim.</td>
+        </tr>
+        <tr>
+          <td><span class="source">Official gated commercial release</span><strong><a href="https://huggingface.co/collections/LightwheelAI/egosuite-open100k">Lightwheel</a></strong><span class="product"><a href="https://huggingface.co/datasets/LightwheelAI/EgoDemo">EgoSuite-Open100K</a></span></td>
+          <td>The collection separates <code>EgoStandard</code> (90,000 planned head-view hours), <code>EgoPro</code> (10,000 planned head-and-wrist hours), and a 50-hour <code>EgoDemo</code>. EgoDemo supplies raw MP4, LeRobot v3, MCAP, and manifests. One <code>source_episode_uuid</code> joins alternative formats; manifests carry stable IDs, provenance, task/scene, duration, paths, modality flags, format, and SHA-256.</td>
+          <td>Lightwheel sells controlled-access data while exposing a developer sample and common contract. Raw and annotated SKUs stay distinct, formats are not double-counted, and manifests are the source of truth for selective access to mutable buckets. The public contract documents no calibration package.</td>
+          <td><span class="adopt">Adopt:</span> neutral dataset/version naming, stable episode provenance, manifest-led selection, raw/annotated separation, checksums, and one identity across buyer formats.<br><span class="reject">Do not copy blindly:</span> task/pose fields need source evidence; adapters stay optional; mutable storage does not replace an immutable customer dataset.</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="table-note"><strong>Human Archive correction:</strong> these are two distinct public schemas. The 500-hour MP4 + per-person JSON product is not the multimodal v2 episode package and is not the separate six-camera Human Archive datasets.</div>
+    <footer><span>Format facts come from the linked official dataset cards</span><span>Page 2 / 4</span></footer>
+  </section>
+
+  <section class="page">
+    <div class="eyebrow">Published formats / native capture to enriched delivery</div>
+    <div class="comparison-head">
+      <h1>Capture fidelity and derived evidence</h1>
+      <p>These references separate native sensor recording from derived research outputs. That separation is the decisive pattern for Actuate.</p>
+    </div>
+    <table>
+      <colgroup><col class="ref"><col class="format"><col class="fit"><col class="decision"></colgroup>
+      <thead><tr><th>Company / reference</th><th>Exact published format and access path</th><th>Why this choice fits that product</th><th>Combined lesson and Actuate decision</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="source">Official format + SDK</span><strong><a href="https://facebookresearch.github.io/projectaria_tools/docs/data_formats/aria_vrs/aria_vrs_format">Meta Project Aria</a></strong><span class="product">VRS</span></td>
+          <td>One <code>.vrs</code> stores typed per-sensor Configuration, State, and Data records for camera, audio, IMU, magnetometer, and other streams. Configuration blobs carry static sensor information; calibration is addressed by stream label. Same-device sensors share <code>DEVICE_TIME</code>; APIs query by timestamp and declared time domain. MPS outputs stay separate.</td>
+          <td>Meta documents VRS for multimodal XR recording, large files, timestamp-order playback, and random access. It preserves asynchronous native rates while an integrated device supplies stream IDs, calibration, one capture clock, integrity tooling, and timestamp-query APIs.</td>
+          <td><span class="adopt">Adopt:</span> explicit clock domains, native-rate streams, capture-versus-arrival semantics, configuration/calibration provenance, integrity checks, and timestamp queries.<br><span class="reject">Do not convert Panoculon Trinet to VRS:</span> repacking cannot recreate Aria hardware guarantees and would promote a derived container above original sidecars.</td>
+        </tr>
+        <tr>
+          <td><span class="source">Official dataset + toolkit</span><strong><a href="https://github.com/facebookresearch/hot3d">Meta HOT3D</a></strong><span class="product">Full sequences + HOT3D-Clips</span></td>
+          <td>Full folders include <code>recording.vrs</code>, metadata, object definitions, headset trajectory, MANO/UmeTrack trajectories, boxes, MPS outputs, and timestamp/stream mask CSVs. Separately, 3,832 five-second WebDataset clips contain 150 keyed frames, three camera JPEGs per frame, camera/hand/hand-crop/object/info JSON, and shared hand-shape data.</td>
+          <td>The full VRS-based dataset supports sequence research; fixed WebDataset clips serve BOP and hand-tracking evaluation. Independent masks encode pose availability, visibility, exposure, and manual-QA pass, so consumers compose a validity rule without deleting annotations or confusing availability with accuracy.</td>
+          <td><span class="adopt">Adopt:</span> property-specific validity, timestamp-level evidence, separate manual decisions, and a hard boundary between full recordings and derived clips.<br><span class="reject">Do not copy:</span> hand/object ground truth and benchmark packaging are future enrichment or adapters, not Actuate v1 source evidence.</td>
+        </tr>
+        <tr>
+          <td><span class="source">Official dataset + open SDK</span><strong><a href="https://huggingface.co/datasets/fpvlabs/stera-10m">FPV Labs</a></strong><span class="product"><a href="https://github.com/fpv-labs/stera-sdk">Stera-10M + Stera SDK</a></span></td>
+          <td>The iPhone app records RGB, depth, pose/intrinsics, IMU, tracking, transforms, map, and trajectory as ROS2 topics in raw MCAP. Published sessions contain <code>rgb.mp4</code>, <code>annotation.hdf5</code>, <code>hierarchy.json</code>, <code>mesh.ply</code>, thumbnail, six calibration files, and full/preview Rerun recordings. HDF5 separates depth, pose, native-rate IMU, hand pose, and metadata; aligned arrays include validity.</td>
+          <td>The documented loop targets reproducible hour-plus multimodal collection on commodity iPhone Pro hardware. MCAP serves capture; HDF5 supports selective numeric reads; MP4 remains playable; PLY carries geometry; calibration is explicit; Rerun supplies review; the Apache-licensed SDK reproduces processing.</td>
+          <td><span class="adopt">Adopt:</span> raw/processed separation, natural-rate IMU, explicit validity/units/frames, model provenance, self-contained sessions, and review artifacts.<br><span class="reject">Do not copy as canonical:</span> Actuate's current inputs lack Stera's derived modalities. Stera docs and current exporter also conflict on a depth timestamp and hand coordinate framing, proving nominal schemas still require file validation.</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="table-note"><strong>Shared pattern:</strong> Aria preserves integrated-device capture; HOT3D layers validity and benchmarks on top; Stera publishes a capture-to-export path. None justifies replacing uncertain Panoculon Trinet originals with a more polished derived container.</div>
+    <footer><span>Official sources are linked directly from every row</span><span>Page 3 / 4</span></footer>
+  </section>
+
+  <section class="page">
+    <div class="eyebrow">Published formats / downstream training representations</div>
+    <div class="comparison-head">
+      <h1>When normalization becomes useful</h1>
+      <p>These rows belong later in the pipeline. They require calibrated motion, robot trajectory semantics, or a declared human-to-robot action representation.</p>
+    </div>
+    <table>
+      <colgroup><col class="ref"><col class="format"><col class="fit"><col class="decision"></colgroup>
+      <thead><tr><th>Company / reference</th><th>Exact published format or representation</th><th>Why this choice fits that product</th><th>Combined lesson and Actuate decision</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="source">Official code + converters</span><strong><a href="https://github.com/GaTech-RL2/EgoVerse">Georgia Tech</a></strong><span class="product">EgoVerse / EgoMimic</span></td>
+          <td>Current storage is one <code>&lt;episode_hash&gt;.zarr/</code> v3 group, a same-hash MP4 preview, and a PostgreSQL catalogue row. Frame-indexed arrays include JPEG-byte <code>images.front_1</code>, head/wrist/EE poses, optional MANO points, RGB timestamp values, and annotations; root metadata carries embodiment, <code>total_frames</code>, and mandatory 3x4 intrinsics. The Aria converter combines VRS with MPS hand/SLAM CSVs and removes invalid-pose frames.</td>
+          <td>The repository co-trains on human and robot demonstrations. One chunked episode interface and catalogue batch images, poses, actions, annotations, and overlays; embodiment metadata selects the representation. <code>total_frames</code> bounds padded tails and absent modalities are normally omitted.</td>
+          <td><span class="adopt">Adopt later:</span> explicit source/embodiment, geometry-gated calibration, authoritative length, versioned conversion, and catalogue-backed views.<br><span class="reject">Do not copy for v1:</span> it needs SLAM/hand actions, aligns to video frames, omits high-rate IMU, and drops invalid frames. Current guide/code also disagree on timestamp domain and calibration provenance.</td>
+        </tr>
+        <tr>
+          <td><span class="source">Official unified schema</span><strong><a href="https://github.com/google-deepmind/open_x_embodiment">Google DeepMind</a></strong><span class="product"><a href="https://github.com/google-research/rlds">Open X-Embodiment / RLDS</a></span></td>
+          <td>Open X distributes versioned TFDS directories, typically sharded TFRecord files plus dataset/feature metadata, loaded from GCS or local storage. RLDS is the logical read-time schema, not one container: episode dictionaries contain metadata and nested ordered steps. Steps require <code>is_first</code>/<code>is_last</code>; observation, action, reward, terminal, discount, fields, and shapes remain dataset-specific.</td>
+          <td>Each native robot dataset uses its own TFDS builder and feature mapping, then exposes one episode/step interface for downstream mixtures. Training can interleave heterogeneous embodiments while retaining contributor-specific observations/actions. RLDS does not impose one universal action vector.</td>
+          <td><span class="adopt">Adopt only as a buyer adapter:</span> useful after genuine episode, observation, action, state, task, and terminal semantics exist.<br><span class="reject">Do not use as canonical:</span> Actuate's current captures lack robot actions/rewards/termination. Inventing fields or resampling IMU merely to make steps creates false semantics and hides native evidence.</td>
+        </tr>
+        <tr>
+          <td><span class="source">Papered representation, no public package</span><strong><a href="https://research.nvidia.com/labs/gear/egoscale/">NVIDIA GEAR</a></strong><span class="product">EgoScale</span></td>
+          <td>No public on-disk dataset schema or loader is released; the official page says GitHub “Coming Soon.” The paper defines 30 FPS RGB plus estimated camera SE(3) and 21 hand-keypoint transforms, converted to relative wrist motion and optimization-retargeted 22-DoF Sharpa targets. Precision/alignment stages add Vision Pro, Vive wrist pose, Manus 25-joint transforms, and synchronized views.</td>
+          <td>EgoScale is a cross-embodiment training recipe, not neutral delivery. Relative wrist motion removes global camera movement; retargeted joints provide finger supervision; small embodiment adapters and aligned human/robot data connect that shared representation to executable control.</td>
+          <td><span class="adopt">Future lesson:</span> pair raw scale with precision anchors; declare coordinates, target embodiment, validity, provenance, and evaluation for wrist/finger actions.<br><span class="reject">Do not call it a format:</span> public storage fields are undocumented, transformations are model-specific, and the paper describes noisy off-the-shelf estimates.</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="decision-strip">
+      <div class="decision primary"><strong>Chosen source contract</strong>Byte-identical native files + manifest CSV + native-rate IMU Parquet + one QC JSON.</div>
+      <div class="decision"><strong>Why it fits Actuate</strong>The product verifies uncertain sidecars and clocks before training semantics exist.</div>
+      <div class="decision"><strong>Adapters, not authority</strong>Zarr, RLDS, LeRobot, MCAP, HDF5, and action targets follow only from measured buyer needs.</div>
+    </div>
+    <footer><span>EgoScale is explicitly identified as a representation, not a released storage format</span><span>Page 4 / 4</span></footer>
+  </section>
+</body>
+</html>
